@@ -10,7 +10,7 @@
 
 ## Overview
 
-A pipeline for *Baryonifying* N-body simulations, by adding baryon-induced corrections to the density field and/or adding thermodynamic fields such as the gas pressure, temperature etc. The entire modelling pipeline is built out of the Core Cosmology Library (CCL).
+A pipeline for *Baryonifying* N-body simulations, by adding baryon-induced corrections to the density field and/or adding thermodynamic fields such as the gas pressure, temperature etc. The entire modelling pipeline is built out of the Core Cosmology Library (CCL). The profile classes can also be used with CCL tools to compute analytic, halo model-based predictions for different power spectra.
 
 ## Features
 
@@ -27,7 +27,7 @@ A detailed documentation is available at [readthedocs](https://baryonforge.readt
 
 ## Environment
 
-The ```BaryonForge``` pipeline is designed to have minimal dependencies on external packages. The ```environment.yaml``` file can be used to create an environment that contains all necessary packages prior to your installation. We only specify two hard requirements, which is ```pyccl==2.8``` and ```numpy==1.*```, to avoid API-breaking changes.
+The ```BaryonForge``` pipeline is designed to have minimal dependencies on external packages. The ```environment.yaml``` file can be used to create an environment that contains all necessary packages prior to your installation. We only specify two hard requirements, which is ```pyccl>=3.1.2``` and ```numpy==1.*```, to avoid API-breaking changes.
 
 
 ## Installation
@@ -72,8 +72,8 @@ cosmo   = ccl.Cosmology(Omega_c = 0.26, h = 0.7, Omega_b = 0.04, sigma8 = 0.8, n
 #The model params can be specified during initialization of the class.
 #The Baryonification 2D class generates the offsets of density field.
 #We setup an interpolator to speed up the calculations.
-DMO     = bfg.Profiles.DarkMatterOnly(M_c = 1e14, proj_cutoff = 100)
-DMB     = bfg.Profiles.DarkMatterBaryon(M_c = 1e14, proj_cutoff = 100)
+DMO     = bfg.Profiles.DarkMatterOnly(M_c = 1e14, proj_cutoff = 100, ...)
+DMB     = bfg.Profiles.DarkMatterBaryon(M_c = 1e14, proj_cutoff = 100, ...)
 model   = bfg.Profiles.Baryonification2D(DMO, DMB, cosmo)
 model.setup_interpolator(z_min = Catalog.cat['z'].min(), z_max = Catalog.cat['z'].max(), N_samples_z = 10,
                          M_min = Catalog.cat['M'].min(), M_max = Catalog.cat['M'].max(), N_samples_M = 10,

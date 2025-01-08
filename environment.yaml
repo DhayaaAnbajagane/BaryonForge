@@ -6,7 +6,7 @@ channels:
   - defaults
 
 dependencies:
-  - pyccl==2.8.0
+  - pyccl>=3.1.2
   - numpy==1.* #Avoid using numpy 2.0
   - scipy
   - joblib
