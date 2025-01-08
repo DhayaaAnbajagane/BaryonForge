@@ -1,7 +1,7 @@
 
 import numpy as np
 import pyccl as ccl
-from scipy import interpolate
+from scipy import interpolate, integrate
 
 from ..Profiles.Schneider19 import model_params, SchneiderProfiles, Gas, DarkMatterBaryon, TwoHalo
 
@@ -44,7 +44,7 @@ __all__ = ['Pressure', 'NonThermalFrac', 'NonThermalFracGreen20',
 
 class BaseThermodynamicProfile(SchneiderProfiles):
 
-    def __init__(self, mass_def = ccl.halos.massdef.MassDef(200, 'critical', c_m_relation = 'Diemer15'), 
+    def __init__(self, mass_def = ccl.halos.massdef.MassDef200c, 
                  use_fftlog_projection = False, 
                  padding_lo_proj = 0.1, padding_hi_proj = 10, n_per_decade_proj = 10,
                  **kwargs):
@@ -241,9 +241,16 @@ class Pressure(BaseThermodynamicProfile):
 
         rho_total  = self.DarkMatterBaryon.real(cosmo, r_integral, M, a)
         rho_gas    = self.Gas.real(cosmo, r_integral, M, a)
+
+        #The real() routine squeezes out dimension if len(M) = 1
+        #Add it back so the integration below works out
+        if M_use.size == 1: 
+            rho_total = rho_total[None, :]
         
+        #Integrate total density profile to get the cumulative mass distribution
         dlnr    = np.log(r_integral[1]) - np.log(r_integral[0])
-        M_total = 4 * np.pi * np.cumsum(r_integral**3 * rho_total * dlnr, axis = -1)
+        dV      = r_integral**3 * dlnr
+        M_total = 4 * np.pi * integrate.cumulative_simpson(dV * rho_total, axis = -1, initial = dV[0] * rho_total[:, [0]])
 
         #Assuming hydrostatic equilibrium to get dP/dr = -G*M(<r)*rho(r)/r^2
         dP_dr = - G * M_total * rho_gas / r_integral**2
@@ -255,7 +262,11 @@ class Pressure(BaseThermodynamicProfile):
         #integrate to get actual pressure, P(r). Boundary condition is P(r -> infty) = 0.
         #So we start from the boundary and integrate inwards. We reverse array once to
         #flip the integral direction, and flip it second time so P(r) goes from r = 0 to r = infty
-        prof  = - np.cumsum((dP_dr * r_integral)[:, ::-1] * dlnr, axis = -1)[:, ::-1]
+        #We use trapezoid rule here because simpson was causing odd oscillatory errors because
+        #Some profiles have sharp transitions in their pressure/gas profiles (eg. Mead)
+        intgr = (dP_dr * r_integral)[:, ::-1] * dlnr
+        prof  = -integrate.cumulative_simpson(intgr, axis = -1, initial = intgr[:, [0]])[:, ::-1]
+        prof  = -np.array([integrate.cumulative_trapezoid(intgr[i], initial = intgr[i, 0])[::-1] for i in range(intgr.shape[0])])
         
         prof  = interpolate.PchipInterpolator(np.log(r_integral), np.log(prof + Pressure_at_infinity), axis = 1, extrapolate = False)
         prof  = np.exp(prof(np.log(r_use))) - Pressure_at_infinity

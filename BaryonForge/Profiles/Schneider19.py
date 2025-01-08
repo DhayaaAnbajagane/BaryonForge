@@ -3,7 +3,7 @@ import pyccl as ccl
 from operator import add, mul, sub, truediv, pow, neg, pos, abs
 import warnings
 
-from scipy import interpolate
+from scipy import interpolate, integrate
 from ..utils.Tabulate import _set_parameter
 
 __all__ = ['model_params', 'SchneiderProfiles', 
@@ -73,7 +73,7 @@ class SchneiderProfiles(ccl.halos.profiles.HaloProfile):
     #Define the params used in this model
     model_param_names = model_params
 
-    def __init__(self, mass_def = ccl.halos.massdef.MassDef(200, 'critical', c_m_relation = 'Diemer15'), 
+    def __init__(self, mass_def = ccl.halos.massdef.MassDef200c, 
                  use_fftlog_projection = False, 
                  padding_lo_proj = 0.1, padding_hi_proj = 10, n_per_decade_proj = 10, 
                  xi_mm = None, 
@@ -388,13 +388,13 @@ class DarkMatter(SchneiderProfiles):
         z = 1/a - 1
 
         if self.cdelta is None:
-            c_M_relation = ccl.halos.concentration.ConcentrationDiemer15(mdef = self.mass_def) #Use the diemer calibration
+            c_M_relation = ccl.halos.concentration.ConcentrationDiemer15(mass_def = self.mass_def) #Use the diemer calibration
             
         else:
-            c_M_relation = ccl.halos.concentration.ConcentrationConstant(self.cdelta, mdef = self.mass_def)
+            c_M_relation = ccl.halos.concentration.ConcentrationConstant(self.cdelta, mass_def = self.mass_def)
             #c_M_relation = ccl.halos.concentration.ConcentrationConstant(7, mdef = self.mass_def) #needed to get Schneider result
             
-        c   = c_M_relation.get_concentration(cosmo, M_use, a)
+        c   = c_M_relation(cosmo, M_use, a)
         R   = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
         r_s = R/c
         r_t = R*self.epsilon
@@ -495,7 +495,7 @@ class TwoHalo(SchneiderProfiles):
         z = 1/a - 1
 
         if self.xi_mm is None:
-            xi_mm   = ccl.correlation_3d(cosmo, a, r_use)
+            xi_mm   = ccl.correlation_3d(cosmo, r = r_use, a = a)
         else:
             xi_mm   = self.xi_mm(r_use, a)
 
@@ -994,9 +994,10 @@ class CollisionlessMatter(SchneiderProfiles):
         rho_gas    = self.Gas.real(cosmo, r_integral, M_use, a)
 
         dlnr  = np.log(r_integral[1]) - np.log(r_integral[0])
-        M_i   = 4 * np.pi * np.cumsum(r_integral**3 * rho_i   * dlnr, axis = -1)
-        M_cga = 4 * np.pi * np.cumsum(r_integral**3 * rho_cga * dlnr, axis = -1)
-        M_gas = 4 * np.pi * np.cumsum(r_integral**3 * rho_gas * dlnr, axis = -1)
+        dV    = r_integral**3 * dlnr
+        M_i   = 4 * np.pi * integrate.cumulative_simpson(dV * rho_i  , axis = -1, initial = dV[0] * rho_i[:, [0]])
+        M_cga = 4 * np.pi * integrate.cumulative_simpson(dV * rho_cga, axis = -1, initial = dV[0] * rho_cga[:, [0]])
+        M_gas = 4 * np.pi * integrate.cumulative_simpson(dV * rho_gas, axis = -1, initial = dV[0] * rho_gas[:, [0]])
         
         #We intentionally set Extrapolate = True. This is to handle behavior at extreme small-scales (due to stellar profile)
         #and radius limits at largest scales. Using extrapolate=True does not introduce numerical artifacts into predictions

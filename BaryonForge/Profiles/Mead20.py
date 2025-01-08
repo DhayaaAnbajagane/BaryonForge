@@ -141,12 +141,12 @@ class DarkMatter(MeadProfiles):
         if self.cdelta is None:
             #Use the Duffy08 calibration following Equation 33 in https://arxiv.org/pdf/2005.00009
             #Can in principle swap this around as you want
-            c_M_relation = ccl.halos.concentration.ConcentrationDuffy08(mdef = self.mass_def)
+            c_M_relation = ccl.halos.concentration.ConcentrationDuffy08(mass_def = self.mass_def)
         else:
-            c_M_relation = ccl.halos.concentration.ConcentrationConstant(self.cdelta, mdef = self.mass_def)
+            c_M_relation = ccl.halos.concentration.ConcentrationConstant(self.cdelta, mass_def = self.mass_def)
             
         #No modification of DMO concentration here
-        c   = c_M_relation.get_concentration(cosmo, M_use, a)
+        c   = c_M_relation(cosmo, M_use, a)
         R   = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
         r_s = R/c
 
@@ -274,12 +274,12 @@ class BoundGas(MeadProfiles):
         if self.cdelta is None:
             #Use the Duffy08 calibration following Equation 33 in https://arxiv.org/pdf/2005.00009
             #Can in principle swap this around as you want
-            c_M_relation = ccl.halos.concentration.ConcentrationDuffy08(mdef = self.mass_def)
+            c_M_relation = ccl.halos.concentration.ConcentrationDuffy08(mass_def = self.mass_def)
         else:
-            c_M_relation = ccl.halos.concentration.ConcentrationConstant(self.cdelta, mdef = self.mass_def)
+            c_M_relation = ccl.halos.concentration.ConcentrationConstant(self.cdelta, mass_def = self.mass_def)
 
         z     = 1/a - 1
-        c     = c_M_relation.get_concentration(cosmo, M_use, a)
+        c     = c_M_relation(cosmo, M_use, a)
         R     = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
         r_s   = R/c
         r_s   = r_s[:, None]
@@ -468,11 +468,11 @@ class CollisionlessMatter(MeadProfiles):
         if self.cdelta is None:
             #Use the Duffy08 calibration following Equation 33 in https://arxiv.org/pdf/2005.00009
             #Can in principle swap this around as you want
-            c_M_relation = ccl.halos.concentration.ConcentrationDuffy08(mdef = self.mass_def)
+            c_M_relation = ccl.halos.concentration.ConcentrationDuffy08(mass_def = self.mass_def)
         else:
-            c_M_relation = ccl.halos.concentration.ConcentrationConstant(self.cdelta, mdef = self.mass_def)
+            c_M_relation = ccl.halos.concentration.ConcentrationConstant(self.cdelta, mass_def = self.mass_def)
             
-        c   = c_M_relation.get_concentration(cosmo, M_use, a)
+        c   = c_M_relation(cosmo, M_use, a)
         c   = self._modify_concentration(cosmo, c, M_use, a)
         R   = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
         r_s = R/c
@@ -675,11 +675,11 @@ class Temperature(MeadProfiles):
         if self.cdelta is None:
             #Use the Duffy08 calibration following Equation 33 in https://arxiv.org/pdf/2005.00009
             #Can in principle swap this around as you want
-            c_M_relation = ccl.halos.concentration.ConcentrationDuffy08(mdef = self.mass_def)
+            c_M_relation = ccl.halos.concentration.ConcentrationDuffy08(mass_def = self.mass_def)
         else:
-            c_M_relation = ccl.halos.concentration.ConcentrationConstant(self.cdelta, mdef = self.mass_def)
+            c_M_relation = ccl.halos.concentration.ConcentrationConstant(self.cdelta, mass_def = self.mass_def)
             
-        c    = c_M_relation.get_concentration(cosmo, M_use, a)
+        c    = c_M_relation(cosmo, M_use, a)
         R    = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
         r_s  = (R/c)[:, None]
     

@@ -3,7 +3,7 @@ import pyccl as ccl
 from operator import add, mul, sub, truediv, pow, neg, pos, abs
 import warnings
 
-from scipy import interpolate, special
+from scipy import interpolate, special, integrate
 from ..utils.Tabulate import _set_parameter
 from . import Schneider19 as S19
 from .Thermodynamic import (G, Msun_to_Kg, Mpc_to_m, kb_cgs, m_p, m_to_cm)
@@ -226,11 +226,11 @@ class DarkMatter(AricoProfiles):
         z = 1/a - 1
 
         if self.cdelta is None:
-            c_M_relation = ccl.halos.concentration.ConcentrationDiemer15(mdef = self.mass_def) #Use the diemer calibration
+            c_M_relation = ccl.halos.concentration.ConcentrationDiemer15(mass_def = self.mass_def) #Use the diemer calibration
         else:
-            c_M_relation = ccl.halos.concentration.ConcentrationConstant(self.cdelta, mdef = self.mass_def)
+            c_M_relation = ccl.halos.concentration.ConcentrationConstant(self.cdelta, mass_def = self.mass_def)
             
-        c   = c_M_relation.get_concentration(cosmo, M_use, a)
+        c   = c_M_relation(cosmo, M_use, a)
         R   = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
         r_s = R/c
 
@@ -666,11 +666,11 @@ class ModifiedDarkMatter(AricoProfiles):
         z = 1/a - 1
 
         if self.cdelta is None:
-            c_M_relation = ccl.halos.concentration.ConcentrationDiemer15(mdef = self.mass_def) #Use the diemer calibration
+            c_M_relation = ccl.halos.concentration.ConcentrationDiemer15(mass_def = self.mass_def) #Use the diemer calibration
         else:
-            c_M_relation = ccl.halos.concentration.ConcentrationConstant(self.cdelta, mdef = self.mass_def)
+            c_M_relation = ccl.halos.concentration.ConcentrationConstant(self.cdelta, mass_def = self.mass_def)
             
-        c   = c_M_relation.get_concentration(cosmo, M_use, a)
+        c   = c_M_relation(cosmo, M_use, a)
         R   = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
         r_s = R/c        
         r_s = r_s[:, None]
@@ -768,9 +768,10 @@ class CollisionlessMatter(AricoProfiles):
             rho_gas    = self.Gas.real(cosmo, r_integral, M_use[m_i], a)
 
             dlnr  = np.log(r_integral[1]) - np.log(r_integral[0])
-            M_i   = 4 * np.pi * np.cumsum(r_integral**3 * rho_i   * dlnr)
-            M_cga = 4 * np.pi * np.cumsum(r_integral**3 * rho_cga * dlnr)
-            M_gas = 4 * np.pi * np.cumsum(r_integral**3 * rho_gas * dlnr)
+            dV    = r_integral**3 * dlnr
+            M_i   = 4 * np.pi * integrate.cumulative_simpson(dV * rho_i  , axis = -1, initial = dV[0] * rho_i[0])
+            M_cga = 4 * np.pi * integrate.cumulative_simpson(dV * rho_cga, axis = -1, initial = dV[0] * rho_cga[0])
+            M_gas = 4 * np.pi * integrate.cumulative_simpson(dV * rho_gas, axis = -1, initial = dV[0] * rho_gas[0])
 
             #Assume extrapolation is used only for r > r_max. In this case, the extrapolation
             #coefficients are just the integrated mass at r_max. Our r_min is sufficientyly
@@ -995,12 +996,12 @@ class Pressure(AricoProfiles):
         R = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
 
         if self.cdelta is None:
-            c_M_relation = ccl.halos.concentration.ConcentrationDiemer15(mdef = self.mass_def) #Use the diemer calibration
+            c_M_relation = ccl.halos.concentration.ConcentrationDiemer15(mass_def = self.mass_def) #Use the diemer calibration
         else:
-            c_M_relation = ccl.halos.concentration.ConcentrationConstant(self.cdelta, mdef = self.mass_def)
+            c_M_relation = ccl.halos.concentration.ConcentrationConstant(self.cdelta, mass_def = self.mass_def)
 
         #Get concentration values, and the effective equation of state, Gamma    
-        c    = c_M_relation.get_concentration(cosmo, M_use, a)[:, None]
+        c    = c_M_relation(cosmo, M_use, a)[:, None]
         r_s  = R[:, None]/c
         Norm = 4*np.pi*r_s**3 * (np.log(1 + c) - c/(1 + c))
         rhoc = M_use[:, None]/Norm
@@ -1071,7 +1072,7 @@ class NonThermalFrac(AricoProfiles):
         
         #They define the model with R200m, so gotta use that redefinition here.
         mdef  = ccl.halos.massdef.MassDef(200, 'matter')
-        cnvrt = ccl.halos.mass_translator(mass_in = self.mass_def, mass_out = mdef, concentration = self.mass_def.concentration)
+        cnvrt = ccl.halos.mass_translator(mass_in = self.mass_def, mass_out = mdef, concentration = 'Diemer15')
         M200m = cnvrt(cosmo, M_use, a)
         R200m = mdef.get_radius(cosmo, M_use, a)/a #in comoving distance
 
@@ -1243,11 +1244,11 @@ class ExtendedBoundGas(AricoProfiles):
 
         #Now compute the large-scale behavior (which is an NFW profile)
         if self.cdelta is None:
-            c_M_relation = ccl.halos.concentration.ConcentrationDiemer15(mdef = self.mass_def) #Use the diemer calibration
+            c_M_relation = ccl.halos.concentration.ConcentrationDiemer15(mass_def = self.mass_def) #Use the diemer calibration
         else:
-            c_M_relation = ccl.halos.concentration.ConcentrationConstant(self.cdelta, mdef = self.mass_def)
+            c_M_relation = ccl.halos.concentration.ConcentrationConstant(self.cdelta, mass_def = self.mass_def)
             
-        c     = c_M_relation.get_concentration(cosmo, M_use, a)
+        c     = c_M_relation(cosmo, M_use, a)
         r_s   = (R/c)[:, None]
         x     = r_use / r_s
         y1    = np.power(1 + R_out/R_inn, -beta)/4 * (R_out/r_s) * np.power(1 + R_out/r_s, 2)

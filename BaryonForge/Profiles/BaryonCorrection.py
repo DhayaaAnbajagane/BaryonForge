@@ -2,7 +2,7 @@
 import numpy as np
 import pyccl as ccl
 from tqdm import tqdm
-from scipy import interpolate
+from scipy import interpolate, integrate
 import warnings
 import copy
 from itertools import product
@@ -86,7 +86,8 @@ class BaryonificationClass(object):
     """
 
 
-    def __init__(self, DMO, DMB, cosmo, epsilon_max = 20, mass_def = ccl.halos.massdef.MassDef(200, 'critical')):
+    def __init__(self, DMO, DMB, cosmo, epsilon_max = 20, mass_def = ccl.halos.massdef.MassDef(200, 'critical'),
+                 r_min_int = 1e-6, r_max_int = 1000, N_int = 500):
         
         self.DMO = DMO
         self.DMB = DMB
@@ -103,6 +104,11 @@ class BaryonificationClass(object):
         self.cosmo       = cosmo #CCL cosmology instance
         self.epsilon_max = epsilon_max
         self.mass_def    = mass_def
+
+
+        self.r_min_int   = r_min_int
+        self.r_max_int   = r_max_int
+        self.N_int       = N_int
 
 
     def get_masses(self, model, r, M, a):
@@ -254,7 +260,8 @@ class BaryonificationClass(object):
                                 warn_text  = (f"Mass profile of log10(M) = {np.log10(M_range[i])} is nearly constant over radius. " 
                                               "Suggests density is negative or zero for most of the range. If using convolutions,"
                                               "consider changing the fft precision params in the CCL profile:"
-                                              "padding_lo_fftlog, padding_hi_fftlog, or n_per_decade")
+                                              "padding_lo_fftlog, padding_hi_fftlog, or n_per_decade. Otherwise, consider changing"
+                                              "the grid spacing to be finer using the N_int parameter")
                                 warnings.warn(warn_text, UserWarning)
                                 break
                                 
@@ -292,8 +299,8 @@ class BaryonificationClass(object):
                         else:
                             offset = np.zeros_like(r)
                             warn_text = (f"Displacement function for halo with log10(M) = {np.log10(M_range[i])} failed to compute." 
-                                         "Defaulting to d = 0. Consider changing the fft precision params in the CCL profile:"
-                                         "padding_lo_fftlog, padding_hi_fftlog, or n_per_decade")
+                                         "Defaulting to d = 0. If using convolutions, consider changing the fft precision "
+                                         "params in the CCL profile: padding_lo_fftlog, padding_hi_fftlog, or n_per_decade")
                             warnings.warn(warn_text, UserWarning)
                         
                         #Build a custom index into the array
@@ -521,9 +528,9 @@ class Baryonification3D(BaryonificationClass):
         
         #Make sure the min/max does not mess up the integral
         #Adding some 20% buffer just in case
-        r_min = np.min([np.min(r), 1e-6])
-        r_max = np.max([np.max(r), 1000])
-        r_int = np.geomspace(r_min/1.2, r_max*1.2, 50_000)
+        r_min = np.min([np.min(r), self.r_min_int])
+        r_max = np.max([np.max(r), self.r_max_int])
+        r_int = np.geomspace(r_min/1.2, r_max*1.2, self.N_int)
         
         dlnr  = np.log(r_int[1]/r_int[0])
         rho   = model.real(self.cosmo, r_int, M, a)
@@ -531,7 +538,8 @@ class Baryonification3D(BaryonificationClass):
         
         if isinstance(M, (float, int) ): rho = rho[None, :]
             
-        M_enc = np.cumsum(4*np.pi*r_int**3 * rho * dlnr, axis = -1)
+        intgd = 4*np.pi*r_int**3 * rho * dlnr
+        M_enc = integrate.cumulative_simpson(intgd, axis = -1, initial = intgd[:, [0]])
         lnr   = np.log(r)
         
         M_f   = np.zeros([M_enc.shape[0], r.size])
@@ -636,9 +644,9 @@ class Baryonification2D(BaryonificationClass):
         
         #Make sure the min/max does not mess up the integral
         #Adding some 20% buffer just in case
-        r_min = np.min([np.min(r), 1e-6])
-        r_max = np.max([np.max(r), 1000])
-        r_int = np.geomspace(r_min/1.5, r_max*1.5, 50_000)
+        r_min = np.min([np.min(r), self.r_min_int])
+        r_max = np.max([np.max(r), self.r_max_int])
+        r_int = np.geomspace(r_min/1.2, r_max*1.2, self.N_int)
         
         #The scale fac. is used in Sigma cause the projection in ccl is
         #done in comoving coords not physical coords
@@ -648,9 +656,9 @@ class Baryonification2D(BaryonificationClass):
         
         if isinstance(M, (float, int) ): Sigma = Sigma[None, :]
         
-        M_enc = np.cumsum(2*np.pi*r_int**2 * Sigma * dlnr, axis = -1)
+        intgd = 2*np.pi*r_int**2 * Sigma * dlnr
+        M_enc = integrate.cumulative_simpson(intgd, axis = -1, initial = intgd[:, [0]])
         lnr   = np.log(r)
-        
         
         M_f  = np.zeros([M_enc.shape[0], r.size])
         #Remove datapoints in profile where Sigma == 0 and then just interpolate

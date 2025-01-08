@@ -154,7 +154,7 @@ class TabulatedProfile(ccl.halos.profiles.HaloProfile):
 
         #Get all the other params. Particularly those
         #needed for projecting profiles
-        super().__init__()
+        super().__init__(mass_def = mass_def)
 
 
     def setup_interpolator(self, z_min = 1e-2, z_max = 5, N_samples_z = 30, z_linear_sampling = False, 
