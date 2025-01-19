@@ -47,6 +47,7 @@ class BaseThermodynamicProfile(SchneiderProfiles):
     def __init__(self, mass_def = ccl.halos.massdef.MassDef200c, 
                  use_fftlog_projection = False, 
                  padding_lo_proj = 0.1, padding_hi_proj = 10, n_per_decade_proj = 10,
+                 r_min_int = 1e-6, r_max_int = 1e3, r_steps = 500,
                  **kwargs):
         
         #Go through all input params, and assign Nones to ones that don't exist.
@@ -61,6 +62,11 @@ class BaseThermodynamicProfile(SchneiderProfiles):
         self.padding_lo_proj   = padding_lo_proj
         self.padding_hi_proj   = padding_hi_proj
         self.n_per_decade_proj = n_per_decade_proj 
+
+        #Some params that control numerical integration
+        self.r_min_int = r_min_int
+        self.r_max_int = r_max_int
+        self.r_steps   = r_steps
         
         #Import all other parameters from the base CCL Profile class
         super().__init__(mass_def = mass_def)
@@ -237,8 +243,7 @@ class Pressure(BaseThermodynamicProfile):
         z = 1/a - 1
         R = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
 
-        r_integral = np.geomspace(1e-6, 1000, 500) #Hardcoded ranges
-
+        r_integral = np.geomspace(self.r_min_int, self.r_max_int, self.r_steps)
         rho_total  = self.DarkMatterBaryon.real(cosmo, r_integral, M, a)
         rho_gas    = self.Gas.real(cosmo, r_integral, M, a)
 
@@ -265,7 +270,6 @@ class Pressure(BaseThermodynamicProfile):
         #We use trapezoid rule here because simpson was causing odd oscillatory errors because
         #Some profiles have sharp transitions in their pressure/gas profiles (eg. Mead)
         intgr = (dP_dr * r_integral)[:, ::-1] * dlnr
-        prof  = -integrate.cumulative_simpson(intgr, axis = -1, initial = intgr[:, [0]])[:, ::-1]
         prof  = -np.array([integrate.cumulative_trapezoid(intgr[i], initial = intgr[i, 0])[::-1] for i in range(intgr.shape[0])])
         
         prof  = interpolate.PchipInterpolator(np.log(r_integral), np.log(prof + Pressure_at_infinity), axis = 1, extrapolate = False)

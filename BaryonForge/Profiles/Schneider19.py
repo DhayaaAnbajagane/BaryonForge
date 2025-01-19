@@ -76,6 +76,7 @@ class SchneiderProfiles(ccl.halos.profiles.HaloProfile):
     def __init__(self, mass_def = ccl.halos.massdef.MassDef200c, 
                  use_fftlog_projection = False, 
                  padding_lo_proj = 0.1, padding_hi_proj = 10, n_per_decade_proj = 10, 
+                 r_min_int = 1e-6, r_max_int = 1e3, r_steps = 500,
                  xi_mm = None, 
                  **kwargs):
         
@@ -95,6 +96,11 @@ class SchneiderProfiles(ccl.halos.profiles.HaloProfile):
         self.padding_lo_proj   = padding_lo_proj
         self.padding_hi_proj   = padding_hi_proj
         self.n_per_decade_proj = n_per_decade_proj 
+
+        #Some params that control numerical integration
+        self.r_min_int = r_min_int
+        self.r_max_int = r_max_int
+        self.r_steps   = r_steps
         
         #Import all other parameters from the base CCL Profile class
         super().__init__(mass_def = mass_def)
@@ -404,12 +410,13 @@ class DarkMatter(SchneiderProfiles):
         
         #Get the normalization (rho_c) numerically
         #The analytic integral doesn't work since we have a truncation radii now.
-        r_integral = np.geomspace(1e-6, 1000, 500)
-
-        prof_integral  = 1/(r_integral/r_s * (1 + r_integral/r_s)**2) * 1/(1 + (r_integral/r_t)**2)**2
-        
-        Normalization  = [interpolate.PchipInterpolator(np.log(r_integral), 4 * np.pi * r_integral**3 * p) for p in prof_integral]
-        Normalization  = np.array([N_i.antiderivative(nu = 1)(np.log(R_i)) for N_i, R_i in zip(Normalization, R)])
+        #We loop over every halo, instead of vectorizing, since the integral limits
+        #now depend on the halo radius. 
+        Normalization = np.zeros_like(M_use)
+        for m_i in range(M_use.size):
+            r_integral     = np.geomspace(self.r_min_int, R[m_i], self.r_steps)
+            prof_integral  = 1/(r_integral/r_s[m_i] * (1 + r_integral/r_s[m_i])**2) * 1/(1 + (r_integral/r_t[m_i])**2)**2
+            Normalization[m_i] = np.trapz(4*np.pi*r_integral**2 * prof_integral, r_integral)
         
         rho_c = M_use/Normalization
         rho_c = rho_c[:, None]
@@ -420,10 +427,8 @@ class DarkMatter(SchneiderProfiles):
         prof = rho_c/(r_use/r_s * (1 + r_use/r_s)**2) * 1/(1 + (r_use/r_t)**2)**2 * kfac
         
         #Handle dimensions so input dimensions are mirrored in the output
-        if np.ndim(r) == 0:
-            prof = np.squeeze(prof, axis=-1)
-        if np.ndim(M) == 0:
-            prof = np.squeeze(prof, axis=0)
+        if np.ndim(r) == 0: prof = np.squeeze(prof, axis=-1)
+        if np.ndim(M) == 0: prof = np.squeeze(prof, axis=0)
 
 
         return prof
@@ -513,10 +518,8 @@ class TwoHalo(SchneiderProfiles):
         prof = prof * kfac
 
         #Handle dimensions so input dimensions are mirrored in the output
-        if np.ndim(r) == 0:
-            prof = np.squeeze(prof, axis=-1)
-        if np.ndim(M) == 0:
-            prof = np.squeeze(prof, axis=0)
+        if np.ndim(r) == 0: prof = np.squeeze(prof, axis=-1)
+        if np.ndim(M) == 0: prof = np.squeeze(prof, axis=0)
 
         return prof
 
@@ -606,7 +609,7 @@ class Stars(SchneiderProfiles):
 
         f_cga, R_h = f_cga[:, None], R_h[:, None]
 
-        r_integral = np.geomspace(1e-6, 1000, 500)
+        r_integral = np.geomspace(self.r_min_int, self.r_max_int, self.r_steps)
         DM    = DarkMatter(**self.model_params); setattr(DM, 'cutoff', 1e3) #Set large cutoff just for normalization calculation
         rho   = DM.real(cosmo, r_integral, M_use, a)
         M_tot = np.trapz(4*np.pi*r_integral**2 * rho, r_integral, axis = -1)
@@ -618,10 +621,8 @@ class Stars(SchneiderProfiles):
         prof = f_cga*M_tot / (4*np.pi**(3/2)*R_h) * 1/r_use**2 * np.exp(-(r_use/2/R_h)**2) * kfac
                 
         #Handle dimensions so input dimensions are mirrored in the output
-        if np.ndim(r) == 0:
-            prof = np.squeeze(prof, axis=-1)
-        if np.ndim(M) == 0:
-            prof = np.squeeze(prof, axis=0)
+        if np.ndim(r) == 0: prof = np.squeeze(prof, axis=-1)
+        if np.ndim(M) == 0: prof = np.squeeze(prof, axis=0)
 
         return prof
 
@@ -709,8 +710,7 @@ class Gas(SchneiderProfiles):
         
         
         #Integrate over wider region in radii to get normalization of gas profile
-        r_integral = np.geomspace(1e-6, 1000, 500)
-
+        r_integral = np.geomspace(self.r_min_int, self.r_max_int, self.r_steps)
         u_integral = r_integral/R_co
         v_integral = r_integral/R_ej
         
@@ -733,11 +733,8 @@ class Gas(SchneiderProfiles):
         
 
         #Handle dimensions so input dimensions are mirrored in the output
-        if np.ndim(r) == 0:
-            prof = np.squeeze(prof, axis=-1)
-        if np.ndim(M) == 0:
-            prof = np.squeeze(prof, axis=0)
-
+        if np.ndim(r) == 0: prof = np.squeeze(prof, axis=-1)
+        if np.ndim(M) == 0: prof = np.squeeze(prof, axis=0)
 
         return prof
     
@@ -953,7 +950,7 @@ class CollisionlessMatter(SchneiderProfiles):
         self.r_max_int  = r_max_int
         self.r_steps    = r_steps
         
-        super().__init__(**kwargs)
+        super().__init__(**kwargs, r_min_int = r_min_int, r_max_int = r_max_int, r_steps = r_steps)
         
 
     def _real(self, cosmo, r, M, a):
@@ -1037,7 +1034,7 @@ class CollisionlessMatter(SchneiderProfiles):
                 if (counter >= self.max_iter) & (max_rel_diff > self.reltol): 
                     
                     med_rel_diff = np.max(abs_diff[safe_range])
-                    warn_text = ("Profile of halo index %d did not converge after %d tries." % (m_i, counter) +
+                    warn_text = ("Profile of halo index %d did not converge after %d tries. " % (m_i, counter) +
                                  "Max_diff = %0.5f, Median_diff = %0.5f. Try increasing max_iter." % (max_rel_diff, med_rel_diff)
                                 )
                     
@@ -1216,7 +1213,8 @@ class DarkMatterBaryon(SchneiderProfiles):
     classes for more details on the underlying profiles and parameters.
     """
 
-    def __init__(self, gas = None, stars = None, collisionlessmatter = None, darkmatter = None, twohalo = None, **kwargs):
+    def __init__(self, gas = None, stars = None, collisionlessmatter = None, darkmatter = None, twohalo = None, 
+                 r_min_int = 1e-5, r_max_int = 100, r_steps = 500, **kwargs):
         
         self.Gas   = gas
         self.Stars = stars
@@ -1230,7 +1228,7 @@ class DarkMatterBaryon(SchneiderProfiles):
         if self.DarkMatter is None: self.DarkMatter = DarkMatter(**kwargs)
         if self.CollisionlessMatter is None: self.CollisionlessMatter = CollisionlessMatter(**kwargs)
             
-        super().__init__(**kwargs)
+        super().__init__(**kwargs, r_min_int = r_min_int, r_max_int = r_max_int, r_steps = r_steps)
         
     def _real(self, cosmo, r, M, a):
 
@@ -1244,7 +1242,7 @@ class DarkMatterBaryon(SchneiderProfiles):
         #Need DMO for normalization
         #Makes sure that M_DMO(<r) = M_DMB(<r) for the limit r --> infinity
         #This is just for the onehalo term
-        r_integral = np.geomspace(1e-5, 100, 500)
+        r_integral = np.geomspace(self.r_min_int, self.r_max_int, self.r_steps)
 
         rho   = self.DarkMatter.real(cosmo, r_integral, M, a)
         M_tot = np.trapz(4*np.pi*r_integral**2 * rho, r_integral)

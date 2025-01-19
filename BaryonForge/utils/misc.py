@@ -1,8 +1,10 @@
 import numpy as np
 import pyccl as ccl
 from operator import add, mul, sub, truediv, pow, abs, neg, pos
+import warnings
+from scipy import interpolate
 
-__all__ = ['generate_operator_method', 'destory_Pk', 'build_cosmodict']
+__all__ = ['generate_operator_method', 'destory_Pk', 'build_cosmodict', 'safe_Pchip_minimize']
 
 def generate_operator_method(op, reflect = False):
     """
@@ -49,11 +51,11 @@ def generate_operator_method(op, reflect = False):
 
             assert isinstance(other, (int, float, ccl.halos.profiles.HaloProfile)), f"Object must be int/float/SchneiderProfile but is type '{type(other).__name__}'."
 
-
             Combined = self.__class__(**self.model_params, xi_mm = self.xi_mm, 
-                                      padding_lo_proj = self.padding_lo_proj, 
-                                      padding_hi_proj = self.padding_hi_proj, 
-                                      n_per_decade_proj = self.n_per_decade_proj,)
+                                      padding_lo_proj   = self.padding_lo_proj, 
+                                      padding_hi_proj   = self.padding_hi_proj, 
+                                      n_per_decade_proj = self.n_per_decade_proj,
+                                      mass_def = self.mass_def)
 
             def __tmp_real__(cosmo, r, M, a):
 
@@ -100,11 +102,11 @@ def generate_operator_method(op, reflect = False):
 
         def operator_method(self):
             
-            Base     = self.__class__.__bases__[0] #Get the base class of the profile (Normally, SchneiderProfiles)
             Combined = self.__class__(**self.model_params, xi_mm = self.xi_mm, 
                                       padding_lo_proj = self.padding_lo_proj, 
                                       padding_hi_proj = self.padding_hi_proj, 
-                                      n_per_decade_proj = self.n_per_decade_proj)
+                                      n_per_decade_proj = self.n_per_decade_proj,
+                                      mass_def = self.mass_def)
 
             def __tmp_real__(cosmo, r, M, a):
 
@@ -208,3 +210,22 @@ def build_cosmodict(cosmo):
         cdict['sigma'] = cosmo.cosmo.params.sigma8
         
     return cdict
+
+def safe_Pchip_minimize(x, y):
+
+    if (np.min(x) > 0) | (np.max(x) < 0):
+        warnings.warn(f"Cannot minimize. Range {np.min(x)} < LHS - RHS < {np.max(x)} does not include zero!"
+                        "Setting R_ej = inf. This error can occur if f_ej = 0.", UserWarning)
+        return np.inf
+    
+    cen = np.argmin(np.abs(x - 0)) #Find the point around which we should search for minima
+    buf = 5 #Large enough (one-sided) buffer in case any weird interpolator effects from using too few points
+    ind = slice(max(cen - buf, 0), min(cen + buf, len(x)))
+
+    #Many reasons why Pchip could fail
+    try:
+        return interpolate.PchipInterpolator(x[ind], y[ind])(0)
+    
+    except ValueError:
+        warnings.warn(f"Cannot minimize. Interpolator crashed. Reverting to using np.min()", UserWarning)
+        return y[cen]

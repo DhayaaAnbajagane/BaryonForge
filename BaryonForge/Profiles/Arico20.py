@@ -4,7 +4,8 @@ from operator import add, mul, sub, truediv, pow, neg, pos, abs
 import warnings
 
 from scipy import interpolate, special, integrate
-from ..utils.Tabulate import _set_parameter
+from ..utils import _set_parameter, safe_Pchip_minimize
+from .misc import Zeros
 from . import Schneider19 as S19
 from .Thermodynamic import (G, Msun_to_Kg, Mpc_to_m, kb_cgs, m_p, m_to_cm)
 
@@ -33,10 +34,10 @@ class AricoProfiles(S19.SchneiderProfiles):
     #Define the new param names
     model_param_names = model_params
 
-
-    def __init__(self, **kwargs):
+    #Use a smaller r_max, since most profiles are truncated at R200c now.
+    def __init__(self, r_max_int = 10, **kwargs):
         
-        super().__init__(**kwargs)
+        super().__init__(**kwargs, r_max_int = r_max_int)
         
         #Go through all input params, and assign Nones to ones that don't exist.
         #If mass/redshift/conc-dependence, then set to 1 if don't exist
@@ -84,6 +85,7 @@ class AricoProfiles(S19.SchneiderProfiles):
         """
         
         beta = 3 - np.power(self.M_inn/M, self.mu) * np.ones_like(M)
+        beta = np.clip(beta, -1, None)
         
         #Use M_c as the mass-normalization for simplicity sake
         theta_out = self.theta_out * np.ones_like(M) 
@@ -170,7 +172,7 @@ class AricoProfiles(S19.SchneiderProfiles):
             gamma *= self.alpha_sat
 
         x   = np.log10(M/M1)
-        g_x = -np.log10(np.power(10, alpha * x) + 1) + delta * np.power(np.log10(1 + np.exp(x)), gamma)/(1 + np.exp(10**-x))
+        g_x = -np.log10(np.power(10, alpha * x) + 1) + delta * np.power(np.log10(1 + np.exp(x)), gamma)/(1 + np.exp(np.clip(10**-x, None, 30)))
         g_0 = -np.log10(np.power(10, alpha * 0) + 1) + delta * np.power(np.log10(1 + np.exp(0)), gamma)/(1 + np.exp(10**-0))
         fCG = eps * (M1/M) * np.power(10, g_x - g_0)
 
@@ -183,7 +185,7 @@ class AricoProfiles(S19.SchneiderProfiles):
         '''
         
         string = f"("
-        for m in model_params:
+        for m in self.model_param_names:
             string += f"{m} = {self.__dict__[m]}, "
         string = string[:-2] + ')'
         return string
@@ -290,9 +292,9 @@ class Stars(AricoProfiles):
     - \( N \) is the numerically computed normalization factor, computed to ensure mass conservation.
     """
 
-    def __init__(self, **kwargs):
+    def __init__(self, r_min_int = 1e-6, r_max_int = 5, **kwargs):
         
-        super().__init__(**kwargs)
+        super().__init__(r_min_int = r_min_int, r_max_int = r_max_int, **kwargs)
         
         #For some reason, we need to make this extreme in order
         #to prevent ringing in the profiles. Haven't figured out
@@ -313,7 +315,7 @@ class Stars(AricoProfiles):
 
         #Integrate over wider region in radii to get normalization of star profile
         #There's no way the profile has any support than 5Mpc. So use a narrower range.
-        r_integral    = np.geomspace(1e-6, 5, 500)
+        r_integral    = np.geomspace(self.r_min_int, self.r_max_int, self.r_steps)
         prof_integral = 1 / R_h / np.power(r_integral, self.alpha_g) * np.exp(-np.power(r_integral/2/R_h, 2))
         Normalization = np.trapz(4 * np.pi * r_integral**2 * prof_integral, r_integral, axis = -1)[:, None]
         
@@ -399,7 +401,7 @@ class BoundGas(AricoProfiles):
         #super fine resolution in the grid.
         Normalization = np.ones_like(M_use)
         for m_i in range(M_use.shape[0]):
-            r_integral = np.geomspace(1e-6, R[m_i], 500)
+            r_integral = np.geomspace(self.r_min_int, R[m_i], self.r_steps)
             u_integral = r_integral/R_co[m_i]
             v_integral = r_integral/R_ej[m_i]        
 
@@ -415,7 +417,6 @@ class BoundGas(AricoProfiles):
         kfac  = 1/( 1 + np.exp(2*arg) ) #Extra exponential cutoff
         prof  = 1/(1 + u)**beta / (1 + v**2)**2 * kfac
         prof *= f_bg*M_use[:, None]/Normalization #This profile is allowed to go beyond R200c!
-
 
         #Handle dimensions so input dimensions are mirrored in the output
         if np.ndim(r) == 0: prof = np.squeeze(prof, axis=-1)
@@ -647,17 +648,6 @@ class ModifiedDarkMatter(AricoProfiles):
 
         super().__init__(**kwargs)
     
-
-    def _safe_Pchip_minimize(self, x, y):
-
-        assert (np.min(x) < 0) & (np.max(x) > 0), f"Cannot minimize. Range {np.min(x)} < LHS - RHS < {np.max(x)} does not include zero!"
-
-        ind = np.argmin(np.abs(x - 0)) #Find the point around which we should search for minima
-        buf = 5 #Large enough (one-sided) buffer in case any weird interpolator effects from using too few points
-        ind = slice(ind - buf, ind + buf)
-
-        return interpolate.PchipInterpolator(x[ind], y[ind])(0)
-     
     def _real(self, cosmo, r, M, a):
 
         r_use = np.atleast_1d(r)
@@ -677,12 +667,12 @@ class ModifiedDarkMatter(AricoProfiles):
         fDM = 1 - cosmo.cosmo.params.Omega_b/cosmo.cosmo.params.Omega_m
 
         #Solving equation A10 of https://arxiv.org/pdf/1911.08471 through minimization
-        rp    = np.geomspace(1e-6, 10, 500)
+        rp    = np.geomspace(self.r_min_int, self.r_max_int, self.r_steps)
         pGro  = np.array([self.GravityOnly.real(cosmo, r, m, a) for r, m in zip(R, M_use)])[:, None]
         pBG   = np.array([self.Gas.real(cosmo, r, m, a) for r, m in zip(R, M_use)])[:, None]
         LHS   = rp * np.power(rp + r_s, 2) * (pGro - pBG) * (np.log(1 + rp/r_s) - 1/(1 + r_s/rp)) + (pGro - pBG)/3 * (R**3 - rp**3)
         RHS   = fDM * M_use[None, :] / (4*np.pi)
-        rp    = np.exp([self._safe_Pchip_minimize((LHS - RHS)[m_i], np.log(rp)) for m_i in range(LHS.shape[0])])[:, None]
+        rp    = np.exp([safe_Pchip_minimize((LHS - RHS)[m_i], np.log(rp)) for m_i in range(LHS.shape[0])])[:, None]
         
         #Get the normalization based on equation A8 of https://arxiv.org/pdf/1911.08471
         rho_c = (pGro - pBG) * (rp/r_s) * np.power(1 + rp/r_s, 2)
@@ -725,12 +715,8 @@ class CollisionlessMatter(AricoProfiles):
             
         self.max_iter   = max_iter
         self.reltol     = reltol
-
-        self.r_min_int  = r_min_int
-        self.r_max_int  = r_max_int
-        self.r_steps    = r_steps
         
-        super().__init__(**kwargs)
+        super().__init__(**kwargs, r_min_int = 1e-8, r_max_int = 1e5, r_steps = 5000)
 
     def _real(self, cosmo, r, M, a):
 
@@ -828,7 +814,7 @@ class CollisionlessMatter(AricoProfiles):
                 if (counter >= self.max_iter) & (max_rel_diff > self.reltol): 
                     
                     med_rel_diff = np.max(abs_diff[safe_range])
-                    warn_text = ("Profile of halo index %d did not converge after %d tries." % (m_i, counter) +
+                    warn_text = ("Profile of halo index %d did not converge after %d tries. " % (m_i, counter) +
                                  "Max_diff = %0.5f, Median_diff = %0.5f. Try increasing max_iter." % (max_rel_diff, med_rel_diff)
                                 )
                     
@@ -866,38 +852,30 @@ class CollisionlessMatter(AricoProfiles):
         return prof
 
 
-class DarkMatterOnly(S19.DarkMatterOnly, AricoProfiles):
+class DarkMatterOnly(DarkMatter):
+    """
+    For Arico20, the DarkMatterOnly model includes just an NFW profile.
+    There is no two-halo term. This class is simply a copy of the `DarkMatter` class.
+    See that class for more details
+    """
 
-    __doc__ = S19.DarkMatterOnly.__doc__.replace('SchneiderProfiles', 'AricoProfiles')
-
-    def __init__(self, darkmatter = None, **kwargs):
-        
-        self.DarkMatter = darkmatter
-        self.TwoHalo    = TwoHalo(**kwargs) * 0 #Should not add 2-halo in Arico method
-
-        if self.DarkMatter is None: self.DarkMatter = DarkMatter(**kwargs)
-            
-        AricoProfiles.__init__(self, **kwargs)
-
-
-class DarkMatterBaryon(S19.DarkMatterBaryon, AricoProfiles):
+class DarkMatterBaryon(Gas):
 
     __doc__ = S19.DarkMatterBaryon.__doc__.replace('SchneiderProfiles', 'AricoProfiles')
 
-    def __init__(self, gas = None, stars = None, collisionlessmatter = None, darkmatter = None, **kwargs):
+    def __init__(self, gas = None, stars = None, collisionlessmatter = None, **kwargs):
+        
         
         self.Gas   = gas
         self.Stars = stars
-        self.TwoHalo    = TwoHalo(**kwargs) * 0 #Should not add 2-halo in Arico method
-        self.DarkMatter = darkmatter
         self.CollisionlessMatter = collisionlessmatter
         
         if self.Gas is None:        self.Gas        = Gas(**kwargs)        
         if self.Stars is None:      self.Stars      = Stars(**kwargs)
-        if self.DarkMatter is None: self.DarkMatter = DarkMatter(**kwargs)
         if self.CollisionlessMatter is None: self.CollisionlessMatter = CollisionlessMatter(**kwargs)
 
-        AricoProfiles.__init__(self, **kwargs)
+        self.myprof = self.Gas + self.Stars + self.CollisionlessMatter
+        
 
 class DarkMatterOnlywithLSS(S19.DarkMatterOnly, AricoProfiles):
 
@@ -914,7 +892,7 @@ class DarkMatterOnlywithLSS(S19.DarkMatterOnly, AricoProfiles):
         AricoProfiles.__init__(self, **kwargs)
 
 
-class DarkMatterBaryonwithLSS(S19.DarkMatterBaryon, AricoProfiles):
+class DarkMatterBaryonwithLSS(DarkMatterBaryon):
 
     __doc__ = S19.DarkMatterBaryon.__doc__.replace('SchneiderProfiles', 'AricoProfiles')
 
@@ -923,16 +901,14 @@ class DarkMatterBaryonwithLSS(S19.DarkMatterBaryon, AricoProfiles):
         self.Gas   = gas
         self.Stars = stars
         self.TwoHalo    = twohalo
-        self.DarkMatter = darkmatter
         self.CollisionlessMatter = collisionlessmatter
         
         if self.Gas is None:        self.Gas        = Gas(**kwargs)        
         if self.Stars is None:      self.Stars      = Stars(**kwargs)
         if self.TwoHalo is None:    self.TwoHalo    = TwoHalo(**kwargs)
-        if self.DarkMatter is None: self.DarkMatter = DarkMatter(**kwargs)
         if self.CollisionlessMatter is None: self.CollisionlessMatter = CollisionlessMatter(**kwargs)
 
-        AricoProfiles.__init__(self, **kwargs)
+        self.myprof = self.Gas + self.Stars + self.CollisionlessMatter + self.TwoHalo
     
 
 class Pressure(AricoProfiles):
@@ -1255,7 +1231,7 @@ class ExtendedBoundGas(AricoProfiles):
         
         #Integrate over wider region in radii to get normalization of gas profile
         #Using a number narrower range than Schneider cause we only need to go to R200c
-        r_integral = np.geomspace(1e-6, 10, 500)
+        r_integral = np.geomspace(self.r_min_int, self.r_max_int, self.r_steps)
         u_integral = r_integral/R_inn
         v_integral = r_integral/R_out
 
@@ -1351,7 +1327,7 @@ class BoundGasDeprecated(AricoProfiles):
         
         #Integrate over wider region in radii to get normalization of gas profile
         #Only go till 10Mpc since profile is cut at R200c
-        r_integral = np.geomspace(1e-6, 10, 500)
+        r_integral = np.geomspace(self.r_min_int, self.r_max_int, self.r_steps)
         x_integral = r_integral / r_s
 
         u_integral = np.power(np.log(1 + x_integral)/x_integral, Geff)
