@@ -15,11 +15,11 @@ setup(
         'License :: OSI Approved :: MIT License',
         'Operating System :: OS Independent',
     ],
-    python_requires='>=3.6',
+    python_requires='>=3.9',
     install_requires=[
         'tqdm',
         'healpy',
-        'scipy',
+        'scipy>=1.12',
         'numpy==1.*',
         'numba',
         'pyccl>=3.1.2'

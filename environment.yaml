@@ -8,7 +8,7 @@ channels:
 dependencies:
   - pyccl>=3.1.2
   - numpy==1.* #Avoid using numpy 2.0
-  - scipy
+  - scipy>=1.12
   - joblib
   - tqdm
   - healpy

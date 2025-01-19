@@ -27,7 +27,7 @@ A detailed documentation is available at [readthedocs](https://baryonforge.readt
 
 ## Environment
 
-The ```BaryonForge``` pipeline is designed to have minimal dependencies on external packages. The ```environment.yaml``` file can be used to create an environment that contains all necessary packages prior to your installation. We only specify two hard requirements, which is ```pyccl>=3.1.2``` and ```numpy==1.*```, to avoid API-breaking changes.
+The ```BaryonForge``` pipeline is designed to have minimal dependencies on external packages. The ```environment.yaml``` file can be used to create an environment that contains all necessary packages prior to your installation. We only specify three hard version requirements, which is ```pyccl>=3.1.2``` and ```numpy==1.*```, to avoid API-breaking changes, and ```scipy>=1.12``` for a cumulative simpson integration routine.
 
 
 ## Installation
