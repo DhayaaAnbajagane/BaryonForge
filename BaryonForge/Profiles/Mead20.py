@@ -197,9 +197,9 @@ class TwoHalo(S19.TwoHalo, MeadProfiles):
     __doc__ = S19.TwoHalo.__doc__.replace('Schneider', 'Mead')
 
 
-class Stars(MeadProfiles):
+class CentralStars(MeadProfiles):
     """
-    Class for modeling the stellar density profile in halos.
+    Class for modeling the stellar density profile of central galaxy in halos.
 
     This class extends `MeadProfiles` to compute the stellar density profile of the central
     galaxy. The stellar fraction is a simple Gaussian in halo mass. While Mead20 uses a
@@ -255,6 +255,46 @@ class Stars(MeadProfiles):
 
         return prof
     
+
+class SatelliteStars(DarkMatter):
+
+    """
+    Class for modeling the stellar density profile of satellite galaxies in halos.
+
+    This is simply an NFW profile (without baryon-corrected concentrations) with the
+    normalization set by the satellite star fraction of the halo.
+    """
+    
+    def _real(self, cosmo, r, M, a):
+
+        f_str, f_cen, f_sat = self._get_star_frac(M, a, cosmo)
+        
+        if np.atleast_1d(f_sat).size > 1:
+            f_sat = f_sat[:, None]
+
+        prof = super()._real(cosmo, r, M, a) * f_sat 
+
+        return prof
+
+
+class Stars(MeadProfiles):
+    """
+    Convenience class for combining central and satellite star components.
+
+    This class serves as a unified interface for gas profiles in halos, combining the contributions 
+    from the central galaxy (`CentralStars`) and satellite galaxies (`SatelliteStars`). It simplifies calculations where 
+    the total gas profile is required, leveraging the underlying logic and methods of the individual 
+    star components.
+    """
+
+    def __init__(self, **kwargs): self.myprof = CentralStars(**kwargs)# + SatelliteStars(**kwargs)
+    def __getattr__(self, name):  return getattr(self.myprof, name)
+    
+    #Need to explicitly set these two methods (to enable pickling)
+    #since otherwise the getattr call above leads to infinite recursions.
+    def __getstate__(self): self.__dict__.copy()    
+    def __setstate__(self, state): self.__dict__.update(state)
+
 
 class DeltaStars(MeadProfiles):
     """
@@ -457,8 +497,7 @@ class EjectedGas(MeadProfiles):
                 R_ej[i] = np.exp(safe_Pchip_minimize(Diff[i], np.log(rgrid)))
             else:
                 R_ej[i] = np.inf
-                           
-
+        
         arg   = (r_use[None, :] - self.cutoff)
         arg   = np.where(arg > 30, np.inf, arg) #This is to prevent an overflow in the exponential
         kfac  = 1/( 1 + np.exp(2*arg) ) #Extra exponential cutoff
@@ -565,7 +604,7 @@ class CollisionlessMatter(MeadProfiles):
         rho_c = M_use/Norm
         f_str, f_cen, f_sat = self._get_star_frac(M_use, a, cosmo)
         f_bar = cosmo.cosmo.params.Omega_b/cosmo.cosmo.params.Omega_m
-        rho_c = rho_c * (1 - f_bar + f_sat) #Rescale to correct fraction of mass
+        rho_c = rho_c * (1 - f_bar) #Rescale to correct fraction of mass
 
         r_s, c, rho_c = r_s[:, None], c[:, None], rho_c[:, None]
         r_use, R      = r_use[None, :], R[:, None]
