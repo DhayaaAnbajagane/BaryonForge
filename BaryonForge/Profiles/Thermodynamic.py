@@ -429,10 +429,12 @@ class NonThermalFracGreen20(BaseThermodynamicProfile):
 
         x = r_use/R200m[:, None]
 
-        a, b, c, d, e, f = 0.495, 0.719, 1.417,-0.166, 0.265, -2.116
         nu_M = 1.686/ccl.sigmaM(cosmo, M200m, a)
         nu_M = nu_M[:, None]
-        nth  = 1 - a * (1 + np.exp(-(x/b)**c)) * (nu_M/4.1)**(d/(1 + (x/e)**f))
+        
+        A, b, c, d, e, f = 0.495, 0.719, 1.417,-0.166, 0.265, -2.116
+        nth  = 1 - A * (1 + np.exp(-(x/b)**c)) * (nu_M/4.1)**(d/(1 + (x/e)**f))
+        nth  = np.clip(nth, 0, 1)
         prof = nth #Rename just for consistency sake
         
         #Handle dimensions so input dimensions are mirrored in the output

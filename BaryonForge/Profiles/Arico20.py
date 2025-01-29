@@ -1000,6 +1000,7 @@ class Pressure(AricoProfiles):
         #Now compute the final profile
         rhoBG = self.Gas.real(cosmo, r_use, M_use, a)
         prof  = P0 * np.power(rhoBG, Geff)
+        prof  = np.where(np.isfinite(prof), prof, 0) #Really happens when f_BG = 0 because of weird param space
         
         arg   = (r_use[None, :] - self.cutoff)
         arg   = np.where(arg > 30, np.inf, arg) #This is to prevent an overflow in the exponential
@@ -1062,11 +1063,15 @@ class NonThermalFrac(AricoProfiles):
 
         x = r_use/R200m[:, None]
 
-        a, b, c, d, e, f = 0.495, 0.719, 1.417,-0.166, 0.265, -2.116 #Values from Green20
-        a    = self.A_nt * np.power(1 + z, self.alpha_nt) #We override the "a" param alone for more flexibility.
         nu_M = 1.686/ccl.sigmaM(cosmo, M200m, a)
         nu_M = nu_M[:, None]
-        nth  = 1 - a * (1 + np.exp(-(x/b)**c)) * (nu_M/4.1)**(d/(1 + (x/e)**f))
+
+        #Using "A" so no conflict with scale factor above, "a".
+        #We assign A the fiducial value from Green for reference, but
+        #this gets rewriten later with the custom model from Arico for the amplitude
+        A, b, c, d, e, f = 0.495, 0.719, 1.417,-0.166, 0.265, -2.116 #Values from Green20
+        A    = self.A_nt * np.power(1 + z, self.alpha_nt) #We override the "a" param alone for more flexibility.
+        nth  = 1 - A * (1 + np.exp(-(x/b)**c)) * (nu_M/4.1)**(d/(1 + (x/e)**f))
         prof = nth #Rename just for consistency sake
         
         #Handle dimensions so input dimensions are mirrored in the output
@@ -1085,7 +1090,7 @@ class ThermalPressure(Gas):
     pressure and Nth components and combining their profiles into a single representation.
     """
 
-    def __init__(self, **kwargs): self.myprof = Pressure(**kwargs) * (1 -ThermalPressure(**kwargs))
+    def __init__(self, **kwargs): self.myprof = Pressure(**kwargs) * (1 - NonThermalFrac(**kwargs))
 
 
 class Temperature(AricoProfiles):
