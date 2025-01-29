@@ -1072,6 +1072,7 @@ class NonThermalFrac(AricoProfiles):
         A, b, c, d, e, f = 0.495, 0.719, 1.417,-0.166, 0.265, -2.116 #Values from Green20
         A    = self.A_nt * np.power(1 + z, self.alpha_nt) #We override the "a" param alone for more flexibility.
         nth  = 1 - A * (1 + np.exp(-(x/b)**c)) * (nu_M/4.1)**(d/(1 + (x/e)**f))
+        nth  = np.clip(nth, 0, 1)
         prof = nth #Rename just for consistency sake
         
         #Handle dimensions so input dimensions are mirrored in the output
