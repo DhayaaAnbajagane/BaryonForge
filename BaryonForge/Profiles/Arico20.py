@@ -298,8 +298,11 @@ class Stars(AricoProfiles):
         
         #For some reason, we need to make this extreme in order
         #to prevent ringing in the profiles. Haven't figured out
-        #why this is the case
+        #why this is the case. We also change the plaw to be close to -3.
+        #If exactly -3 we get CCL spline error, and being close to -3 results in
+        #convergent predictions for alpha_g >> 2
         self.update_precision_fftlog(padding_lo_fftlog = 1e-5, padding_hi_fftlog = 1e5)
+        self.update_precision_fftlog(plaw_fourier = -3 + 1e-4)
 
     
     def _real(self, cosmo, r, M, a):
@@ -383,9 +386,11 @@ class BoundGas(AricoProfiles):
         f_sg  = self._get_star_frac(M_use, z, satellite = True)
         f_bar = cosmo.cosmo.params.Omega_b/cosmo.cosmo.params.Omega_m
         beta  = self._get_gas_params(M_use, z)[0]
-        f_hg  = (f_bar - f_cg - f_sg) / (1 + np.power(self.M_c/M_use, self.beta))
-        f_rg  = (f_bar - f_cg - f_sg - f_hg) / (1 + np.power(self.M_r/M_use, self.beta_r))
-        f_bg  = (f_hg - f_rg)
+        f_gas = f_bar - f_cg - f_sg
+        f_hg  = f_gas / (1 + np.power(self.M_c/M_use, self.beta))
+        f_rg  = (f_gas - f_hg) / (1 + np.power(self.M_r/M_use, self.beta_r))
+        f_rg  = np.clip(f_rg, None, f_hg) #Reaccreted gas cannot be more than halo gas 
+        f_bg  = f_hg - f_rg
 
         #Get gas params
         beta, theta_out, theta_inn = self._get_gas_params(M_use, z)
@@ -470,8 +475,9 @@ class EjectedGas(AricoProfiles):
         f_sg  = self._get_star_frac(M_use, z, satellite = True)
         f_bar = cosmo.cosmo.params.Omega_b/cosmo.cosmo.params.Omega_m
         beta  = self._get_gas_params(M_use, z)[0]
-        f_hg  = (f_bar - f_cg - f_sg) / (1 + np.power(self.M_c/M_use, self.beta))
-        f_eg  =  f_bar - f_cg - f_sg - f_hg
+        f_gas = f_bar - f_cg - f_sg
+        f_hg  = f_gas / (1 + np.power(self.M_c/M_use, self.beta))
+        f_eg  = f_gas - f_hg #By definition f_hg <= f_gas
         f_eg  = f_eg[:, None]
 
         #Now use the escape radius, which is r_esc = v_esc * t_hubble
@@ -539,8 +545,10 @@ class ReaccretedGas(AricoProfiles):
         f_sg  = self._get_star_frac(M_use, z, satellite = True)
         f_bar = cosmo.cosmo.params.Omega_b/cosmo.cosmo.params.Omega_m
         beta  = self._get_gas_params(M_use, z)[0]
-        f_hg  = (f_bar - f_cg - f_sg) / (1 + np.power(self.M_c/M_use, self.beta))
-        f_rg  = (f_bar - f_cg - f_sg - f_hg) / (1 + np.power(self.M_r/M_use, self.beta_r))
+        f_gas = f_bar - f_cg - f_sg
+        f_hg  = f_gas / (1 + np.power(self.M_c/M_use, self.beta))
+        f_rg  = (f_gas - f_hg) / (1 + np.power(self.M_r/M_use, self.beta_r))
+        f_rg  = np.clip(f_rg, None, f_hg) #Reaccreted gas cannot be more than halo gas 
         
         #Get gas params
         R_rg = self.theta_rg*R[:, None]
@@ -1069,6 +1077,17 @@ class NonThermalFrac(AricoProfiles):
 
         return prof
     
+class ThermalPressure(Gas):
+    """
+    Convenience class for combining Pressure and NonthermalFraction.
+
+    This class simplifies calculations by leveraging the logic and methods of these individual 
+    pressure and Nth components and combining their profiles into a single representation.
+    """
+
+    def __init__(self, **kwargs): self.myprof = Pressure(**kwargs) * (1 -ThermalPressure(**kwargs))
+
+
 class Temperature(AricoProfiles):
     """
     Class for modeling the temperature profile of gas in halos.
