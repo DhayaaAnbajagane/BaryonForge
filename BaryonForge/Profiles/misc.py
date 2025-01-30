@@ -2,9 +2,10 @@ import numpy as np
 import pyccl as ccl
 from .Schneider19 import SchneiderProfiles
 from scipy import interpolate
-fftlog = ccl.pyutils._fftlog_transform
+from pyccl.pyutils import resample_array, _fftlog_transform
+fftlog = _fftlog_transform
 
-__all__ = ['Truncation', 'Identity', 'Zeros']
+__all__ = ['Truncation', 'Identity', 'Zeros', 'Mdelta_to_Mtot']
 
 class Truncation(SchneiderProfiles):
     """
@@ -144,10 +145,12 @@ class Zeros(SchneiderProfiles):
 
 class TruncatedFourier(object):
     """
-    Class for the identity profile.
+    Class for performing FFTLog transforms on profiles with sharp real-space truncations.
+    The class simply limits the `fourier` method integration limits, per halo, to account
+    for this truncation.
 
-    The `Identity` profile is a simple profile that returns 1 for all radii, masses,
-    and cosmologies. It is useful just for testing.
+    You can set both a maximum and a minimum radii for the integration, though there is no
+    known use-case where setting minimum-radii !=0 is reasonable.
 
     Parameters
     ----------
@@ -157,13 +160,19 @@ class TruncatedFourier(object):
         density is 200 times the critical density.
 
     """
-    def __init__(self, CLASS, epsilon = 1): 
-        self.CLASS   = CLASS
-        self.epsilon = epsilon
+    def __init__(self, Profile, epsilon_max, epsilon_min = None): 
+        self.Profile     = Profile
+        self.epsilon_max = epsilon_max
+        self.epsilon_min = epsilon_min
+        self.fft_par     = Profile.precision_fftlog
 
     def __getattr__(self, name):  
+        '''
+        Use the Profile's inbuilt methods for all routines EXCEPT the fourier
+        routine, where we instead substitute with our method below
+        '''
         if name != 'fourier':
-            return getattr(self.CLASS, name)
+            return getattr(self.Profile, name)
         else:
             return self.fourier
 
@@ -173,30 +182,80 @@ class TruncatedFourier(object):
         k_use = np.atleast_1d(k)
         prof  = np.zeros([M_use.size, k_use.size])
         R     = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
-
+        kprof = np.zeros([M_use.size, k_use.size])
         for M_i in range(M_use.size):
 
             #Setup r_min and r_max the same way CCL internal methods do for FFTlog transforms.
             #We set minimum and maximum radii here to make sure the transform uses sufficiently
             #wide range in radii. It helps prevent ringing in transformed profiles.
-            r_min = np.min([np.min(r) * self.fft_par['padding_lo_fftlog'], 1e-8])
-            r_max = R[M_i] * self.epsilon #The halo has a sharp truncation at Rdelta * epsilon.
+            r_min = R[M_i] * self.epsilon_min if self.epsilon_min is not None else (np.min(k) * self.fft_par['padding_lo_fftlog'])
+            r_max = R[M_i] * self.epsilon_max #The halo has a sharp truncation at Rdelta * epsilon, so we always set that as the max.
             n     = self.fft_par['n_per_decade'] * np.int32(np.log10(r_max/r_min))
             
             #Generate the real-space profile, sampled at the points defined above.
             r_fft = np.geomspace(r_min, r_max, n)
-            prof  = self.Profile.real(cosmo, r_fft, M, a)
+            prof  = self.Profile.real(cosmo, r_fft, M_use[M_i], a)
+
+            print(r_fft)
+            print(r_fft/R[M_i])
+            print(prof)
             
             #Now convert it to fourier space, apply the window function, and transform back
-            k_out, Pk   = fftlog(r_fft, prof, 3, 0, self.fft_par['plaw_fourier'])
-            r_out, prof = fftlog(k_out, Pk * self.Pixel.real(k_out), 3, 0, self.fft_par['plaw_fourier'] + 1)
+            k_out, Pk  = fftlog(r_fft, prof, 3, 0, self.fft_par['plaw_fourier'])
             
-            #Below the pixel scale, the profile will be constant. However, numerical issues can cause ringing.
-            #So below pixel_size/5, we set the profile value to r = pixel_size. What happens at five times below
-            #the pixel-scale should never matter for your analysis. But doing this will help avoid edge-case errors
-            #later on (eg. in defining enclosed masses) so we do this
-            r    = np.clip(r, self.Pixel.size / 5, None) #Set minimum radius according to pixel, to prevent ringing on small-scale outputs
-            prof = interpolate.PchipInterpolator(np.log(r_out), prof, extrapolate = False, axis = -1)(np.log(r))
-            prof = np.where(np.isnan(prof), 0, prof) * (2*np.pi)**3 #(2\pi)^3 is from the fourier transforms.
+            prof       = resample_array(k_out, Pk, k_use, self.precision_fftlog['extrapol'], self.precision_fftlog['extrapol'], 0, 0)
+            kprof[M_i] = np.where(np.isnan(prof), 0, prof) * (2*np.pi)**3 #(2\pi)^3 is from the fourier transforms.
+
+        if np.ndim(k) == 0: kprof = np.squeeze(kprof, axis=-1)
+        if np.ndim(M) == 0: kprof = np.squeeze(kprof, axis=0)
+
+        return kprof
+    
+
+class Mdelta_to_Mtot(object):
+    """
+    Computes the total mass of a halo by integrating its density profile over a specified radial range.
+
+    Parameters
+    ----------
+    profile : object
+        A density profile object that provides the `real(cosmo, r, M, a)` method,
+        returning the density at a given radius `r` for mass `M` and scale factor `a`.
+    r_min : float, optional
+        The minimum radius for integration, in the same units as `r`. Default is `1e-3`.
+    r_max : float, optional
+        The maximum radius for integration, in the same units as `r`. Default is `1e2`.
+    N_int : int, optional
+        The number of integration points between `r_min` and `r_max`. Default is `1000`.
+
+    Methods
+    -------
+    __call__(cosmo, M, a)
+        Computes the total mass by integrating the density profile over the radial range.
+
+    Returns
+    -------
+    M_tot : float or array-like
+        The total mass of the halo, computed as the integral of the density profile.
+        If `M` is a scalar, returns a scalar; if `M` is an array, returns an array of the same shape.
+    """
+    
+    def __init__(self, profile, r_min = 1e-3, r_max = 1e2, N_int = 1000):
         
-        return prof
+        self.profile = profile
+        self.r_min   = r_min
+        self.r_max   = r_max
+        self.N_int   = N_int
+    
+    def __call__(self, cosmo, M, a):
+
+        M_use = np.atleast_1d(M)
+        r     = np.geomspace(self.r_min, self.r_max, self.N_int)
+        prof  = self.profile.real(cosmo, r, M_use, a)
+
+        dV    = 4*np.pi*r**2
+        M_tot = np.trapz(dV * prof, r, axis = 1)
+
+        if np.ndim(M) == 0: M_tot = np.squeeze(M_tot, axis=0)
+
+        return M_tot

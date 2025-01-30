@@ -287,7 +287,7 @@ class Stars(MeadProfiles):
     star components.
     """
 
-    def __init__(self, **kwargs): self.myprof = CentralStars(**kwargs)# + SatelliteStars(**kwargs)
+    def __init__(self, **kwargs): self.myprof = CentralStars(**kwargs) + SatelliteStars(**kwargs)
     def __getattr__(self, name):  return getattr(self.myprof, name)
     
     #Need to explicitly set these two methods (to enable pickling)
