@@ -21,7 +21,8 @@ model_params = ['cdelta', 'a', 'n', #DM profle params and relaxation params
                 'theta_out', 'theta_inn', 'M_inn', 'M_c', 'mu', 'beta', 
                 'M_r', 'beta_r', 'eta', 'theta_rg', 'sigma_rg', 'epsilon_hydro', #Default gas profile param
 
-                'alpha_sat', 'M1_0', 'alpha_g', 'epsilon_h', #Star params
+                'M1_0', 'alpha_g', 'epsilon_h', #Star params
+                'M1_fsat', 'eps_fsat', 'alpha_fsat', 'delta_fsat', 'gamma_fsat', #Satellite galaxy params
 
                 'A_nt', 'alpha_nt', #Pressure params
                 'mean_molecular_weight', #Gas number density params
@@ -165,11 +166,11 @@ class AricoProfiles(S19.SchneiderProfiles):
 
         if satellite:
 
-            M1     = np.power(M1,  self.alpha_sat)
-            eps    = np.power(eps, self.alpha_sat)
-            alpha *= self.alpha_sat
-            delta *= self.alpha_sat
-            gamma *= self.alpha_sat
+            M1    *= self.M1_fsat
+            eps   *= self.eps_fsat
+            alpha *= self.alpha_fsat
+            delta *= self.delta_fsat
+            gamma *= self.gamma_fsat
 
         x   = np.log10(M/M1)
         g_x = -np.log10(np.power(10, alpha * x) + 1) + delta * np.power(np.log10(1 + np.exp(x)), gamma)/(1 + np.exp(np.clip(10**-x, None, 30)))
@@ -411,8 +412,9 @@ class BoundGas(AricoProfiles):
             v_integral = r_integral/R_ej[m_i]        
 
             prof_integral = 1/(1 + u_integral)**beta[m_i] / (1 + v_integral**2)**2
-            prof_integral = np.where(r_integral < R[m_i], prof_integral, 0)
+            prof_integral = np.where(r_integral <= R[m_i], prof_integral, 0)
             Normalization[m_i] = np.trapz(4 * np.pi * r_integral**2 * prof_integral, r_integral)
+
         Normalization = Normalization[:, None]
 
         del u_integral, v_integral, prof_integral
@@ -421,6 +423,7 @@ class BoundGas(AricoProfiles):
         arg   = np.where(arg > 30, np.inf, arg) #This is to prevent an overflow in the exponential
         kfac  = 1/( 1 + np.exp(2*arg) ) #Extra exponential cutoff
         prof  = 1/(1 + u)**beta / (1 + v**2)**2 * kfac
+        prof  = np.where(r_use <= R[:, None], prof, 0)
         prof *= f_bg*M_use[:, None]/Normalization #This profile is allowed to go beyond R200c!
 
         #Handle dimensions so input dimensions are mirrored in the output
@@ -724,7 +727,7 @@ class CollisionlessMatter(AricoProfiles):
         self.max_iter   = max_iter
         self.reltol     = reltol
         
-        super().__init__(**kwargs, r_min_int = 1e-8, r_max_int = 1e5, r_steps = 5000)
+        super().__init__(**kwargs, r_min_int = r_min_int, r_max_int = r_max_int, r_steps = r_steps)
 
     def _real(self, cosmo, r, M, a):
 
@@ -794,7 +797,7 @@ class CollisionlessMatter(AricoProfiles):
                     M_f1 = f_clm[m_i]*M_i
                     M_f2 = np.exp(ln_M_cga(np.log(r_f)))
                     M_f3 = np.exp(ln_M_gas(np.log(r_f)))
-                    M_f  = (np.where(np.isfinite(M_f1), M_f1, M_i_max) + 
+                    M_f  = (np.where(np.isfinite(M_f1), M_f1, f_clm[m_i] * M_i_max) + 
                             np.where(np.isfinite(M_f2), M_f2, M_cga_max) + 
                             np.where(np.isfinite(M_f3), M_f3, M_gas_max)
                             )
@@ -858,6 +861,18 @@ class CollisionlessMatter(AricoProfiles):
         if np.ndim(M) == 0: prof = np.squeeze(prof, axis=0)
 
         return prof
+
+
+class SatelliteStars(CollisionlessMatter):
+
+    def _real(self, cosmo, r, M, a):
+
+        f_sg   = self._get_star_frac(M, 1/a - 1, satellite = True)
+        f_dm   = 1 - cosmo.cosmo.params.Omega_b/cosmo.cosmo.params.Omega_m
+        f_clm  = f_dm + f_sg
+        factor = f_sg / f_clm
+
+        return super()._real(cosmo, r, M, a) * factor
 
 
 class DarkMatterOnly(DarkMatter):
@@ -994,7 +1009,8 @@ class Pressure(AricoProfiles):
         
         #Normalization from Equation 5 in https://arxiv.org/pdf/2406.01672v1
         rho0  = self.Gas.real(cosmo, np.atleast_1d([0]), M_use, a) #To get normalization of gas profile
-        P0    = 4*np.pi*G * (rhoc * r_s**2)/np.power(rho0, Geff - 1) * (1 - 1/Geff) 
+        P0    = (rhoc * r_s**2)/np.power(rho0, Geff - 1) * (1 - 1/Geff) 
+        P0    = P0 * 4*np.pi*G #Separate steps to avoid numerical precision issues
         P0    = P0 * (Msun_to_Kg * 1e3) / (Mpc_to_m * 1e2) #Convert to CGS. Using only one factor of Mpc_to_m is correct!
 
         #Now compute the final profile
@@ -1137,7 +1153,7 @@ class Temperature(AricoProfiles):
         self.Pressure = pressure
         self.Gas      = gas
         
-        if self.Pressure is None: self.Pressure = Pressure(**kwargs) * (1 - NonThermalFrac(**kwargs))
+        if self.Pressure is None: self.Pressure = ThermalPressure(**kwargs)
         if self.Gas is None:      self.Gas      = BoundGas(**kwargs)
             
         super().__init__(**kwargs)
