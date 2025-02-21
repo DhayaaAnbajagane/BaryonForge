@@ -120,6 +120,29 @@ class MeadProfiles(A20.AricoProfiles):
         f_ej  = ((f_bar - f_str) - f_bnd)
         
         return f_bnd, f_ej
+    
+    def _modify_concentration(self, cosmo, c, M, a):
+        """
+        The concentration parameter is modified as:
+
+        .. math::
+
+            c = c_{\\text{original}} \\cdot \\left( 1 + \\epsilon_1 + 
+            (\\epsilon_2 - \\epsilon_1) \\frac{f_{\\text{bnd}}}{f_{\\text{bar}}} \\right)
+
+        where:
+        - \( \\epsilon_1 \) and \( \\epsilon_2 \) are redshift-dependent parameters.
+        - \( f_{\\text{bnd}} \) is the bound gas fraction.
+        - \( f_{\\text{bar}} \) is the total baryon fraction.
+        """
+
+        z      = 1/a - 1
+        f_bar  = cosmo.cosmo.params.Omega_b/cosmo.cosmo.params.Omega_m
+        f_bnd  = self._get_gas_frac(M, a, cosmo)[0]
+        eps1   = self.eps1 + z * self.nu_eps1
+        factor = (1 + eps1 + (self.eps2 - eps1) * f_bnd / f_bar)
+
+        return c * factor
 
 
 class DarkMatter(MeadProfiles):
@@ -402,6 +425,7 @@ class BoundGas(MeadProfiles):
 
         z     = 1/a - 1
         c     = c_M_relation(cosmo, M_use, a)
+        c     = self._modify_concentration(cosmo, c, M_use, a)
         R     = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
         r_s   = R/c
         r_s   = r_s[:, None]
@@ -572,16 +596,6 @@ class CollisionlessMatter(MeadProfiles):
     - \( f_{\\text{bar}} \) is the total baryon fraction.
     """
 
-    def _modify_concentration(self, cosmo, c, M, a):
-
-        z      = 1/a - 1
-        f_bar  = cosmo.cosmo.params.Omega_b/cosmo.cosmo.params.Omega_m
-        f_bnd  = self._get_gas_frac(M, a, cosmo)[0]
-        eps1   = self.eps1 + z * self.nu_eps1
-        factor = (1 + eps1 + (self.eps2 - eps1) * f_bnd / f_bar)
-
-        return c * factor
-    
     def _real(self, cosmo, r, M, a):
 
         r_use = np.atleast_1d(r)
@@ -804,6 +818,7 @@ class Temperature(MeadProfiles):
             c_M_relation = ccl.halos.concentration.ConcentrationConstant(self.cdelta, mass_def = self.mass_def)
             
         c    = c_M_relation(cosmo, M_use, a)
+        c    = self._modify_concentration(cosmo, c, M_use, a)
         R    = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
         r_s  = (R/c)[:, None]
     
