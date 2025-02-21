@@ -5,7 +5,7 @@ import warnings
 
 from scipy import interpolate, special, integrate
 from ..utils import _set_parameter, safe_Pchip_minimize
-from .misc import Zeros
+from .misc import Zeros, Truncation
 from . import Schneider19 as S19
 from .Thermodynamic import (G, Msun_to_Kg, Mpc_to_m, kb_cgs, m_p, m_to_cm)
 
@@ -333,44 +333,44 @@ class Stars(AricoProfiles):
         return prof
 
 
-class BoundGas(AricoProfiles):
+class BoundGasUntruncated(AricoProfiles):
     """
-    Class for modeling the bound gas density profile in halos.
+    Computes the bound gas density profile in halos.
 
-    This class extends `AricoProfiles` to compute the density profile of bound gas within halos.
-    This follows the updated model from https://arxiv.org/pdf/2009.14225 rather than the original
-    model.
+    This class extends `AricoProfiles` to model the density profile of bound gas in halos,
+    following the updated model from [Arico et al. (2020)](https://arxiv.org/pdf/2009.14225).
+    Unlike previous models, this profile is not truncated at the halo boundary, making it
+    suitable for extended temperature and pressure calculations.
 
     Parameters
     ----------
-    None (inherits all parameters from `AricoProfiles`).
+    None
+        This class inherits all parameters from `AricoProfiles`.
 
     Notes
     -----
-    - Radial dependence is modeled using two scale radii:
-        1. \( R_{\\text{co}} \): Core radius, controlling the central density slope.
-        2. \( R_{\\text{ej}} \): Outer radius, controlling the cutoff.
-    - The bound gas fraction (\( f_{\\text{bg}} \)) is derived by subtracting the contributions of 
-      stellar and ejected gas fractions from the total baryon fraction.
+    - The radial profile is governed by two characteristic radii:
+        1. \( R_{\\text{co}} \): Core radius, controlling the inner density profile.
+        2. \( R_{\\text{ej}} \): Outer radius, regulating the decline at large scales.
+    - The bound gas fraction (\( f_{\\text{bg}} \)) is obtained by subtracting the stellar 
+      and ejected gas fractions from the total baryon fraction.
+    - The density profile is defined as:
 
-    The density profile is given by:
+      .. math::
 
-    .. math::
+          \\rho_{\\text{bg}}(r) = \\frac{f_{\\text{bg}} M}{N} 
+          \\cdot \\frac{1}{(1 + u)^{\\beta}} 
+          \\cdot \\frac{1}{(1 + v^2)^2}
 
-        \\rho_{\\text{bg}}(r) = 
-        \\begin{cases} 
-        \\frac{f_{\\text{bg}} M}{N} 
-        \\cdot \\frac{1}{(1 + u)^{\\beta}} 
-        \\cdot \\frac{1}{(1 + v^2)^2}, & r \\leq R \\\\ 
-        0, & r > R
-        \\end{cases}
+      where:
+      - \( u = r / R_{\\text{co}} \), \( v = r / R_{\\text{ej}} \)
+      - \( R_{\\text{co}} = \\theta_{\\text{inn}} R \), \( R_{\\text{ej}} = \\theta_{\\text{out}} R \)
+      - \( \\beta \) is a slope parameter, and \( N \) is a normalization factor.
+      - \( R \) represents the halo radius defined by a spherical overdensity criterion.
 
-
-    where:
-    - \( u = r / R_{\\text{co}} \), \( v = r / R_{\\text{ej}} \)
-    - \( R_{\\text{co}} = \\theta_{\\text{inn}} R \), \( R_{\\text{ej}} = \\theta_{\\text{out}} R \)
-    - \( \\beta \) is the slope parameter, and \( N \) is the normalization factor.
-    - R is the spherical overdensity radius of the halo
+    This model naturally transitions to an NFW profile at large scales, ensuring consistency
+    with standard halo models. The implementation includes an adaptive radial integration
+    to account for sharp transitions at the halo boundary.
     """
 
     def _real(self, cosmo, r, M, a):
@@ -401,6 +401,17 @@ class BoundGas(AricoProfiles):
         
         u = r_use/R_co
         v = r_use/R_ej
+
+        #Now compute the large-scale behavior (which is an NFW profile)
+        if self.cdelta is None:
+            c_M_relation = ccl.halos.concentration.ConcentrationDiemer15(mass_def = self.mass_def) #Use the diemer calibration
+        else:
+            c_M_relation = ccl.halos.concentration.ConcentrationConstant(self.cdelta, mass_def = self.mass_def)
+            
+        c     = c_M_relation(cosmo, M_use, a)
+        r_s   = (R/c)[:, None]
+        x     = r_use / r_s
+        y1    = np.power(1 + R_ej/R_co, -beta)/4 * (R_ej/r_s) * np.power(1 + R_ej/r_s, 2)
         
         #Do normalization halo-by-halo, since we want custom radial ranges.
         #This way, we can handle sharp transition at R200c without needing
@@ -419,20 +430,64 @@ class BoundGas(AricoProfiles):
 
         del u_integral, v_integral, prof_integral
 
+        prof  = 1/(1 + u)**beta / (1 + v**2)**2
+        nfw   = y1 / x / np.power(1 + x, 2)
+        prof  = np.where(v <= 1, prof, nfw) 
+        prof *= f_bg*M_use[:, None] / Normalization #This profile is allowed to go beyond R200c!
+        
         arg   = (r_use[None, :] - self.cutoff)
         arg   = np.where(arg > 30, np.inf, arg) #This is to prevent an overflow in the exponential
         kfac  = 1/( 1 + np.exp(2*arg) ) #Extra exponential cutoff
-        prof  = 1/(1 + u)**beta / (1 + v**2)**2 * kfac
-        prof  = np.where(r_use <= R[:, None], prof, 0)
-        prof *= f_bg*M_use[:, None]/Normalization #This profile is allowed to go beyond R200c!
-
+        prof  = prof * kfac
+        
         #Handle dimensions so input dimensions are mirrored in the output
         if np.ndim(r) == 0: prof = np.squeeze(prof, axis=-1)
         if np.ndim(M) == 0: prof = np.squeeze(prof, axis=0)
 
-
         return prof
     
+
+class BoundGas(BoundGasUntruncated):
+    """
+    Class for modeling the bound gas density profile in halos. Simply the `BoundGasUntruncated`
+    class but with a truncation at R200c.
+
+    This class extends `AricoProfiles` to compute the density profile of bound gas within halos.
+    This follows the updated model from https://arxiv.org/pdf/2009.14225 rather than the original
+    model.
+
+    Notes
+    -----
+    - Radial dependence is modeled using two scale radii:
+        1. \( R_{\\text{co}} \): Core radius, controlling the central density slope.
+        2. \( R_{\\text{ej}} \): Outer radius, controlling the cutoff.
+    - The bound gas fraction (\( f_{\\text{bg}} \)) is derived by subtracting the contributions of 
+      stellar and ejected gas fractions from the total baryon fraction.
+
+    The density profile is given by:
+
+    .. math::
+
+        \\rho_{\\text{bg}}(r) = 
+        \\begin{cases} 
+        \\frac{f_{\\text{bg}} M}{N} 
+        \\cdot \\frac{1}{(1 + u)^{\\beta}} 
+        \\cdot \\frac{1}{(1 + v^2)^2}, & r \\leq R \\\\ 
+        0, & r > R
+        \\end{cases}
+
+
+    where:
+    - \( u = r / R_{\\text{co}} \), \( v = r / R_{\\text{ej}} \)
+    - \( R_{\\text{co}} = \\theta_{\\text{inn}} R \), \( R_{\\text{ej}} = \\theta_{\\text{out}} R \)
+    - \( \\beta \) is the slope parameter, and \( N \) is the normalization factor.
+    - R is the spherical overdensity radius of the halo
+    """
+
+    def _real(self, cosmo, R, M, a):
+        return super()._real(cosmo, R, M, a) * Truncation(epsilon = 1)._real(cosmo, R, M, a)
+        
+
 
 class EjectedGas(AricoProfiles):
     """
@@ -936,53 +991,69 @@ class DarkMatterBaryonwithLSS(DarkMatterBaryon):
 
 class Pressure(AricoProfiles):
     """
-    Class for modeling the gas pressure profile in halos.
+    Computes the pressure profile of gas in halos using a polytropic equation of state.
 
-    This class extends `AricoProfiles` to compute the pressure profile of gas within halos. 
-    Contrary to the  `Thermodynamic.Pressure` class in BaryonForge, this class here follows
-    Arico20 and computes the pressure through a polytropic equation of state.
+    This class extends `AricoProfiles` to model the pressure distribution of gas bound 
+    to dark matter halos. The pressure is computed from the density of the bound gas 
+    and its effective equation of state.
 
     Parameters
     ----------
-    gas : BoundGas, optional
-        Instance of the `BoundGas` class representing the bound gas component.
-        If not provided, a default `BoundGas` object is created.
-    **kwargs
-        Additional arguments passed to initialize the parent `AricoProfiles` class and associated components.
+    bound_gas_untruncated : BoundGasUntruncated, optional
+        The Bound gas profile. It must extend beyond R200c so that we can
+        assign realistic temperatures to the ejected gas as well. This is used
+        only for computing the gas temperature
+    gas : Gas, optional
+        The actual gas profile; a sum of all different subcomponents
+        relevant for the analysis
+    **kwargs : dict
+        Additional parameters passed to the parent class.
 
     Notes
     -----
-    - The pressure profile is derived from the bound gas density profile and the effective 
-      equation of state (\( \Gamma_{\\text{eff}} \)).
-    - The profile normalization is calculated based on the gravitational potential, halo 
-      properties, and the gas density at the halo center.
-    
+    - This model calculates pressure from the bound gas density profile and an 
+      effective polytropic equation of state.
+    - We first use the bound gas to compute the temperature across all scales. Then
+      this temperature is assigned to all the gas (not just bound gas). It is therefore
+      important that the bound gas profile for this step is not truncated (even though 
+      the fiducial profile IS truncated at R200c)
+
     The pressure profile is given by:
 
     .. math::
 
-        P(r) = P_0 \\cdot \\rho_{\\text{BG}}^{\\Gamma_{\\text{eff}}}
+        P(r) = P_0 \cdot \\rho_{\\text{BG}}^{\Gamma_{\\text{eff}}}
 
     where:
-    - \( P_0 \) is the normalization constant, computed as:
+    - \( P_0 \) is the pressure normalization, defined as:
 
       .. math::
 
-          P_0 = 4 \\pi G \\cdot \\frac{\\rho_c r_s^2}{\\rho_0^{\\Gamma_{\\text{eff}} - 1}} \\cdot (1 - \\frac{1}{\\Gamma_{\\text{eff}}})
+          P_0 = 4\pi G \cdot \\frac{\\rho_c r_s^2}{\\rho_0^{\Gamma_{\\text{eff}} - 1}} 
+          \cdot \left(1 - \\frac{1}{\Gamma_{\\text{eff}}}\\right)
 
-      \( \\rho_c \) is the characteristic density, \( r_s \) is the scale radius, and 
-      \( \\rho_0 \) is the gas density at the center of the halo.
-    - \( \\Gamma_{\\text{eff}} \) is the effective equation of state, derived from the gas 
-      distribution parameters.
-    - \( \\rho_{\\text{BG}}(r) \) is the bound gas density profile.
+      where:
+      - \( \\rho_c \) is the characteristic density of the halo.
+      - \( r_s \) is the scale radius.
+      - \( \\rho_0 \) is the gas density at the halo center.
+      - \( \Gamma_{\\text{eff}} \) is the effective polytropic index.
+
+    - \( \\rho_{\\text{BG}}(r) \) represents the bound gas density profile.
+
+    This implementation ensures consistency with large-scale gas behavior 
+    and provides a physically motivated description of halo gas pressure.
     """
 
-    def __init__(self, gas = None, **kwargs):
+    def __init__(self, bound_gas_untruncated = None, gas = None, **kwargs):
         
-        self.Gas = gas
-        if self.Gas is None: self.Gas = BoundGas(**kwargs)        
+        self.BoundGas = bound_gas_untruncated
+        self.Gas      = gas
+
+        if self.BoundGas is None: self.BoundGas = BoundGasUntruncated(**kwargs)  
+        if self.Gas is None:      self.Gas      = Gas(**kwargs)        
 
         super().__init__(**kwargs)
+
 
     def _real(self, cosmo, r, M, a):
 
@@ -1008,15 +1079,22 @@ class Pressure(AricoProfiles):
         Geff = 1 + ((1 + xp)*np.log(1 + xp) - xp) / ((1 + 3*xp) * np.log(1 + xp))
         
         #Normalization from Equation 5 in https://arxiv.org/pdf/2406.01672v1
-        rho0  = self.Gas.real(cosmo, np.atleast_1d([0]), M_use, a) #To get normalization of gas profile
+        rho0  = self.BoundGas.real(cosmo, np.atleast_1d([0]), M_use, a) #To get normalization of gas profile
         P0    = (rhoc * r_s**2)/np.power(rho0, Geff - 1) * (1 - 1/Geff) 
         P0    = P0 * 4*np.pi*G #Separate steps to avoid numerical precision issues
         P0    = P0 * (Msun_to_Kg * 1e3) / (Mpc_to_m * 1e2) #Convert to CGS. Using only one factor of Mpc_to_m is correct!
 
-        #Now compute the final profile
-        rhoBG = self.Gas.real(cosmo, r_use, M_use, a)
+        #Now compute the pressure profile for the bound component 
+        #But this component is extended beyond R200c (for now) 
+        rhoBG = self.BoundGas.real(cosmo, r_use, M_use, a)
+        rhoG  = self.Gas.real(cosmo, r_use, M_use, a)
         prof  = P0 * np.power(rhoBG, Geff)
         prof  = np.where(np.isfinite(prof), prof, 0) #Really happens when f_BG = 0 because of weird param space
+        rhoBG = np.where(rhoBG > 0, rhoBG, np.inf) #So that 1/rhoBG is well-defined
+
+        #Compute the temperature of the background gas alone
+        #and then apply that temp to all gas in the halo.
+        prof  = rhoG * (prof / rhoBG)
         
         arg   = (r_use[None, :] - self.cutoff)
         arg   = np.where(arg > 30, np.inf, arg) #This is to prevent an overflow in the exponential
@@ -1098,7 +1176,7 @@ class NonThermalFrac(AricoProfiles):
             prof = np.squeeze(prof, axis=0)
 
         return prof
-    
+
 class ThermalPressure(Gas):
     """
     Convenience class for combining Pressure and NonthermalFraction.
@@ -1154,7 +1232,7 @@ class Temperature(AricoProfiles):
         self.Gas      = gas
         
         if self.Pressure is None: self.Pressure = ThermalPressure(**kwargs)
-        if self.Gas is None:      self.Gas      = BoundGas(**kwargs)
+        if self.Gas is None:      self.Gas      = Gas(**kwargs)
             
         super().__init__(**kwargs)
         
