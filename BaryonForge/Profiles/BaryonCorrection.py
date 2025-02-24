@@ -539,7 +539,7 @@ class Baryonification3D(BaryonificationClass):
         if isinstance(M, (float, int) ): rho = rho[None, :]
             
         intgd = 4*np.pi*r_int**3 * rho * dlnr
-        M_enc = integrate.cumulative_simpson(intgd, axis = -1, initial = intgd[:, [0]])
+        M_enc = integrate.cumulative_simpson(intgd, axis = -1, initial = 0) + intgd[:, [0]]
         lnr   = np.log(r)
         
         M_f   = np.zeros([M_enc.shape[0], r.size])
@@ -657,7 +657,7 @@ class Baryonification2D(BaryonificationClass):
         if isinstance(M, (float, int) ): Sigma = Sigma[None, :]
         
         intgd = 2*np.pi*r_int**2 * Sigma * dlnr
-        M_enc = integrate.cumulative_simpson(intgd, axis = -1, initial = intgd[:, [0]])
+        M_enc = integrate.cumulative_simpson(intgd, axis = -1, initial = 0) + intgd[:, [0]]
         lnr   = np.log(r)
         
         M_f  = np.zeros([M_enc.shape[0], r.size])

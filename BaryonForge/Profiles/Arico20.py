@@ -820,10 +820,10 @@ class CollisionlessMatter(AricoProfiles):
             rho_gas    = self.Gas.real(cosmo, r_integral, M_use[m_i], a)
 
             dlnr  = np.log(r_integral[1]) - np.log(r_integral[0])
-            dV    = r_integral**3 * dlnr
-            M_i   = 4 * np.pi * integrate.cumulative_simpson(dV * rho_i  , axis = -1, initial = dV[0] * rho_i[0])
-            M_cga = 4 * np.pi * integrate.cumulative_simpson(dV * rho_cga, axis = -1, initial = dV[0] * rho_cga[0])
-            M_gas = 4 * np.pi * integrate.cumulative_simpson(dV * rho_gas, axis = -1, initial = dV[0] * rho_gas[0])
+            dV    = 4 * np.pi * r_integral**3 * dlnr
+            M_i   = integrate.cumulative_simpson(dV * rho_i  , axis = -1, initial = 0) + dV[0] * rho_i[0]
+            M_cga = integrate.cumulative_simpson(dV * rho_cga, axis = -1, initial = 0) + dV[0] * rho_cga[0]
+            M_gas = integrate.cumulative_simpson(dV * rho_gas, axis = -1, initial = 0) + dV[0] * rho_gas[0]
 
             #Assume extrapolation is used only for r > r_max. In this case, the extrapolation
             #coefficients are just the integrated mass at r_max. Our r_min is sufficientyly

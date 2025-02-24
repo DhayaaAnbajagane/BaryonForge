@@ -7,7 +7,8 @@ from scipy import interpolate, integrate
 from ..utils.Tabulate import _set_parameter
 
 __all__ = ['model_params', 'SchneiderProfiles', 
-           'DarkMatter', 'TwoHalo', 'Stars', 'Gas', 'ShockedGas', 'CollisionlessMatter',
+           'DarkMatter', 'TwoHalo', 'Stars', 'SatelliteStars', 
+           'Gas', 'ShockedGas', 'CollisionlessMatter',
            'DarkMatterOnly', 'DarkMatterBaryon']
 
 
@@ -232,21 +233,31 @@ class SchneiderProfiles(ccl.halos.profiles.HaloProfile):
         int_max = self.padding_hi_proj   * np.max(r_use)
         int_N   = self.n_per_decade_proj * np.int32(np.log10(int_max/int_min))
         
-        #If proj_cutoff was passed, then rewrite the integral max limit
+        #If proj_cutoff was passed, then use the largest of the two
+        if self.proj_cutoff is not None: 
+            int_max = np.max([self.proj_cutoff, int_max])
+
+        r_integral  = np.geomspace(int_min, int_max, int_N)
+        
+        
+        #Use proj_cutoff and if it is not passed then default to the regular cutoff
         if self.proj_cutoff is not None:
-            int_max = self.proj_cutoff
-
-        r_integral = np.geomspace(int_min, int_max, int_N)
-
-        prof = self._real(cosmo, r_integral, M, a)
+            r_max = self.proj_cutoff
+        elif self.cutoff is not None:
+            r_max = self.cutoff
+        else:
+            r_max = 1e4
+            warnings.warn("WARNING: projected() profile requested without specifying proj_cutoff or cutoff. "
+                          "Defaulting the integral upper limit to 10,000 (comoving) Mpc.")
+            
+        r_proj = np.geomspace(int_min, r_max, int_N)
+        prof   = self._real(cosmo, r_integral, M, a)
 
         #The prof object is already "squeezed" in some way.
         #Code below removes that squeezing so rest of code can handle
         #passing multiple radii and masses.
-        if np.ndim(r) == 0:
-            prof = prof[:, None]
-        if np.ndim(M) == 0:
-            prof = prof[None, :]
+        if np.ndim(r) == 0: prof = prof[:, None]
+        if np.ndim(M) == 0: prof = prof[None, :]
 
         proj_prof = np.zeros([M_use.size, r_use.size])
 
@@ -255,9 +266,8 @@ class SchneiderProfiles(ccl.halos.profiles.HaloProfile):
         for i in range(M_use.size):
             for j in range(r_use.size):
 
-                proj_prof[i, j] = 2*np.trapz(np.interp(np.sqrt(r_integral**2 + r_use[j]**2), r_integral, prof[i]), r_integral)
+                proj_prof[i, j] = 2*np.trapz(np.interp(np.sqrt(r_proj**2 + r_use[j]**2), r_integral, prof[i]), r_proj)
 
-        
         #Handle dimensions so input dimensions are mirrored in the output
         if np.ndim(r) == 0:
             proj_prof = np.squeeze(proj_prof, axis=-1)
@@ -990,12 +1000,14 @@ class CollisionlessMatter(SchneiderProfiles):
         rho_cga    = self.Stars.real(cosmo, r_integral, M_use, a)
         rho_gas    = self.Gas.real(cosmo, r_integral, M_use, a)
 
+        #Need to add the offset manually now since scipy deprecates initial != 0
+        #Offset required so that the integrated array has the same size as the profile array
         dlnr  = np.log(r_integral[1]) - np.log(r_integral[0])
-        dV    = r_integral**3 * dlnr
-        M_i   = 4 * np.pi * integrate.cumulative_simpson(dV * rho_i  , axis = -1, initial = dV[0] * rho_i[:, [0]])
-        M_cga = 4 * np.pi * integrate.cumulative_simpson(dV * rho_cga, axis = -1, initial = dV[0] * rho_cga[:, [0]])
-        M_gas = 4 * np.pi * integrate.cumulative_simpson(dV * rho_gas, axis = -1, initial = dV[0] * rho_gas[:, [0]])
-        
+        dV    = 4 * np.pi * r_integral**3 * dlnr
+        M_i   = integrate.cumulative_simpson(dV * rho_i  , axis = -1, initial = 0) + dV[0] * rho_i[:, [0]]
+        M_cga = integrate.cumulative_simpson(dV * rho_cga, axis = -1, initial = 0) + dV[0] * rho_cga[:, [0]]
+        M_gas = integrate.cumulative_simpson(dV * rho_gas, axis = -1, initial = 0) + dV[0] * rho_gas[:, [0]]
+
         #We intentionally set Extrapolate = True. This is to handle behavior at extreme small-scales (due to stellar profile)
         #and radius limits at largest scales. Using extrapolate=True does not introduce numerical artifacts into predictions
         ln_M_NFW = [interpolate.PchipInterpolator(np.log(r_integral), np.log(M_i[m_i]),   extrapolate = True) for m_i in range(M_i.shape[0])]
@@ -1058,6 +1070,39 @@ class CollisionlessMatter(SchneiderProfiles):
         if np.ndim(M) == 0:
             prof = np.squeeze(prof, axis=0)
 
+        return prof
+    
+
+class SatelliteStars(CollisionlessMatter):
+
+    """
+    Class representing the matter density profile of stars in satellites.
+
+    It uses the `CollisionlessMatter` profiles with a simple rescaling to
+    get just the SG (satellite galaxies) term alone. See that class for
+    more details.
+    """
+    
+    def _real(self, cosmo, r, M, a):
+
+        M_use = np.atleast_1d(M)
+
+        eta_cga = self.eta + self.eta_delta
+        tau_cga = self.tau + self.tau_delta
+        
+        f_star = 2 * self.A * ((M_use/self.M1)**self.tau + (M_use/self.M1)**self.eta)**-1
+        f_cga  = 2 * self.A * ((M_use/self.M1)**tau_cga  + (M_use/self.M1)**eta_cga)**-1
+        f_star = f_star[:, None]
+        f_cga  = f_cga[:, None]
+        f_sga  = f_star - f_cga
+        f_clm  = 1 - cosmo.cosmo.params.Omega_b/cosmo.cosmo.params.Omega_m + f_sga
+        
+        if np.ndim(M) == 0: 
+            f_clm = np.squeeze(f_clm, axis = 0)
+            f_sga = np.squeeze(f_sga, axis = 0)
+
+        prof   = super()._real(cosmo, r, M, a) * (f_sga/f_clm)
+        
         return prof
 
 

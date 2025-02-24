@@ -257,8 +257,8 @@ class Pressure(BaseThermodynamicProfile):
         
         #Integrate total density profile to get the cumulative mass distribution
         dlnr    = np.log(r_integral[1]) - np.log(r_integral[0])
-        dV      = r_integral**3 * dlnr
-        M_total = 4 * np.pi * integrate.cumulative_simpson(dV * rho_total, axis = -1, initial = dV[0] * rho_total[:, [0]])
+        dV      = 4 * np.pi * r_integral**3 * dlnr
+        M_total = integrate.cumulative_simpson(dV * rho_total, axis = -1, initial = 0) + dV[0] * rho_total[:, [0]]
 
         #Assuming hydrostatic equilibrium to get dP/dr = -G*M(<r)*rho(r)/r^2
         dP_dr = - G * M_total * rho_gas / r_integral**2
@@ -273,7 +273,7 @@ class Pressure(BaseThermodynamicProfile):
         #We use trapezoid rule here because simpson was causing odd oscillatory errors because
         #Some profiles have sharp transitions in their pressure/gas profiles (eg. Mead)
         intgr = (dP_dr * r_integral)[:, ::-1] * dlnr
-        prof  = -np.array([integrate.cumulative_trapezoid(intgr[i], initial = intgr[i, 0])[::-1] for i in range(intgr.shape[0])])
+        prof  = -np.array([integrate.cumulative_trapezoid(intgr[i], initial = 0)[::-1] + intgr[i, 0] for i in range(intgr.shape[0])])
         
         prof  = interpolate.PchipInterpolator(np.log(r_integral), np.log(prof + Pressure_at_infinity), axis = 1, extrapolate = False)
         prof  = np.exp(prof(np.log(r_use))) - Pressure_at_infinity
@@ -529,25 +529,17 @@ class GasNumberDensity(BaseThermodynamicProfile):
         super().__init__(**kwargs)
         
         self.mean_molecular_weight = kwargs['mean_molecular_weight']
-        
-        
+
+        #Convert from Msun --> n_proton
+        #Then convert from 1/Mpc^3 to 1/cm^3
+        #The projected profile will just be in units of Mpc/cm^3
+        self.factor = 1 / (self.mean_molecular_weight * m_p) / (Mpc_to_m * m_to_cm)**3
     
-    def _real(self, cosmo, r, M, a):
-        
-        
-        r_use = np.atleast_1d(r)
-        M_use = np.atleast_1d(M)
+    #Need to explicitly call real and projected routines here.
+    #We call "_real" since if we define "real" over "_real" then CCL will complain
+    def _real(self, cosmo, r, M, a):     return self.Gas._real(cosmo, r, M, a)     * self.factor
+    def projected(self, cosmo, r, M, a): return self.Gas.projected(cosmo, r, M, a) * self.factor
 
-        z = 1/a - 1
-
-        R = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
-
-        rho  = self.Gas
-        rho  = rho.real(cosmo, r_use, M, a)
-        prof = rho / (self.mean_molecular_weight * m_p) / (Mpc_to_m * m_to_cm)**3
-        
-        return prof
-    
     
 class Temperature(BaseThermodynamicProfile):
     """
