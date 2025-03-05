@@ -2,10 +2,11 @@ import numpy as np
 import pyccl as ccl
 from .Schneider19 import SchneiderProfiles
 from scipy import interpolate
+from ..utils.Tabulate import _set_parameter
 from pyccl.pyutils import resample_array, _fftlog_transform
 fftlog = _fftlog_transform
 
-__all__ = ['Truncation', 'Identity', 'Zeros', 'Mdelta_to_Mtot']
+__all__ = ['Truncation', 'Identity', 'Zeros', 'Comoving_to_Physical', 'Mdelta_to_Mtot']
 
 class Truncation(SchneiderProfiles):
     """
@@ -77,6 +78,10 @@ class Truncation(SchneiderProfiles):
         return prof
     
 
+    def __str_prf__(self): return "Truncation"
+    def __str_par__(self): return  f"(epsilon = {self.epsilon})"
+    
+
 class Identity(SchneiderProfiles):
     """
     Class for the identity profile.
@@ -107,6 +112,12 @@ class Identity(SchneiderProfiles):
         if np.ndim(M) == 0: prof = np.squeeze(prof, axis=0)
 
         return prof
+    
+    _projected = _real
+    _fourier   = _real
+
+    def __str_prf__(self): return "Identity"
+    def __str_par__(self): return  f"()"
     
 
 class Zeros(SchneiderProfiles):
@@ -140,6 +151,12 @@ class Zeros(SchneiderProfiles):
         if np.ndim(M) == 0: prof = np.squeeze(prof, axis=0)
 
         return prof
+    
+    _projected = _real
+    _fourier   = _real
+
+    def __str_prf__(self): return "Zeros"
+    def __str_par__(self): return  f"()"
     
 
 
@@ -195,10 +212,6 @@ class TruncatedFourier(object):
             #Generate the real-space profile, sampled at the points defined above.
             r_fft = np.geomspace(r_min, r_max, n)
             prof  = self.Profile.real(cosmo, r_fft, M_use[M_i], a)
-
-            print(r_fft)
-            print(r_fft/R[M_i])
-            print(prof)
             
             #Now convert it to fourier space, apply the window function, and transform back
             k_out, Pk  = fftlog(r_fft, prof, 3, 0, self.fft_par['plaw_fourier'])
@@ -210,6 +223,41 @@ class TruncatedFourier(object):
         if np.ndim(M) == 0: kprof = np.squeeze(kprof, axis=0)
 
         return kprof
+    
+
+class Comoving_to_Physical(ccl.halos.profiles.HaloProfile):
+    """
+    Converts a given profile from comoving to physical units by applying 
+    a user-specified scale factor (`a`) correction. The projected profile is rescaled
+    by one less power of `a`.
+
+    Parameters
+    ----------
+    profile : ccl.halo.HaloProfile object
+        A CCL profile object (of any kind)
+    factor : float
+        The power of the scale factor `a` applied to convert the profile 
+        from comoving to physical units. Should use -3 for density profiles and pressure profile. 
+
+    Returns
+    -------
+    ccl.halo.HaloProfile object
+        A halo profile class with `_real` and `projected` routines that have been rescaled by
+        scale factor `a` to the appropriate power.
+    """
+    
+    def __init__(self, profile, factor):
+        
+        self.profile = profile
+        self.factor  = factor
+
+        #We just set this to the same as the inputted profile.
+        super().__init__(mass_def = profile.mass_def)
+        
+    def _real(self, cosmo, r, M, a):     return self.profile._real(cosmo, r, M, a)     * np.power(a, self.factor)
+    def projected(self, cosmo, r, M, a): return self.profile.projected(cosmo, r, M, a) * np.power(a, self.factor + 1)
+
+    def set_parameter(self, key, value): _set_parameter(self, key, value)
     
 
 class Mdelta_to_Mtot(object):

@@ -315,6 +315,9 @@ class Stars(MeadProfiles):
     def __init__(self, **kwargs): self.myprof = CentralStars(**kwargs) + SatelliteStars(**kwargs)
     def __getattr__(self, name):  return getattr(self.myprof, name)
     
+    @property
+    def __dict__(self): return self.myprof.__dict__
+    
     #Need to explicitly set these two methods (to enable pickling)
     #since otherwise the getattr call above leads to infinite recursions.
     def __getstate__(self): self.__dict__.copy()    
@@ -558,6 +561,44 @@ class Gas(MeadProfiles):
     def __setstate__(self, state): self.__dict__.update(state)
 
 
+class GasAddDiffuse(MeadProfiles):
+    """
+    Convenience class for combining bound and ejected gas components.
+
+    This class serves as a unified interface for gas profiles in halos, combining the contributions 
+    from bound gas (`BoundGas`) and ejected gas (`EjectedGas`). It simplifies calculations where 
+    the total gas profile is required, leveraging the underlying logic and methods of the individual 
+    gas components.
+    """
+    
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.BG = BoundGas(**kwargs)
+
+    def update_precision_fftlog(self, **kwargs):
+
+        super().update_precision_fftlog(**kwargs)
+
+        obj_keys = dir(self)
+    
+        for k in obj_keys:
+            if isinstance(getattr(self, k), (ccl.halos.profiles.HaloProfile,)):
+                getattr(self, k).update_precision_fftlog(**kwargs)
+
+    def _real(self, cosmo, r, M, a): return self._fftlog_wrap(cosmo, r, M, a, fourier_out=False)
+    
+    def _fourier(self, cosmo, k, M, a):
+
+        M_use = np.atleast_1d(M)
+        f_ej  = self._get_gas_frac(M_use, a, cosmo)[1][:, None]
+        prof  = self.BG.fourier(cosmo, k, M, a) + f_ej * M_use[:, None]
+
+        #Handle dimensions for just the mass part
+        if np.ndim(M) == 0: prof = np.squeeze(prof, axis=0)
+
+        return prof
+
+
 class CollisionlessMatter(MeadProfiles):
     """
     Class for modeling the density profile of collisionless matter in halos.
@@ -734,6 +775,47 @@ class DarkMatterBaryon(S19.DarkMatterBaryon, MeadProfiles):
         if self.CollisionlessMatter is None: self.CollisionlessMatter = CollisionlessMatter(**kwargs)
 
         MeadProfiles.__init__(self, **kwargs)
+
+
+class DarkMatterBaryonAddDiffuse(DarkMatterBaryon):
+
+    def __init__(self, gas = None, stars = None, collisionlessmatter = None, darkmatter = None, **kwargs):
+        
+        self.Gas   = gas
+        self.Stars = stars
+        self.TwoHalo    = Zeros() #Should not add 2-halo in Mead method
+        self.DarkMatter = darkmatter
+        self.CollisionlessMatter = collisionlessmatter
+        
+        if self.Gas is None:        self.Gas        = GasAddDiffuse(**kwargs)        
+        if self.Stars is None:      self.Stars      = Stars(**kwargs)
+        if self.DarkMatter is None: self.DarkMatter = DarkMatter(**kwargs)
+        if self.CollisionlessMatter is None: self.CollisionlessMatter = CollisionlessMatter(**kwargs)
+
+        MeadProfiles.__init__(self, **kwargs)
+
+
+    def update_precision_fftlog(self, **kwargs):
+
+        super().update_precision_fftlog(**kwargs)
+
+        obj_keys = dir(self)
+    
+        for k in obj_keys:
+            if isinstance(getattr(self, k), (ccl.halos.profiles.HaloProfile,)):
+                getattr(self, k).update_precision_fftlog(**kwargs)
+
+                
+    def _fourier(self, cosmo, k, M, a):
+
+        Factor = 1 #We'd normally compute this as an integral. Assume we defined profiles properly, so F = 1
+
+        prof = (self.CollisionlessMatter.fourier(cosmo, k, M, a) * Factor +
+                self.Stars.fourier(cosmo, k, M, a) * Factor +
+                self.Gas.fourier(cosmo, k, M, a) * Factor +
+                self.TwoHalo.fourier(cosmo, k, M, a))
+
+        return prof
 
 
 class DarkMatterOnlywithLSS(S19.DarkMatterOnly, MeadProfiles):
@@ -921,6 +1003,95 @@ class Pressure(MeadProfiles):
         P2   = T * n * kb_cgs
 
         prof = P1 + P2
+
+        return prof
+    
+
+class PressureAddDiffuse(MeadProfiles):
+    """
+    Class for modeling the pressure profile of gas in halos.
+
+    This class extends `MeadProfiles` to compute the pressure profile, incorporating contributions 
+    from both bound and ejected gas components. The pressure is calculated as the product of the 
+    gas density and temperature, with separate terms for the bound and ejected gas phases.
+
+    Parameters
+    ----------
+    boundgas : BoundGas, optional
+        Instance of the `BoundGas` class representing the bound gas component.
+        If not provided, a default `BoundGas` object is created.
+    ejectedgas : EjectedGas, optional
+        Instance of the `EjectedGas` class representing the ejected gas component.
+        If not provided, a default `EjectedGas` object is created.
+    temperature : Temperature, optional
+        Instance of the `Temperature` class representing the gas temperature.
+        If not provided, a default `Temperature` object is created.
+    **kwargs
+        Additional arguments passed to initialize the parent `MeadProfiles` class and associated components.
+
+    Notes
+    -----
+    - The pressure profile is computed as the sum of two components:
+        1. The bound gas component, which depends on the real-space gas density and temperature.
+        2. The ejected gas component, which uses a redshift-dependent temperature normalization.
+    - The gas number density is derived from the mass density by dividing by the mean molecular weight and proton mass.
+
+    The pressure profile is given by:
+
+    .. math::
+
+        P(r) = P_{\\text{bound}}(r) + P_{\\text{ejected}}(r)
+
+    where:
+    - \( P_{\\text{bound}}(r) = n_{\\text{bound}}(r) \\cdot T_{\\text{bound}}(r) \\cdot k_B \)
+    - \( P_{\\text{ejected}}(r) = n_{\\text{ejected}}(r) \\cdot T_{\\text{ejected}}(r) \\cdot k_B \)
+    - \( n(r) \) is the number density of gas.
+    - \( T(r) \) is the temperature of the gas.
+    - \( k_B \) is the Boltzmann constant.
+    """
+
+    def __init__(self, pressure = None, **kwargs):
+        
+        
+        self.Pressure = Pressure(**kwargs, ejectedgas = Zeros()) if pressure is None else pressure
+
+        if not isinstance(self.Pressure.EjectedGas, Zeros):
+            warnings.warn("Pressure profile with 'AddDiffuse' should not contain any ejected gas. "
+                          "Otherwise we will be double-counting the ejected gas. Set ejectedgas = Zeros() in Pressure profile class.")
+
+        super().__init__(**kwargs)
+
+
+    def update_precision_fftlog(self, **kwargs):
+
+        super().update_precision_fftlog(**kwargs)
+
+        obj_keys = dir(self)
+    
+        for k in obj_keys:
+            if isinstance(getattr(self, k), (ccl.halos.profiles.HaloProfile,)):
+                getattr(self, k).update_precision_fftlog(**kwargs)
+
+
+    def _fourier(self, cosmo, k, M, a):
+
+        M_use = np.atleast_1d(M)
+        z     = 1/a - 1
+        
+        #The first "bound" component
+        P1   = self.Pressure.fourier(cosmo, k, M, a)
+
+        #The second, "ejected" component
+        f_ej = self._get_gas_frac(M_use, a, cosmo)[1][:, None]
+        T    = self.T_w * np.exp(self.nu_T_w * z)
+        n    = f_ej * M_use[:, None] / (self.mean_molecular_weight * m_p) / (Mpc_to_m * m_to_cm)**3
+        P2   = T * n * kb_cgs
+
+        prof = P1 + P2
+
+        #Handle dimensions for just the mass part
+        if np.ndim(k) == 0: prof = np.squeeze(prof, axis=-1)
+        if np.ndim(M) == 0: prof = np.squeeze(prof, axis=0)
 
         return prof
     
