@@ -101,12 +101,12 @@ class MeadProfiles(A20.AricoProfiles):
         f_bnd = f_bar * np.power(M_use/self.M_0, self.beta) / (1 + np.power(M_use/self.M_0, self.beta))
         f_sum = f_bnd + f_str
         f_str = np.where(f_sum > f_bar, f_str - (f_sum - f_bar), f_str)
-
-        assert np.all(f_str >= 0), "Chosen parameter range (and mass range) produces negative star fraction"
+        f_str = np.clip(f_str, 1e-10, None) #Give f_star a positive, but small value to avoid log10(0) errors
 
         #Finally, now get the central and satellite masses
-        f_cen = f_str * np.where(M_use < Mstr, 1, np.power(M_use/Mstr, self.eta))
-        f_sat = f_str * np.where(M_use < Mstr, 0, 1 - np.power(M_use/Mstr, self.eta))
+        #Enforce that f_cen <= f_str and f_sat <= f_str
+        f_cen = f_str * np.clip(np.where(M_use < Mstr, 1, np.power(M_use/Mstr, self.eta)), 0, 1)
+        f_sat = f_str * np.clip(np.where(M_use < Mstr, 0, 1 - np.power(M_use/Mstr, self.eta)), 0, 1)
         
         return f_str, f_cen, f_sat    
 
@@ -141,7 +141,7 @@ class MeadProfiles(A20.AricoProfiles):
         f_bnd  = self._get_gas_frac(M, a, cosmo)[0]
         eps1   = self.eps1 + z * self.nu_eps1
         factor = (1 + eps1 + (self.eps2 - eps1) * f_bnd / f_bar)
-
+        
         return c * factor
 
 
@@ -430,7 +430,10 @@ class BoundGas(MeadProfiles):
         r_s   = R/c
         r_s   = r_s[:, None]
         Geff  = self.Gamma + self.nu_Gamma * z
-
+        
+        if Geff - 1 < 1e-2:
+            warnings.warn(f"Gamma = {Geff:0.4f} is too close to 1. Change the value to avoid divide-by-zero errors in 1/(Gamma - 1)")
+        
         f_bnd, f_ej = self._get_gas_frac(M_use, a, cosmo)
         f_bnd       = f_bnd[:, None]
         
@@ -444,7 +447,7 @@ class BoundGas(MeadProfiles):
             prof_integral = np.power(np.log(1 + x_integral) / x_integral, 1/(Geff - 1))
             Normalization[m_i] = np.trapz(4 * np.pi * r_integral**2 * prof_integral, r_integral)
         Normalization = Normalization[:, None]
-
+        
         del prof_integral, x_integral
 
         arg   = (r_use[None, :] - self.cutoff)
@@ -458,7 +461,7 @@ class BoundGas(MeadProfiles):
         #Handle dimensions so input dimensions are mirrored in the output
         if np.ndim(r) == 0: prof = np.squeeze(prof, axis=-1)
         if np.ndim(M) == 0: prof = np.squeeze(prof, axis=0)
-
+            
 
         return prof
     

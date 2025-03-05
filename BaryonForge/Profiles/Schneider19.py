@@ -348,6 +348,41 @@ class SchneiderProfiles(ccl.halos.profiles.HaloProfile):
 
 
 
+class SchneiderFractions:
+    
+    def _get_star_frac(self, M_use, a, cosmo):
+        
+        eta_cga = self.eta + self.eta_delta
+        tau_cga = self.tau + self.tau_delta
+        
+        f_bar  = cosmo.cosmo.params.Omega_b/cosmo.cosmo.params.Omega_m
+        f_star = 2 * self.A * ((M_use/self.M1)**self.tau + (M_use/self.M1)**self.eta)**-1
+        f_cga  = 2 * self.A * ((M_use/self.M1)**tau_cga  + (M_use/self.M1)**eta_cga)**-1
+        
+        #Star frac cannot be larger than baryon fraction. If it is 0 then the code fails
+        #when taking logs of profiles. So give it a super small value instead.
+        #Similarly, the cga fraction cannot be larger than the star fraction.
+        f_star = np.clip(f_star, 1e-10, f_bar)
+        f_cga  = np.clip(f_cga,  1e-10, f_star)
+        
+        f_star = f_star[:, None]
+        f_cga  = f_cga[:, None]
+        
+        f_sga  = np.clip(f_star - f_cga, 1e-10, None) 
+        
+        return f_star, f_cga, f_sga
+    
+    
+    def _get_gas_frac(self, M_use, a, cosmo):
+        
+        f_star = self._get_star_frac(M_use, a, cosmo)[0]
+        f_bar  = cosmo.cosmo.params.Omega_b/cosmo.cosmo.params.Omega_m
+        f_gas  = np.clip(f_bar - f_star, 1e-10, None) #Cannot let the fraction be identically 0.        
+        
+        return f_gas
+        
+        
+        
 class DarkMatter(SchneiderProfiles):
     """
     Class representing the total Dark Matter (DM) profile using the NFW (Navarro-Frenk-White) profile.
@@ -534,7 +569,7 @@ class TwoHalo(SchneiderProfiles):
         return prof
 
 
-class Stars(SchneiderProfiles):
+class Stars(SchneiderProfiles, SchneiderFractions):
     """
     Class representing the exponential stellar mass profile.
 
@@ -610,14 +645,8 @@ class Stars(SchneiderProfiles):
 
         R   = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
 
-        eta_cga = self.eta + self.eta_delta
-        tau_cga = self.tau + self.tau_delta
-        
-        f_cga  = 2 * self.A * ((M_use/self.M1)**tau_cga  + (M_use/self.M1)**eta_cga)**-1
-
-        R_h   = self.epsilon_h * R
-
-        f_cga, R_h = f_cga[:, None], R_h[:, None]
+        f_cga  = self._get_star_frac(M, a, cosmo)[1]
+        R_h    = self.epsilon_h * R[:, None]
 
         r_integral = np.geomspace(self.r_min_int, self.r_max_int, self.r_steps)
         DM    = DarkMatter(**self.model_params); setattr(DM, 'cutoff', 1e3) #Set large cutoff just for normalization calculation
@@ -637,7 +666,7 @@ class Stars(SchneiderProfiles):
         return prof
 
 
-class Gas(SchneiderProfiles):
+class Gas(SchneiderProfiles, SchneiderFractions):
 
     """
     Class representing the gas density profile.
@@ -705,10 +734,7 @@ class Gas(SchneiderProfiles):
 
         R = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
 
-        f_star = 2 * self.A * ((M_use/self.M1)**self.tau + (M_use/self.M1)**self.eta)**-1
-        f_bar  = cosmo.cosmo.params.Omega_b/cosmo.cosmo.params.Omega_m
-        f_gas  = f_bar - f_star
-        f_gas  = f_gas[:, None]
+        f_gas  = self._get_gas_frac(M_use, a, cosmo)
         
         #Get gas params
         beta, theta_ej, theta_co, delta, gamma = self._get_gas_params(M_use, z)
@@ -829,7 +855,7 @@ class ShockedGas(Gas):
         return prof
 
 
-class CollisionlessMatter(SchneiderProfiles):
+class CollisionlessMatter(SchneiderProfiles, SchneiderFractions):
 
     """
     Class representing the collisionless matter density profile.
@@ -988,11 +1014,7 @@ class CollisionlessMatter(SchneiderProfiles):
         eta_cga = self.eta + self.eta_delta
         tau_cga = self.tau + self.tau_delta
         
-        f_star = 2 * self.A * ((M_use/self.M1)**self.tau + (M_use/self.M1)**self.eta)**-1
-        f_cga  = 2 * self.A * ((M_use/self.M1)**tau_cga  + (M_use/self.M1)**eta_cga)**-1
-        f_star = f_star[:, None]
-        f_cga  = f_cga[:, None]
-        f_sga  = f_star - f_cga
+        f_sga  = self._get_star_frac(M, a, cosmo)[2]
         f_clm  = 1 - cosmo.cosmo.params.Omega_b/cosmo.cosmo.params.Omega_m + f_sga
         
         
@@ -1073,7 +1095,7 @@ class CollisionlessMatter(SchneiderProfiles):
         return prof
     
 
-class SatelliteStars(CollisionlessMatter):
+class SatelliteStars(CollisionlessMatter, SchneiderFractions):
 
     """
     Class representing the matter density profile of stars in satellites.
@@ -1090,11 +1112,7 @@ class SatelliteStars(CollisionlessMatter):
         eta_cga = self.eta + self.eta_delta
         tau_cga = self.tau + self.tau_delta
         
-        f_star = 2 * self.A * ((M_use/self.M1)**self.tau + (M_use/self.M1)**self.eta)**-1
-        f_cga  = 2 * self.A * ((M_use/self.M1)**tau_cga  + (M_use/self.M1)**eta_cga)**-1
-        f_star = f_star[:, None]
-        f_cga  = f_cga[:, None]
-        f_sga  = f_star - f_cga
+        f_sga  = self._get_star_frac(M, a, cosmo)[2]
         f_clm  = 1 - cosmo.cosmo.params.Omega_b/cosmo.cosmo.params.Omega_m + f_sga
         
         if np.ndim(M) == 0: 
@@ -1184,7 +1202,7 @@ class DarkMatterOnly(SchneiderProfiles):
         return prof
 
 
-class DarkMatterBaryon(SchneiderProfiles):
+class DarkMatterBaryon(SchneiderProfiles, SchneiderFractions):
 
     """
     Class representing a combined dark matter and baryonic matter profile.
