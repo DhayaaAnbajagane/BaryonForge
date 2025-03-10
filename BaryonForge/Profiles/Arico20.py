@@ -302,6 +302,7 @@ class DarkMatter(AricoProfiles):
             c_M_relation = ccl.halos.concentration.ConcentrationConstant(self.cdelta, mass_def = self.mass_def)
             
         c   = c_M_relation(cosmo, M_use, a)
+        c   = np.where(np.isfinite(c), c, 1) #Set default to r_s = R200c if c200c broken (normally for low mass obj in some cosmologies)
         R   = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
         r_s = R/c
 
@@ -468,6 +469,7 @@ class BoundGasUntruncated(AricoProfiles):
             c_M_relation = ccl.halos.concentration.ConcentrationConstant(self.cdelta, mass_def = self.mass_def)
             
         c     = c_M_relation(cosmo, M_use, a)
+        c     = np.where(np.isfinite(c), c, 1) #Set default to r_s = R200c if c200c broken (normally for low mass obj in some cosmologies)
         r_s   = (R/c)[:, None]
         x     = r_use / r_s
         y1    = np.power(1 + R_ej/R_co, -beta)/4 * (R_ej/r_s) * np.power(1 + R_ej/r_s, 2)
@@ -771,6 +773,7 @@ class ModifiedDarkMatter(AricoProfiles):
             c_M_relation = ccl.halos.concentration.ConcentrationConstant(self.cdelta, mass_def = self.mass_def)
             
         c   = c_M_relation(cosmo, M_use, a)
+        c   = np.where(np.isfinite(c), c, 1) #Set default to r_s = R200c if c200c broken (normally for low mass obj in some cosmologies)
         R   = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
         r_s = R/c        
         r_s = r_s[:, None]
@@ -1116,6 +1119,7 @@ class Pressure(AricoProfiles):
 
         #Get concentration values, and the effective equation of state, Gamma    
         c    = c_M_relation(cosmo, M_use, a)[:, None]
+        c   = np.where(np.isfinite(c), c, 1) #Set default to r_s = R200c if c200c broken (normally for low mass obj in some cosmologies)
         r_s  = R[:, None]/c
         Norm = 4*np.pi*r_s**3 * (np.log(1 + c) - c/(1 + c))
         rhoc = M_use[:, None]/Norm
@@ -1380,6 +1384,7 @@ class BoundGasDeprecated(AricoProfiles):
             c_M_relation = ccl.halos.concentration.ConcentrationConstant(self.cdelta, mdef = self.mass_def)
             
         c    = c_M_relation.get_concentration(cosmo, M_use, a)
+        c    = np.where(np.isfinite(c), c, 1) #Set default to r_s = R200c if c200c broken (normally for low mass obj in some cosmologies)
         r_s  = (R/c)[:, None]
         eps  = self.epsilon_hydro
         e5   = c[:, None] / eps

@@ -443,9 +443,9 @@ class DarkMatter(SchneiderProfiles):
             
         else:
             c_M_relation = ccl.halos.concentration.ConcentrationConstant(self.cdelta, mass_def = self.mass_def)
-            #c_M_relation = ccl.halos.concentration.ConcentrationConstant(7, mdef = self.mass_def) #needed to get Schneider result
             
         c   = c_M_relation(cosmo, M_use, a)
+        c   = np.where(np.isfinite(c), c, 1) #Set default to r_s = R200c if c200c broken (normally for low mass obj in some cosmologies)
         R   = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
         r_s = R/c
         r_t = R*self.epsilon
@@ -645,7 +645,7 @@ class Stars(SchneiderProfiles, SchneiderFractions):
 
         R   = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
 
-        f_cga  = self._get_star_frac(M, a, cosmo)[1]
+        f_cga  = self._get_star_frac(M_use, a, cosmo)[1]
         R_h    = self.epsilon_h * R[:, None]
 
         r_integral = np.geomspace(self.r_min_int, self.r_max_int, self.r_steps)
@@ -1014,9 +1014,8 @@ class CollisionlessMatter(SchneiderProfiles, SchneiderFractions):
         eta_cga = self.eta + self.eta_delta
         tau_cga = self.tau + self.tau_delta
         
-        f_sga  = self._get_star_frac(M, a, cosmo)[2]
+        f_sga  = self._get_star_frac(M_use, a, cosmo)[2]
         f_clm  = 1 - cosmo.cosmo.params.Omega_b/cosmo.cosmo.params.Omega_m + f_sga
-        
         
         rho_i      = self.DarkMatter.real(cosmo, r_integral, M_use, a)
         rho_cga    = self.Stars.real(cosmo, r_integral, M_use, a)
@@ -1080,11 +1079,12 @@ class CollisionlessMatter(SchneiderProfiles, SchneiderFractions):
         log_der  = ln_M_clm.derivative(nu = 1)(np.log(r_use))
         lin_der  = log_der * np.exp(ln_M_clm(np.log(r_use))) / r_use
         prof     = 1/(4*np.pi*r_use**2) * lin_der
+        prof     = np.clip(prof, 0, None) #If prof < 0 due to interpolation errors, then force it to 0.
         
         arg  = (r_use[None, :] - self.cutoff)
         arg  = np.where(arg > 30, np.inf, arg) #This is to prevent an overflow in the exponential
         kfac = 1/( 1 + np.exp(2*arg) ) #Extra exponential cutoff
-        prof = np.where(np.isnan(prof), 0, prof) * kfac
+        prof = np.where(np.isfinite(prof), prof, 0) * kfac
 
         #Handle dimensions so input dimensions are mirrored in the output
         if np.ndim(r) == 0:
@@ -1112,7 +1112,7 @@ class SatelliteStars(CollisionlessMatter, SchneiderFractions):
         eta_cga = self.eta + self.eta_delta
         tau_cga = self.tau + self.tau_delta
         
-        f_sga  = self._get_star_frac(M, a, cosmo)[2]
+        f_sga  = self._get_star_frac(M_use, a, cosmo)[2]
         f_clm  = 1 - cosmo.cosmo.params.Omega_b/cosmo.cosmo.params.Omega_m + f_sga
         
         if np.ndim(M) == 0: 
