@@ -75,7 +75,7 @@ class SchneiderProfiles(ccl.halos.profiles.HaloProfile):
     model_param_names = model_params
 
     def __init__(self, mass_def = ccl.halos.massdef.MassDef200c, 
-                 use_fftlog_projection = False, 
+                 c_M_relation = None, use_fftlog_projection = False, 
                  padding_lo_proj = 0.1, padding_hi_proj = 10, n_per_decade_proj = 10, 
                  r_min_int = 1e-6, r_max_int = 1e3, r_steps = 500,
                  xi_mm = None, 
@@ -92,6 +92,12 @@ class SchneiderProfiles(ccl.halos.profiles.HaloProfile):
                 setattr(self, m, 1e14)
             else:
                 setattr(self, m, None)
+
+        #Let user specify their own c_M_relation as desired
+        if c_M_relation is not None:
+            self.c_M_relation = c_M_relation(mass_def = mass_def)
+        else:
+            self.c_M_relation = None
                     
         #Some params for handling the realspace projection
         self.padding_lo_proj   = padding_lo_proj
@@ -438,10 +444,12 @@ class DarkMatter(SchneiderProfiles):
 
         z = 1/a - 1
 
-        if self.cdelta is None:
+        if (self.cdelta is None) and (self.c_M_relation is None):
             c_M_relation = ccl.halos.concentration.ConcentrationDiemer15(mass_def = self.mass_def) #Use the diemer calibration
-            
+        elif self.c_M_relation is not None:
+            c_M_relation = self.c_M_relation
         else:
+            assert self.cdelta is not None, "Either provide cdelta or a c_M_relation input"
             c_M_relation = ccl.halos.concentration.ConcentrationConstant(self.cdelta, mass_def = self.mass_def)
             
         c   = c_M_relation(cosmo, M_use, a)

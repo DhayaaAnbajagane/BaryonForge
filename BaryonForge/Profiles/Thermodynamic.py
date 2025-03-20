@@ -44,7 +44,8 @@ __all__ = ['Pressure', 'NonThermalFrac', 'NonThermalFracGreen20',
 
 class BaseThermodynamicProfile(SchneiderProfiles):
 
-    def __init__(self, mass_def = ccl.halos.massdef.MassDef200c, 
+    def __init__(self, mass_def = ccl.halos.massdef.MassDef200c,
+                 c_M_relation = None, 
                  use_fftlog_projection = False, 
                  padding_lo_proj = 0.1, padding_hi_proj = 10, n_per_decade_proj = 10,
                  r_min_int = 1e-6, r_max_int = 1e3, r_steps = 500, xi_mm = None,
@@ -57,6 +58,13 @@ class BaseThermodynamicProfile(SchneiderProfiles):
                 setattr(self, m, kwargs[m])
             else:
                 setattr(self, m, None)
+
+
+        #Let user specify their own c_M_relation as desired
+        if c_M_relation is not None:
+            self.c_M_relation = c_M_relation(mass_def = mass_def)
+        else:
+            self.c_M_relation = None
                     
         #Some params for handling the realspace projection
         self.padding_lo_proj   = padding_lo_proj
