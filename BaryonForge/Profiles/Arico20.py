@@ -1213,7 +1213,7 @@ class NonThermalFrac(AricoProfiles):
         mdef  = ccl.halos.massdef.MassDef(200, 'matter')
         cnvrt = ccl.halos.mass_translator(mass_in = self.mass_def, mass_out = mdef, concentration = 'Diemer15')
         M200m = cnvrt(cosmo, M_use, a)
-        R200m = mdef.get_radius(cosmo, M_use, a)/a #in comoving distance
+        R200m = mdef.get_radius(cosmo, M200m, a)/a #in comoving distance
 
         x = r_use/R200m[:, None]
 
