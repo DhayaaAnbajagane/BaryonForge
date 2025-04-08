@@ -1,13 +1,14 @@
 import pyccl as ccl
 import numpy as np, healpy as hp
 from scipy import interpolate, special
+from .Tabulate import _set_parameter
 
 __all__ = ['ConvolvedProfile', 'GridPixelApprox', 'HealPixel']
 
 #Define a shorthand to use everywhere
 fftlog = ccl.pyutils._fftlog_transform
 
-class ConvolvedProfile(object):
+class ConvolvedProfile(ccl.halos.profiles.HaloProfile):
     """
     A class to compute profiles convolved with a pixel window function.
 
@@ -71,6 +72,9 @@ class ConvolvedProfile(object):
         self.fft_par    = Profile.precision_fftlog
         
         self.isHarmonic = Pixel.isHarmonic
+
+        #We just set this to the same as the inputted profile.
+        super().__init__(mass_def = Profile.mass_def)
         
         
     def __getattr__(self, name):
@@ -101,9 +105,11 @@ class ConvolvedProfile(object):
     #since otherwise the getattr call above leads to infinite recursions.
     def __getstate__(self): self.__dict__.copy()    
     def __setstate__(self, state): self.__dict__.update(state)
+
+    def set_parameter(self, key, value): _set_parameter(self, key, value)
     
     
-    def real(self, cosmo, r, M, a):
+    def _real(self, cosmo, r, M, a):
         """
         Computes the real-space profile convolved with the pixel window function.
 
@@ -222,6 +228,33 @@ class ConvolvedProfile(object):
         prof = np.where(np.isnan(prof), 0, prof) * (2*np.pi)**2
         
         return prof
+    
+
+    def fourier(self, cosmo, k, M, a):
+        """
+        Computes the fourier-space profile convolved with the pixel window function.
+
+        Parameters
+        ----------
+        cosmo : object
+            A `ccl.Cosmology` object representing the cosmological parameters.
+        
+        k : ndarray
+            An array of wavenumbers at which to compute the convolved profile. In comoving 1/Mpc.
+        
+        M : float
+            The mass of the halo, in solar masses.
+        
+        a : float
+            The scale factor at which to compute the profile.
+        
+        Returns
+        -------
+        prof : ndarray
+            The convolved real-space profile evaluated at the input radii `r`.
+        """
+
+        return self.Profile.fourier(cosmo, k, M, a) * self.Pixel.real(k)
     
     
     

@@ -3,12 +3,15 @@ import numpy as np
 import pyccl as ccl
 import healpy as hp
 from numba import njit
+import warnings
 
 from scipy import interpolate
 from tqdm import tqdm
 from ..utils import ParamTabulatedProfile
+from ..utils.Tabulate import _get_parameter
 
-__all__ = ['DefaultRunner', 'BaryonifyShell', 'PaintProfilesShell', 'regrid_pixels_hpix']
+__all__ = ['DefaultRunner', 'BaryonifyShell', 'PaintProfilesShell', 'PaintProfilesAnisShell',
+           'regrid_pixels_hpix']
 
 @njit
 def regrid_pixels_hpix(hmap, parent_pix_vals, child_pix, child_weights):
@@ -126,11 +129,18 @@ class DefaultRunner(object):
     mass_def : object
         The mass definition object.
     
-    verbose : bool
-        Whether verbose output is enabled.
+    verbose : bool, optional
+        Whether verbose output is enabled. Defaults to True.
     
-    use_ellipticity : bool
-        Whether to use ellipticity in calculations.
+    include_pixel_size : bool, optional
+        Only used when painting, not baryonifying.
+        If True, then the returned map is multiplied by the area/volume of the pixel.
+        Thus, painting with a density profile results in a Mass map. 
+        Defaults to True.
+
+    use_ellipticity : bool, optional
+        Whether to use ellipticity in calculations. Defaults to False.
+    
 
     Methods
     -------
@@ -147,7 +157,7 @@ class DefaultRunner(object):
     """
     
     def __init__(self, HaloLightConeCatalog, LightconeShell, epsilon_max, model, use_ellipticity = False,
-                 mass_def = ccl.halos.massdef.MassDef(200, 'critical'), verbose = True):
+                 mass_def = ccl.halos.massdef.MassDef(200, 'critical'), include_pixel_size = True, verbose = True):
 
         self.HaloLightConeCatalog = HaloLightConeCatalog
         self.LightconeShell       = LightconeShell
@@ -159,8 +169,9 @@ class DefaultRunner(object):
         self.mass_def    = mass_def
         self.verbose     = verbose
         
-        self.use_ellipticity = use_ellipticity
-        
+        self.use_ellipticity    = use_ellipticity
+        self.include_pixel_size = include_pixel_size
+
         if use_ellipticity:
             raise NotImplementedError("You have set use_ellipticity = True, but this not yet implemented for HealpixRunner")
     
@@ -399,6 +410,7 @@ class PaintProfilesShell(DefaultRunner):
         orig_map = self.LightconeShell.map
         new_map  = np.zeros_like(orig_map).astype(np.float64)
         NSIDE    = self.LightconeShell.NSIDE
+        pixarea  = hp.nside2pixarea(NSIDE, degrees = False)
 
         #Build interpolator between redshift and ang-diam-dist. Assume we never use z > 30
         z_t = np.linspace(0, 30, 1000)
@@ -441,6 +453,11 @@ class PaintProfilesShell(DefaultRunner):
             Paint  = Baryons.projected(cosmo, r_sep/a_j, M_j, a_j, **o_j)
             Paint  = np.where(np.isfinite(Paint), Paint, 0) #Set non-finite values to 0
             
+            #Add the pixel area back to the maps if requested by user.
+            #This factor is needed to get, eg., mass maps when inputting density profiles
+            #Factor of D_j helps convert from radian^2 to physical Mpc^2
+            if self.include_pixel_size: Paint = Paint * (pixarea * D_j**2)
+            
             #Add the profiles to the new healpix map
             new_map[pixind] += Paint         
 
@@ -462,6 +479,18 @@ class PaintProfilesAnisShell(DefaultRunner):
         Processes the lightcone shell by painting baryonic profiles and returns the modified HEALPix map.
     """
 
+    def __init__(self, HaloLightConeCatalog, LightConeShell, epsilon_max, model, Tracer_model, Mtot_model, 
+                 background_val, global_tracer_fraction, 
+                 mass_def = ccl.halos.massdef.MassDef(200, 'critical'), 
+                 include_pixel_size = True, use_ellipticity = False, verbose = True):
+        
+        self.Tracer_model   = Tracer_model
+        self.Mtot_model     = Mtot_model
+        self.background_val = background_val
+        self.global_tracer_fraction = global_tracer_fraction
+        
+        super().__init__(HaloLightConeCatalog, LightConeShell, epsilon_max, model, use_ellipticity, mass_def, include_pixel_size, verbose)
+        
     def process(self):
         """
         Applies profile painting to the lightcone shell using the halo catalog.
@@ -498,6 +527,7 @@ class PaintProfilesAnisShell(DefaultRunner):
         orig_map = self.LightconeShell.map
         new_map  = np.zeros_like(orig_map).astype(np.float64)
         NSIDE    = self.LightconeShell.NSIDE
+        pixarea  = hp.nside2pixarea(NSIDE, degrees = False)
 
         #Build interpolator between redshift and ang-diam-dist. Assume we never use z > 30
         z_t = np.linspace(0, 30, 1000)
@@ -506,13 +536,39 @@ class PaintProfilesAnisShell(DefaultRunner):
         keys = vars(self.model).get('p_keys', []) #Check if model has property keys
 
         if len(keys) > 0:
-            txt = (f"You asked to use {keys} properties in Baryonification. You must pass a ParamTabulatedProfile"
+            txt = (f"You asked to use {keys} properties in Baryonification. You must pass a ParamTabulatedProfile "
                    f"as the model. You have passed {type(self.model)} instead")
             assert isinstance(self.model, ParamTabulatedProfile), txt
 
+        #First we need to generate a model for the total mass distribution, according to the mass model
+        Mtot_map = PaintProfilesShell(HaloLightConeCatalog = self.HaloLightConeCatalog, 
+                                      LightconeShell = self.LightconeShell, 
+                                      epsilon_max = self.epsilon_max, model = self.Mtot_model, 
+                                      use_ellipticity = self.use_ellipticity, 
+                                      include_pixel_size = True,
+                                      mass_def = self.mass_def, verbose = self.verbose).process()
+        
+        dL = (2 * _get_parameter(self.Mtot_model, 'proj_cutoff')) #Factor of 2 since proj_cutoff == Lproj/2
+        dD = D_a(self.LightconeShell.redshift)
+        dV = pixarea * ((dD + dL)**3 - dD**3)
+        rho_halos = np.sum(Mtot_map) / (dV * Mtot_map.size)
 
-        assert self.model is not None, "You must provide a model"
-        Baryons = self.model
+        #Now add the background contribution (we so far only have the halo contribution)
+        #Force the background to be positive, incase the pasted density is larger than the box size.
+        rho_m     = cosmo.rho_x(1/(self.LightconeShell.redshift + 1), species = 'matter', is_comoving = False)
+        drho_m    = np.clip(rho_m - rho_halos, 0, None)
+        Mtot_map += dV * drho_m
+
+        if self.verbose:
+            print(f"Inputted halos contribute {100*(rho_halos/rho_m):0.2f}% of the total matter density.")
+            print(f"Remaining density is assigned to a uniform background.")
+
+        if rho_halos > rho_m:
+            warnings.warn("Inputted halos contribute more mass than is available for this mean matter density."
+                          "Your Mtot_model profiles are either too extended or you are using the wrong cosmology.")
+            
+        Paint  = self.model.projected
+        Tracer = self.Tracer_model.projected
 
         for j in tqdm(range(self.HaloLightConeCatalog.cat.size), desc = 'Painting Profile', disable = not self.verbose):
 
@@ -537,10 +593,26 @@ class PaintProfilesAnisShell(DefaultRunner):
             r_sep  = np.sqrt(np.sum(diff**2, axis = 1))
             
             #Compute the painted map
-            Paint  = Baryons.projected(cosmo, r_sep/a_j, M_j, a_j, **o_j)
-            Paint  = np.where(np.isfinite(Paint), Paint, 0) #Set non-finite values to 0
+            Painting = Paint(cosmo, r_sep/a_j, M_j, a_j, **o_j)
+            Painting = np.where(np.isfinite(Painting), Painting, 0)
+            Canvas   = Tracer(cosmo, r_sep/a_j, M_j, a_j, **o_j)
+            Canvas   = np.where(np.isfinite(Canvas) & np.invert(np.isnan(Canvas)), Canvas, 0)
+            Mfrac    = np.divide(Canvas, Mtot_map[pixind], out = np.zeros_like(Canvas), where = Mtot_map[pixind] > 0)
+            Mfrac   *= orig_map[pixind]
             
+            #Add the pixel area back to the maps if requested by user.
+            #This factor is needed to get, eg., mass maps when inputting density profiles
+            #Factor of D_j helps convert from radian^2 to physical Mpc^2
+            if self.include_pixel_size: Painting = Painting * (pixarea * D_j**2) 
+
             #Add the profiles to the new healpix map
-            new_map[pixind] += Paint         
+            new_map[pixind] += Painting * Mfrac   
+
+        #Missing mass was assigned to uniform background. Here we account for that background's contribution
+        Mfrac    = np.divide(dV * drho_m, Mtot_map, out = np.zeros_like(Mtot_map), where = Mtot_map > 0)
+        Mfrac   *= orig_map
+        new_map += self.background_val * self.global_tracer_fraction * Mfrac
+        
+        new_map  = new_map.reshape(orig_map.shape)      
 
         return new_map
