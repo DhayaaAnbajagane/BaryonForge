@@ -9,6 +9,7 @@ from scipy import interpolate
 from tqdm import tqdm
 from ..utils import ParamTabulatedProfile
 from ..utils.Tabulate import _get_parameter
+from ..Profiles.BaryonCorrection import BaryonificationClass
 
 __all__ = ['DefaultRunner', 'BaryonifyShell', 'PaintProfilesShell', 'PaintProfilesAnisShell',
            'regrid_pixels_hpix']
@@ -136,7 +137,7 @@ class DefaultRunner(object):
         Only used when painting, not baryonifying.
         If True, then the returned map is multiplied by the area/volume of the pixel.
         Thus, painting with a density profile results in a Mass map. 
-        Defaults to True.
+        Defaults to False.
 
     use_ellipticity : bool, optional
         Whether to use ellipticity in calculations. Defaults to False.
@@ -157,7 +158,7 @@ class DefaultRunner(object):
     """
     
     def __init__(self, HaloLightConeCatalog, LightconeShell, epsilon_max, model, use_ellipticity = False,
-                 mass_def = ccl.halos.massdef.MassDef(200, 'critical'), include_pixel_size = True, verbose = True):
+                 mass_def = ccl.halos.massdef.MassDef(200, 'critical'), include_pixel_size = False, verbose = True):
 
         self.HaloLightConeCatalog = HaloLightConeCatalog
         self.LightconeShell       = LightconeShell
@@ -293,9 +294,11 @@ class BaryonifyShell(DefaultRunner):
         keys = vars(self.model).get('p_keys', []) #Check if model has property keys
 
         if len(keys) > 0:
-            txt = (f"You asked to use {keys} properties in Baryonification. You must pass a ParamTabulatedProfile"
-                   f"as the model. You have passed {type(self.model)} instead")
-            assert isinstance(self.model, ParamTabulatedProfile), txt
+            txt = (f"You asked to use {keys} properties in Baryonification. You must pass a ParamTabulatedProfile "
+                   f"pr BaryonificationClass as the model. You have passed {type(self.model)} instead. "
+                   f"If you did pass in a BaryonificationClass make sure you passed in addition params using "
+                   f"the other_params option.")
+            assert isinstance(self.model, (ParamTabulatedProfile, BaryonificationClass)), txt
         
         pix_offsets = np.zeros([orig_map.size, 3]) 
         
@@ -419,9 +422,11 @@ class PaintProfilesShell(DefaultRunner):
         keys = vars(self.model).get('p_keys', []) #Check if model has property keys
 
         if len(keys) > 0:
-            txt = (f"You asked to use {keys} properties in Baryonification. You must pass a ParamTabulatedProfile"
-                   f"as the model. You have passed {type(self.model)} instead")
-            assert isinstance(self.model, ParamTabulatedProfile), txt
+            txt = (f"You asked to use {keys} properties in Baryonification. You must pass a ParamTabulatedProfile "
+                   f"pr BaryonificationClass as the model. You have passed {type(self.model)} instead. "
+                   f"If you did pass in a BaryonificationClass make sure you passed in addition params using "
+                   f"the other_params option.")
+            assert isinstance(self.model, (ParamTabulatedProfile, BaryonificationClass)), txt
 
 
         assert self.model is not None, "You must provide a model"
@@ -482,7 +487,7 @@ class PaintProfilesAnisShell(DefaultRunner):
     def __init__(self, HaloLightConeCatalog, LightConeShell, epsilon_max, model, Tracer_model, Mtot_model, 
                  background_val, global_tracer_fraction, 
                  mass_def = ccl.halos.massdef.MassDef(200, 'critical'), 
-                 include_pixel_size = True, use_ellipticity = False, verbose = True):
+                 include_pixel_size = False, use_ellipticity = False, verbose = True):
         
         self.Tracer_model   = Tracer_model
         self.Mtot_model     = Mtot_model
@@ -537,8 +542,10 @@ class PaintProfilesAnisShell(DefaultRunner):
 
         if len(keys) > 0:
             txt = (f"You asked to use {keys} properties in Baryonification. You must pass a ParamTabulatedProfile "
-                   f"as the model. You have passed {type(self.model)} instead")
-            assert isinstance(self.model, ParamTabulatedProfile), txt
+                   f"pr BaryonificationClass as the model. You have passed {type(self.model)} instead. "
+                   f"If you did pass in a BaryonificationClass make sure you passed in addition params using "
+                   f"the other_params option.")
+            assert isinstance(self.model, (ParamTabulatedProfile, BaryonificationClass)), txt
 
         #First we need to generate a model for the total mass distribution, according to the mass model
         Mtot_map = PaintProfilesShell(HaloLightConeCatalog = self.HaloLightConeCatalog, 
