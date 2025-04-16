@@ -91,7 +91,7 @@ class Pressure(ccl.halos.profiles.HaloProfile):
         self.truncate  = truncate
 
         #Import all other parameters from the base CCL Profile class
-        super(BattagliaPressure, self).__init__()
+        super(Pressure, self).__init__()
 
         #Constant that helps with the fourier transform convolution integral.
         #This value minimized the ringing due to the transforms
