@@ -500,7 +500,7 @@ class BaryonifyGrid(DefaultRunnerGrid):
             res    = self.GriddedMap.res
             Nsize  = 2 * R_q / res
             Nsize  = int(Nsize // 2)*2 #Force it to be even
-            if Nsize < 2: continue #Skip if halo is too small because the displacements will be zero anyway then.
+            Nsize  = np.clip(Nsize, 2, bins.size//2)
 
             x  = np.linspace(-Nsize/2, Nsize/2, Nsize) * res
             cutout_width = Nsize//2
@@ -741,7 +741,7 @@ class PaintProfilesGrid(DefaultRunnerGrid):
             res    = self.GriddedMap.res
             Nsize  = 2 * self.epsilon_max * R_j / res
             Nsize  = int(Nsize // 2)*2 #Force it to be even
-            Nsize  = np.clip(Nsize, 2, bins.size) #Can't skip small halos because we still must sum all contributions to a pixel
+            Nsize  = np.clip(Nsize, 2, bins.size//2) #Can't skip small halos because we still must sum all contributions to a pixel
 
             x = np.linspace(-Nsize/2, Nsize/2, Nsize) * res
             cutout_width = Nsize//2
