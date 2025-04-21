@@ -2,6 +2,9 @@ import numpy as np
 import pyccl as ccl
 from scipy.spatial import KDTree 
 from tqdm import tqdm
+from ..utils import ParamTabulatedProfile
+from ..utils.Tabulate import _get_parameter
+from ..Profiles.BaryonCorrection import BaryonificationClass
 
 __all__ = ['DefaultRunnerSnapshot', 'BaryonifySnapshot']
 
@@ -201,6 +204,15 @@ class BaryonifySnapshot(DefaultRunnerSnapshot):
         L = self.ParticleSnapshot.L
         is2D        = self.ParticleSnapshot.is2D
         tot_offsets = np.zeros([len(self.ParticleSnapshot.cat), 2 if is2D else 3])
+
+        keys = vars(self.model).get('p_keys', []) #Check if model has property keys
+
+        if len(keys) > 0:
+            txt = (f"You asked to use {keys} properties in Baryonification. You must pass a ParamTabulatedProfile "
+                   f"pr BaryonificationClass as the model. You have passed {type(self.model)} instead. "
+                   f"If you did pass in a BaryonificationClass make sure you passed in addition params using "
+                   f"the other_params option.")
+            assert isinstance(self.model, (ParamTabulatedProfile, BaryonificationClass)), txt
         
         for j in tqdm(range(self.HaloNDCatalog.cat.size), desc = 'Baryonifying matter', disable = not self.verbose):
 
@@ -208,6 +220,7 @@ class BaryonifySnapshot(DefaultRunnerSnapshot):
             x_j = self.HaloNDCatalog.cat['x'][j]
             y_j = self.HaloNDCatalog.cat['y'][j]
             z_j = self.HaloNDCatalog.cat['z'][j] #THIS IS A CARTESIAN COORDINATE, NOT REDSHIFT
+            o_j = {key : self.HaloNDCatalog.cat[key][j] for key in keys} #Other properties
             
             a_j = 1/(1 + self.HaloNDCatalog.redshift)
             R_j = self.mass_def.get_radius(cosmo, M_j, a_j) #in physical Mpc
@@ -225,7 +238,7 @@ class BaryonifySnapshot(DefaultRunnerSnapshot):
                 y_hat = self.enforce_periodicity(dy)/d
 
                 #Compute the displacement needed
-                offset = self.model.displacement(d, M_j, a_j) * a_j
+                offset = self.model.displacement(d, M_j, a_j, **o_j)
                 offset = np.where(np.isfinite(offset), offset, 0)
                 tot_offsets[inds] += np.vstack([offset*x_hat, offset*y_hat]).T
                 
@@ -242,7 +255,7 @@ class BaryonifySnapshot(DefaultRunnerSnapshot):
                 z_hat = self.enforce_periodicity(dz)/d
 
                 #Compute the displacement needed
-                offset = self.model.displacement(d, M_j, a_j) * a_j
+                offset = self.model.displacement(d, M_j, a_j, **o_j)
                 offset = np.where(np.isfinite(offset), offset, 0)
                 tot_offsets[inds] += np.vstack([offset*x_hat, offset*y_hat, offset*z_hat]).T
                 

@@ -371,6 +371,28 @@ class BaryonificationClass(object):
         z_in  = np.log(1/a)*empty #This is log(1 + z)
         r_in  = np.log(r_use)
         k_in  = [kwargs[k] * empty for k in kwargs.keys()]
+
+        #Get the ranges we used as input, so we can check if requested
+        #ranges are contained within the input/tabulated ranges.
+        #We saved log(1 + z) so converting back to z here...
+        z_tab = np.exp(self.raw_input_z_range) - 1
+        M_tab = np.exp(self.raw_input_M_range)
+        r_tab = np.exp(self.raw_input_r_range)
+
+        if (np.min(z_use) < np.min(z_tab)) | (np.max(z_use) > np.max(z_tab)):
+            warn_text = f"Requested redshift range [{np.min(z_use)}, {np.max(z_use)}] outside table's range [{np.min(z_tab)}, {np.max(z_tab)}]"            
+            warnings.warn(warn_text, UserWarning)
+        
+        if (np.min(M_use) < np.min(M_tab)) | (np.max(M_use) > np.max(M_tab)):
+            warn_text = (f"Requested log_Mass range [{np.log10(np.min(M_use))}, {np.log10(np.max(M_use))}] outside "
+                         f"table's range [{np.log10(np.min(M_tab))}, {np.log10(np.max(M_tab))}]")          
+            warnings.warn(warn_text, UserWarning)
+
+        if not self.Rdelta_sampling:
+            if (np.min(r_use) < np.min(r_tab)) | (np.max(r_use) > np.max(r_tab)):
+                warn_text = f"Requested Radius range [{np.min(r_use)}, {np.max(r_use)}] outside table's range [{np.min(r_tab)}, {np.max(r_tab)}]"            
+                warnings.warn(warn_text, UserWarning)
+
         
         for i in range(M_use.size):
             M_in  = np.log(M_use[i])*empty
