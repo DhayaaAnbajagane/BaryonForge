@@ -978,7 +978,7 @@ class SatelliteStars(CollisionlessMatter):
 
     def _real(self, cosmo, r, M, a):
 
-        f_sg   = self._get_star_frac(M_use, a, cosmo, satellite = True)
+        f_sg   = self._get_star_frac(np.atleast_1d(M), a, cosmo, satellite = True)
         f_dm   = 1 - cosmo.cosmo.params.Omega_b/cosmo.cosmo.params.Omega_m
         f_clm  = f_dm + f_sg
         factor = f_sg / f_clm
