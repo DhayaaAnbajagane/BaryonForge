@@ -13,7 +13,8 @@ class Pressure(ccl.halos.profiles.HaloProfile):
     This class computes the pressure profile of halos using the `Battaglia et al. (2012) <https://arxiv.org/pdf/1109.3711>`_ model. 
     The model is based on numerical simulations and provides a way to calculate the electron 
     pressure profile in galaxy clusters, which is useful for studying the thermal Sunyaev-Zel'dovich 
-    effect and other astrophysical phenomena.
+    effect and other astrophysical phenomena. The final profile is in units of comoving
+    volume. Use a factor of 1/a^3 (not 1/a^4) to convert to physical pressure.
 
     Inherits from
     -------------
@@ -71,7 +72,7 @@ class Pressure(ccl.halos.profiles.HaloProfile):
     >>> pressure_profile = battaglia_model._real(my_cosmology, r, M, a)
     """
 
-    def __init__(self, Model_def, truncate = False):
+    def __init__(self, Model_def, mass_def = ccl.halos.massdef.MassDef200c, truncate = False):
 
         #Set mass definition using the input Model_def
         if Model_def == '200_AGN':
@@ -91,7 +92,7 @@ class Pressure(ccl.halos.profiles.HaloProfile):
         self.truncate  = truncate
 
         #Import all other parameters from the base CCL Profile class
-        super(Pressure, self).__init__()
+        super(Pressure, self).__init__(mass_def = mass_def)
 
         #Constant that helps with the fourier transform convolution integral.
         #This value minimized the ringing due to the transforms
@@ -140,7 +141,11 @@ class Pressure(ccl.halos.profiles.HaloProfile):
         Omega_g  = cosmo.cosmo.params.Omega_g
         h        = cosmo.cosmo.params.h
 
-        RHO_CRIT = ccl.physical_constants.RHO_CRITICAL*h**2 * ccl.background.h_over_h0(cosmo, a)**2 #This is in physical coordinates
+        #We start with critical density in physical coordinates, in Msun/Mpc^3
+        #Then, we scale it to the right redshift using H(z)/H_0 factor.
+        #Finally, we convert it to comoving coordinates using the a^3 factor.        
+        RHO_CRIT = ccl.physical_constants.RHO_CRITICAL*h**2 * ccl.background.h_over_h0(cosmo, a)**2 
+        RHO_CRIT = RHO_CRIT * a**3
 
         # The self-similar expectation for Pressure
         # Need R*a to convert comoving Mpc to physical
@@ -237,7 +242,7 @@ class GasDensity(ccl.halos.profiles.HaloProfile):
         self.truncate  = truncate
 
         #Import all other parameters from the base CCL Profile class
-        super().__init__()
+        super().__init__(mass_def = self.mdef)
 
         #Constant that helps with the fourier transform convolution integral.
         #This value minimized the ringing due to the transforms
@@ -281,7 +286,12 @@ class GasDensity(ccl.halos.profiles.HaloProfile):
         Omega_m  = cosmo.cosmo.params.Omega_m
         Omega_b  = cosmo.cosmo.params.Omega_b
         fb       = Omega_b/Omega_m
-        RHO_CRIT = ccl.physical_constants.RHO_CRITICAL*h**2 * ccl.background.h_over_h0(cosmo, a)**2 #This is in physical coordinates
+        
+        #We start with critical density in physical coordinates, in Msun/Mpc^3
+        #Then, we scale it to the right redshift using H(z)/H_0 factor.
+        #Finally, we convert it to comoving coordinates using the a^3 factor.        
+        RHO_CRIT = ccl.physical_constants.RHO_CRITICAL*h**2 * ccl.background.h_over_h0(cosmo, a)**2 
+        RHO_CRIT = RHO_CRIT * a**3
 
         rho_0, alpha, beta = rho_0[:, None], alpha[:, None], beta[:, None]
         prof = RHO_CRIT * fb * rho_0 * (x/x_c)**gamma * (1 + (x/x_c)**alpha)**-((beta - gamma)/alpha)

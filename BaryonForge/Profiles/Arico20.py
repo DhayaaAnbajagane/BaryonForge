@@ -1051,7 +1051,8 @@ class Pressure(AricoProfiles):
 
     This class extends `AricoProfiles` to model the pressure distribution of gas bound 
     to dark matter halos. The pressure is computed from the density of the bound gas 
-    and its effective equation of state.
+    and its effective equation of state. The final profile is in units of comoving
+    volume. Use a factor of 1/a^3 (not 1/a^4) to convert to physical pressure.
 
     Parameters
     ----------
@@ -1131,7 +1132,7 @@ class Pressure(AricoProfiles):
 
         #Get concentration values, and the effective equation of state, Gamma    
         c    = c_M_relation(cosmo, M_use, a)[:, None]
-        c   = np.where(np.isfinite(c), c, 1) #Set default to r_s = R200c if c200c broken (normally for low mass obj in some cosmologies)
+        c    = np.where(np.isfinite(c), c, 1) #Set default to r_s = R200c if c200c broken (normally for low mass obj in some cosmologies)
         r_s  = R[:, None]/c
         Norm = 4*np.pi*r_s**3 * (np.log(1 + c) - c/(1 + c))
         rhoc = M_use[:, None]/Norm
@@ -1140,9 +1141,10 @@ class Pressure(AricoProfiles):
         
         #Normalization from Equation 5 in https://arxiv.org/pdf/2406.01672v1
         rho0  = self.BoundGas.real(cosmo, np.atleast_1d([0]), M_use, a) #To get normalization of gas profile
-        P0    = (rhoc * r_s**2)/np.power(rho0, Geff - 1) * (1 - 1/Geff) 
+        P0    = (rhoc * r_s**2)/np.power(rho0, Geff - 1) * (1 - 1/Geff)
         P0    = P0 * 4*np.pi*G #Separate steps to avoid numerical precision issues
         P0    = P0 * (Msun_to_Kg * 1e3) / (Mpc_to_m * 1e2) #Convert to CGS. Using only one factor of Mpc_to_m is correct!
+        P0    = P0 / a #This is so temperature piece of P = T x rho is always in physical units.
 
         #Now compute the pressure profile for the bound component 
         #But this component is extended beyond R200c (for now) 
@@ -1253,7 +1255,8 @@ class Temperature(AricoProfiles):
     Class for modeling the temperature profile of gas in halos.
 
     This class extends `AricoProfiles` to compute the temperature profile of gas, 
-    based on the ideal gas law, using the pressure and gas density profiles.
+    based on the ideal gas law, using the pressure and gas density profiles. The output
+    is a physical temperature (not in any comoving unit)
 
     Parameters
     ----------
@@ -1299,15 +1302,8 @@ class Temperature(AricoProfiles):
     
     def _real(self, cosmo, r, M, a):
         
-        r_use = np.atleast_1d(r)
-        M_use = np.atleast_1d(M)
-
-        z = 1/a - 1
-
-        R = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
-
-        P   = self.Pressure.real(cosmo, r_use, M, a)
-        n   = self.Gas.real(cosmo, r_use, M, a) / (self.mean_molecular_weight * m_p) / (Mpc_to_m * m_to_cm)**3
+        P   = self.Pressure.real(cosmo, r, M, a)
+        n   = self.Gas.real(cosmo, r, M, a) / (self.mean_molecular_weight * m_p) / (Mpc_to_m * m_to_cm)**3
         
         #We'll have instances of n == 0, which isn't a problem so let's ignore
         #warnings of divide errors, because we know they happen here.
