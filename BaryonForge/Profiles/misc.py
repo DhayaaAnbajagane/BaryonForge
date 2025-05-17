@@ -225,7 +225,7 @@ class TruncatedFourier(object):
         return kprof
     
 
-class Comoving_to_Physical(ccl.halos.profiles.HaloProfile):
+class ComovingToPhysical(ccl.halos.profiles.HaloProfile):
     """
     Converts a given profile from comoving to physical units by applying 
     a user-specified scale factor (`a`) correction. The projected profile is rescaled
@@ -237,7 +237,7 @@ class Comoving_to_Physical(ccl.halos.profiles.HaloProfile):
         A CCL profile object (of any kind)
     factor : float
         The power of the scale factor `a` applied to convert the profile 
-        from comoving to physical units. Should use -3 for density profiles and pressure profile. 
+        from comoving to physical units. Should use -3 for density profiles AND for pressure profiles in BaryonForge. 
 
     Returns
     -------
@@ -254,10 +254,17 @@ class Comoving_to_Physical(ccl.halos.profiles.HaloProfile):
         #We just set this to the same as the inputted profile.
         super().__init__(mass_def = profile.mass_def)
         
-    def _real(self, cosmo, r, M, a):     return self.profile._real(cosmo, r, M, a)     * np.power(a, self.factor)
+    def real(self, cosmo, r, M, a):      return self.profile.real(cosmo, r, M, a)      * np.power(a, self.factor)
     def projected(self, cosmo, r, M, a): return self.profile.projected(cosmo, r, M, a) * np.power(a, self.factor + 1)
 
     def set_parameter(self, key, value): _set_parameter(self, key, value)
+
+    #Have dummy methods because CCL asserts that these must exist.
+    #Hacky because I want to keep SchneiderProfiles as base class
+    #in order to get __init__ to be simple, but then we have to follow
+    #the CCL HaloProfile base class API. 
+    def _real(self): return np.nan
+    def _projected(self): return np.nan
     
 
 class Mdelta_to_Mtot(object):

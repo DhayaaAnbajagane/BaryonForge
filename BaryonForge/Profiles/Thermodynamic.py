@@ -767,7 +767,7 @@ class ThermalSZ(BaseThermodynamicProfile):
 
         #Now a series of units changes to the projected profile.
         prof  = self.pressure.projected(cosmo, r_use, M_use, a) #generate profile
-        prof  = prof * a * (Mpc_to_m * 1e2) #Line-of-sight integral is done in comoving Mpc, we want physical cm
+        prof  = prof * (Mpc_to_m * 1e2) #Line-of-sight integral is done in Mpc, we want cm
         prof  = prof * sigma_T_cgs/(m_e_cgs*c_cgs**2) #Convert to SZ (dimensionless units)
         prof  = prof * self.Pgas_to_Pe(cosmo, r_use, M_use, a) #Then convert from gas pressure to electron pressure
         
