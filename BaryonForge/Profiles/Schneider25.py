@@ -618,7 +618,7 @@ class InnerGas(Schneider25Profiles, Schneider25Fractions):
     .. math::
 
         \\rho_{\\mathrm{inner}}(r) = \\frac{f_{\\mathrm{iga}} M_{\\mathrm{tot}}}{N} 
-        \\cdot r^{-3/2} \\cdot e^{-r / R} \\cdot k_{\\mathrm{cut}}(r),
+        \\cdot r^{-2} \\cdot e^{-r / R} \\cdot k_{\\mathrm{cut}}(r),
 
     where:
     - \\( f_{\\mathrm{iga}} \\) is the inner gas fraction computed from the baryon budget,
@@ -653,7 +653,7 @@ class InnerGas(Schneider25Profiles, Schneider25Fractions):
         #Integrate over wider region in radii to get normalization of gas profile
         r_integral = np.geomspace(self.r_min_int, self.r_max_int, self.r_steps)
         
-        prof_integral = np.power(r_integral, -3/2) * np.exp(-r_integral/R[:, None])
+        prof_integral = np.power(r_integral, -2) * np.exp(-r_integral/R[:, None])
         Normalization = np.trapz(4 * np.pi * r_integral**2 * prof_integral, r_integral, axis = -1)[:, None]
 
         DM    = DarkMatter(**self.model_params); setattr(DM, 'cutoff', 1e3) #Set large cutoff just for normalization calculation
@@ -664,7 +664,7 @@ class InnerGas(Schneider25Profiles, Schneider25Fractions):
         arg   = (r_use[None, :] - self.cutoff)
         arg   = np.where(arg > 30, np.inf, arg) #This is to prevent an overflow in the exponential
         kfac  = 1/( 1 + np.exp(2*arg) ) #Extra exponential cutoff
-        prof  = np.power(r_use, -3/2) * np.exp(-r_use/R[:, None]) * kfac
+        prof  = np.power(r_use, -2) * np.exp(-r_use/R[:, None]) * kfac
         prof *= f_iga*M_tot/Normalization
         
         #Handle dimensions so input dimensions are mirrored in the output
