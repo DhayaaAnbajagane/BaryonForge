@@ -358,6 +358,37 @@ class SchneiderFractions:
     
     def _get_star_frac(self, M_use, a, cosmo):
         
+        """
+        Compute the fractional mass components of stars, cold gas (cga), and shocked gas (sga) 
+        for a given set of halo masses and scale factor.
+
+        Parameters
+        ----------
+        M_use : ndarray
+            Array of halo masses for which to compute the baryonic fractions.
+        a : float
+            Scale factor at which the computation is performed (unused in this function but
+            may be relevant for future extensions).
+        cosmo : object
+            Cosmology object containing cosmological parameters, specifically Omega_b and Omega_m.
+
+        Returns
+        -------
+        f_star : ndarray
+            Stellar mass fraction for each halo, clipped to be between 1e-10 and the cosmic 
+            baryon fraction.
+        f_cga : ndarray
+            Cold gas mass fraction, clipped to be between 1e-10 and the stellar fraction.
+        f_sga : ndarray
+            Shocked gas mass fraction, defined as `f_star - f_cga`, and clipped to be at 
+            least 1e-10 to avoid issues in log calculations.
+
+        Notes
+        -----
+        The function ensures numerical stability by enforcing lower bounds of 1e-10 on all 
+        returned fractions and upper bounds that respect physical limits on baryon content.
+        """
+        
         eta_cga = self.eta + self.eta_delta
         tau_cga = self.tau + self.tau_delta
         
