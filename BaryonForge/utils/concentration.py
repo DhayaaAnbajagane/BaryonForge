@@ -5,7 +5,7 @@ __all__ = ['BaseGenericConcentration',
            'GenericConcentrationDuffy08', 'GenericConcentrationKlypin11', 'GenericConcentrationPrada12',
            'GenericConcentrationDiemer15', 'GenericConcentrationIshiyama21', 'GenericConcentrationBhattacharya13']
 
-class BaseGenericConcentration:
+class BaseGenericConcentration(ccl.halos.halo_model_base.Concentration):
     
     """
     Generic concentration re-mapper between halo mass definitions.
@@ -44,16 +44,16 @@ class BaseGenericConcentration:
 
     Call Signature
     --------------
-    __call__(cosmo, M_use, a)
+    __call__(cosmo, M, a)
 
         Remap the concentration–mass relation to the target ``mass_def`` and
-        evaluate it at the requested masses ``M_use``.
+        evaluate it at the requested masses ``M``.
 
     Parameters
     ----------
     cosmo : pyccl.Cosmology
         Cosmology object used by pyCCL.
-    M_use : array_like
+    M : array_like
         Halo masses *in the target mass definition* ``mass_def``. Must be
         broadcastable to a 1D array. Units must be consistent with your
         pyCCL configuration (typically :math:`M_\odot/h`).
@@ -63,8 +63,8 @@ class BaseGenericConcentration:
     Returns
     -------
     c_use : numpy.ndarray
-        Concentrations evaluated at ``M_use`` for the target mass definition
-        ``mass_def``; same shape as ``M_use``.
+        Concentrations evaluated at ``M`` for the target mass definition
+        ``mass_def``; same shape as ``M``.
 
     Notes
     -----
@@ -84,7 +84,7 @@ class BaseGenericConcentration:
     ...     mdef_in = massdef.MassDef200c()
     ...
     >>> cm = MyDuffyRemapper(mass_def=massdef.MassDef200m())
-    >>> c = cm(cosmo, M_use=[1e12, 1e13], a=1.0)
+    >>> c = cm(cosmo, M=[1e12, 1e13], a=1.0)
     """
 
     cmodel  = None
@@ -92,14 +92,11 @@ class BaseGenericConcentration:
     M_in_lo = 1e10
     M_in_hi = 1e16
     M_in_N  = 100
+    name    = 'BaseGeneric'
     
-    def __init__(self, mass_def):
-        
-        self.mass_def = mass_def
-        
-    def __call__(self, cosmo, M_use, a):
+    def _concentration(self, cosmo, M, a):
         """
-        Evaluate the concentration–mass relation at ``M_use`` for the **target**
+        Evaluate the concentration–mass relation at ``M`` for the **target**
         mass definition (``self.mass_def``) by remapping from the input definition
         (``self.mdef_in``) while preserving the scale radius :math:`r_s`.
 
@@ -112,18 +109,18 @@ class BaseGenericConcentration:
         ----------
         cosmo : pyccl.Cosmology
             Cosmology object consumed by CCL.
-        M_use : array_like of float
+        M : array_like of float
             Halo masses (in :math:`M_\odot/h`) expressed in the **target** mass definition
             ``self.mass_def``. Must satisfy
-            ``self.M_in_lo < M_use.min()`` and ``M_use.max() < self.M_in_hi``.
+            ``self.M_in_lo < M.min()`` and ``M.max() < self.M_in_hi``.
         a : float
             Scale factor, :math:`a = 1/(1+z)`.
 
         Returns
         -------
         numpy.ndarray
-            Concentrations ``c(M_use, a)`` for the target mass definition;
-            same shape as ``M_use``.
+            Concentrations ``c(M, a)`` for the target mass definition;
+            same shape as ``M``.
 
         Raises
         ------
@@ -133,8 +130,8 @@ class BaseGenericConcentration:
             adjust your query if you need a broader range.
         """
         
-        assert np.min(M_use) > self.M_in_lo, f"M_in_lo ({self.M_in_lo}) > min[M_input] ({np.min(M_use)})"
-        assert np.max(M_use) < self.M_in_hi, f"M_in_hi ({self.M_in_hi}) < max[M_input] ({np.max(M_use)})"
+        assert np.min(M) > self.M_in_lo, f"M_in_lo ({self.M_in_lo}) > min[M_input] ({np.min(M)})"
+        assert np.max(M) < self.M_in_hi, f"M_in_hi ({self.M_in_hi}) < max[M_input] ({np.max(M)})"
 
         Min   = np.geomspace(self.M_in_lo, self.M_in_hi, self.M_in_N)
         cin   = self.cmodel(mass_def = self.mdef_in)(cosmo, Min, a)
@@ -147,9 +144,13 @@ class BaseGenericConcentration:
         Rout  = self.mass_def.get_radius(cosmo, Mout, a)/a
         cout  = Rout / r_s
         
-        c_use = np.exp(np.interp(np.log(M_use), np.log(Mout), np.log(cout)))
+        c_use = np.exp(np.interp(np.log(M), np.log(Mout), np.log(cout)))
         
         return c_use
+    
+    #We don't want the check to process. This should always pass
+    #Because our class works for all possible mass definitions
+    def _check_mass_def_strict(self, mass_def): return False
     
 
 class GenericConcentrationDuffy08(BaseGenericConcentration):
