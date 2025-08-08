@@ -55,7 +55,12 @@ def generate_operator_method(op, reflect = False):
                                       padding_lo_proj   = self.padding_lo_proj, 
                                       padding_hi_proj   = self.padding_hi_proj, 
                                       n_per_decade_proj = self.n_per_decade_proj,
-                                      mass_def = self.mass_def)
+                                      mass_def  = self.mass_def,
+                                      r_min_int = self.r_min_int, 
+                                      r_max_int = self.r_max_int, 
+                                      r_steps   = self.r_steps,
+                                      use_fftlog_projection = self._use_fftlog_projection,
+                                      c_M_relation          = self._c_M_relation)
 
             def __tmp_real__(cosmo, r, M, a):
 
@@ -95,6 +100,26 @@ def generate_operator_method(op, reflect = False):
             Combined._real = __tmp_real__
             Combined.__str_prf__ = __str_prf__
 
+
+            #Do the same operations on fourier side only if the profile exists.
+            #This happens for a small handful of profiles
+            if hasattr(self, '_fourier') & ((not isinstance(other, ccl.halos.profiles.HaloProfile)) | hasattr(other, '_fourier')):
+                def __tmp_fourier__(cosmo, r, M, a):
+
+                    A = self._fourier(cosmo, r, M, a)
+
+                    if isinstance(other, ccl.halos.profiles.HaloProfile):
+                        B = other._fourier(cosmo, r, M, a)
+                    else:
+                        B = other
+
+                    if not reflect:
+                        return op(A, B)
+                    else:
+                        return op(B, A)
+                    
+                Combined._fourier = __tmp_fourier__
+                    
             return Combined
 
     #For some operators we don't need a second input, so rewrite function for that

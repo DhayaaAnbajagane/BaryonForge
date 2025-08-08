@@ -98,6 +98,9 @@ class SchneiderProfiles(ccl.halos.profiles.HaloProfile):
             self.c_M_relation = c_M_relation(mass_def = mass_def)
         else:
             self.c_M_relation = None
+
+        #Also save the original input to propogate into profile ops.
+        self._c_M_relation    = c_M_relation
                     
         #Some params for handling the realspace projection
         self.padding_lo_proj   = padding_lo_proj
@@ -131,6 +134,8 @@ class SchneiderProfiles(ccl.halos.profiles.HaloProfile):
                     f"You have cutoff = {self.cutoff} and proj_cutoff = {self.proj_cutoff}")
             assert self.cutoff == self.proj_cutoff, text
 
+        #Save to propogate into profile-operated classes (+, -, %, *, etc.)
+        self._use_fftlog_projection = use_fftlog_projection
 
         #Constant that helps with the fourier transform convolution integral.
         #This value minimized the ringing due to the transforms
