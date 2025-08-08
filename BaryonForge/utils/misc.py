@@ -100,6 +100,26 @@ def generate_operator_method(op, reflect = False):
             Combined._real = __tmp_real__
             Combined.__str_prf__ = __str_prf__
 
+
+            #Do the same operations on fourier side only if the profile exists.
+            #This happens for a small handful of profiles
+            if hasattr(self, '_fourier') & ((not isinstance(other, ccl.halos.profiles.HaloProfile)) | hasattr(other, '_fourier')):
+                def __tmp_fourier__(cosmo, r, M, a):
+
+                    A = self._fourier(cosmo, r, M, a)
+
+                    if isinstance(other, ccl.halos.profiles.HaloProfile):
+                        B = other._fourier(cosmo, r, M, a)
+                    else:
+                        B = other
+
+                    if not reflect:
+                        return op(A, B)
+                    else:
+                        return op(B, A)
+                    
+                Combined._fourier = __tmp_fourier__
+                    
             return Combined
 
     #For some operators we don't need a second input, so rewrite function for that
