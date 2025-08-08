@@ -13,7 +13,8 @@ __all__ = ['model_params', 'MeadProfiles',
            'DarkMatter', 'TwoHalo', 'CentralStars', 'SatelliteStars', 'Stars', 
            'Gas', 'BoundGas', 'EjectedGas', 'ReaccretedGas', 'CollisionlessMatter',
            'DarkMatterOnly', 'DarkMatterBaryon',
-           'Temperature', 'Pressure']
+           'Temperature', 'Pressure',
+           'Tagn2pars']
 
 model_params = ['cdelta', 'eps1', 'nu_eps1', 'eps2', #DM profle param and relaxation params
                 'cutoff', 'proj_cutoff', #Cutoff parameters (numerical)
@@ -1142,3 +1143,71 @@ Params_TAGN_8p0_MPr =  {'A_star' : 0.0309, 'nu_A_star' : -0.0082, 'M_star' : np.
                         'M_0' : np.power(10, 14.24798)/0.7, 'T_w' : np.power(10, 6.66146), 'nu_T_w' : -0.06167,
                         'eps2' : 0, 'mean_molecular_weight' : 0.59, 'eta_b' : 0.5, 'sigma_star' : 1.2, 'beta' : 0.6,
                         'epsilon_h' : 0.015, 'p' : 0.3, 'q' : 0.707, 'alpha' : 1.0314}
+
+
+def Tagn2pars(Tagn, mode = 'All'):
+    """
+    Interpolate calibrated model parameters as a function of Tagn, like in Mead++.
+    All parameters are interpolated linearly and some (M_0, M_star, T_w) in log-log space.
+    This matches what is done in HMx.
+
+    Parameters
+    ----------
+    Tagn : float or int
+        The AGN temperature (in log10 scale) at which to interpolate the model parameters.
+    mode : {'All', 'MatterPressure'}, default='All'
+        Which calibration set to use:
+        - 'All'           : joint fit to gas, stars, density, and pressure fields.
+        - 'MatterPressure': fit to matter and pressure fields only.
+
+    Returns
+    -------
+    dict[str, float]
+        A dictionary mapping each profile parameter name to its interpolated value
+        at the requested `Tagn`.
+
+    Examples
+    --------
+    >>> # interpolate parameters at Tagn=7.9 using the 'All' calibration
+    >>> params = Tagn2pars(7.9, mode='All')
+    """
+
+    assert isinstance(Tagn, (float, int)), f"T_agn must be a float or int. You passed {type(Tagn)}"
+
+    #Tagn values of the calibrated params
+    Tagn_calib = [7.6, 7.8, 8.0]
+    log_keys   = ['M_0', 'M_star', 'T_w']
+    
+    #Now get the param values themselves
+    if mode == 'All':
+        Pars_a, Pars_b, Pars_c = Params_TAGN_7p6_All, Params_TAGN_7p8_All, Params_TAGN_8p0_All
+    elif mode == 'MatterPressure':
+        Pars_a, Pars_b, Pars_c = Params_TAGN_7p6_MPr, Params_TAGN_7p8_MPr, Params_TAGN_8p0_MPr
+    else:
+        raise NotImplemented(f"mode = {mode} is not implemented. Use 'All' or 'MatterPressure'.")
+    
+    #Now interpolate and add it to the new dict
+    new_dict = {}
+    for k in Pars_a.keys():
+        p_a, p_b, p_c = Pars_a[k], Pars_b[k], Pars_c[k]
+
+        #Some pars are interpolated in log
+        if k in log_keys: 
+            p_a, p_b, p_c = np.log10(p_a), np.log10(p_b), np.log10(p_c)
+
+        #Simple linear interpolation
+        table = interpolate.interp1d(Tagn_calib, [p_a, p_b, p_c], bounds_error = False, fill_value = 'extrapolate', kind = 'linear')
+        p_out = float(table(Tagn))
+
+        if k in log_keys:
+            p_out = np.power(10, p_out)
+
+        new_dict[k] = p_out
+
+
+    return new_dict
+
+
+
+
+    
