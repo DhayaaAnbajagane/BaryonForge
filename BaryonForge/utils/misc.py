@@ -55,7 +55,12 @@ def generate_operator_method(op, reflect = False):
                                       padding_lo_proj   = self.padding_lo_proj, 
                                       padding_hi_proj   = self.padding_hi_proj, 
                                       n_per_decade_proj = self.n_per_decade_proj,
-                                      mass_def = self.mass_def)
+                                      mass_def  = self.mass_def,
+                                      r_min_int = self.r_min_int, 
+                                      r_max_int = self.r_max_int, 
+                                      r_steps   = self.r_steps,
+                                      use_fftlog_projection = self._use_fftlog_projection,
+                                      c_M_relation          = self._c_M_relation)
 
             def __tmp_real__(cosmo, r, M, a):
 
