@@ -44,7 +44,8 @@ __all__ = ['Pressure', 'NonThermalFrac', 'NonThermalFracGreen20',
 
 class BaseThermodynamicProfile(SchneiderProfiles):
 
-    def __init__(self, mass_def = ccl.halos.massdef.MassDef200c, 
+    def __init__(self, mass_def = ccl.halos.massdef.MassDef200c,
+                 c_M_relation = None, 
                  use_fftlog_projection = False, 
                  padding_lo_proj = 0.1, padding_hi_proj = 10, n_per_decade_proj = 10,
                  r_min_int = 1e-6, r_max_int = 1e3, r_steps = 500, xi_mm = None,
@@ -57,6 +58,13 @@ class BaseThermodynamicProfile(SchneiderProfiles):
                 setattr(self, m, kwargs[m])
             else:
                 setattr(self, m, None)
+
+
+        #Let user specify their own c_M_relation as desired
+        if c_M_relation is not None:
+            self.c_M_relation = c_M_relation(mass_def = mass_def)
+        else:
+            self.c_M_relation = None
                     
         #Some params for handling the realspace projection
         self.padding_lo_proj   = padding_lo_proj
@@ -187,7 +195,8 @@ class Pressure(BaseThermodynamicProfile):
 
         This method calculates the gas pressure profile for a specified cosmology, radii, 
         halo mass, and scale factor. The pressure is computed by integrating the pressure 
-        gradient derived from the hydrostatic equilibrium condition.
+        gradient derived from the hydrostatic equilibrium condition. The final profile is 
+        in units of comoving volume. Use a factor of 1/a^3 (not 1/a^4) to convert to physical pressure.
 
         Parameters
         ----------
@@ -257,8 +266,8 @@ class Pressure(BaseThermodynamicProfile):
         
         #Integrate total density profile to get the cumulative mass distribution
         dlnr    = np.log(r_integral[1]) - np.log(r_integral[0])
-        dV      = r_integral**3 * dlnr
-        M_total = 4 * np.pi * integrate.cumulative_simpson(dV * rho_total, axis = -1, initial = dV[0] * rho_total[:, [0]])
+        dV      = 4 * np.pi * r_integral**3 * dlnr
+        M_total = integrate.cumulative_simpson(dV * rho_total, axis = -1, initial = 0) + dV[0] * rho_total[:, [0]]
 
         #Assuming hydrostatic equilibrium to get dP/dr = -G*M(<r)*rho(r)/r^2
         dP_dr = - G * M_total * rho_gas / r_integral**2
@@ -273,14 +282,17 @@ class Pressure(BaseThermodynamicProfile):
         #We use trapezoid rule here because simpson was causing odd oscillatory errors because
         #Some profiles have sharp transitions in their pressure/gas profiles (eg. Mead)
         intgr = (dP_dr * r_integral)[:, ::-1] * dlnr
-        prof  = -np.array([integrate.cumulative_trapezoid(intgr[i], initial = intgr[i, 0])[::-1] for i in range(intgr.shape[0])])
+        prof  = -np.array([integrate.cumulative_trapezoid(intgr[i], initial = 0)[::-1] + intgr[i, 0] for i in range(intgr.shape[0])])
         
         prof  = interpolate.PchipInterpolator(np.log(r_integral), np.log(prof + Pressure_at_infinity), axis = 1, extrapolate = False)
         prof  = np.exp(prof(np.log(r_use))) - Pressure_at_infinity
         prof  = np.where(np.isfinite(prof), prof, 0) #Get rid of pesky NaN and inf values if they exist! They break CCL spline interpolator
         
         #Convert to CGS. Using only one factor of Mpc_to_m is correct here!
+        #The factor of 1/a is so the  temperature piece of Pressure = Temp x density
+        #is always in physical units. So the comoving units are just in the density.
         prof  = prof * (Msun_to_Kg * 1e3) / (Mpc_to_m * 1e2)
+        prof  = prof / a
         
         #Now do cutoff
         arg   = (r_use[None, :] - self.cutoff)
@@ -529,25 +541,17 @@ class GasNumberDensity(BaseThermodynamicProfile):
         super().__init__(**kwargs)
         
         self.mean_molecular_weight = kwargs['mean_molecular_weight']
-        
-        
+
+        #Convert from Msun --> n_proton
+        #Then convert from 1/Mpc^3 to 1/cm^3
+        #The projected profile will just be in units of Mpc/cm^3
+        self.factor = 1 / (self.mean_molecular_weight * m_p) / (Mpc_to_m * m_to_cm)**3
     
-    def _real(self, cosmo, r, M, a):
-        
-        
-        r_use = np.atleast_1d(r)
-        M_use = np.atleast_1d(M)
+    #Need to explicitly call real and projected routines here.
+    #We call "_real" since if we define "real" over "_real" then CCL will complain
+    def _real(self, cosmo, r, M, a):     return self.Gas._real(cosmo, r, M, a)     * self.factor
+    def projected(self, cosmo, r, M, a): return self.Gas.projected(cosmo, r, M, a) * self.factor
 
-        z = 1/a - 1
-
-        R = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
-
-        rho  = self.Gas
-        rho  = rho.real(cosmo, r_use, M, a)
-        prof = rho / (self.mean_molecular_weight * m_p) / (Mpc_to_m * m_to_cm)**3
-        
-        return prof
-    
     
 class Temperature(BaseThermodynamicProfile):
     """
@@ -763,7 +767,7 @@ class ThermalSZ(BaseThermodynamicProfile):
 
         #Now a series of units changes to the projected profile.
         prof  = self.pressure.projected(cosmo, r_use, M_use, a) #generate profile
-        prof  = prof * a * (Mpc_to_m * 1e2) #Line-of-sight integral is done in comoving Mpc, we want physical cm
+        prof  = prof * (Mpc_to_m * 1e2) #Line-of-sight integral is done in Mpc, we want cm
         prof  = prof * sigma_T_cgs/(m_e_cgs*c_cgs**2) #Convert to SZ (dimensionless units)
         prof  = prof * self.Pgas_to_Pe(cosmo, r_use, M_use, a) #Then convert from gas pressure to electron pressure
         

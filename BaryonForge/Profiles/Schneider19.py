@@ -7,7 +7,8 @@ from scipy import interpolate, integrate
 from ..utils.Tabulate import _set_parameter
 
 __all__ = ['model_params', 'SchneiderProfiles', 
-           'DarkMatter', 'TwoHalo', 'Stars', 'Gas', 'ShockedGas', 'CollisionlessMatter',
+           'DarkMatter', 'TwoHalo', 'Stars', 'SatelliteStars', 
+           'Gas', 'ShockedGas', 'CollisionlessMatter',
            'DarkMatterOnly', 'DarkMatterBaryon']
 
 
@@ -74,7 +75,7 @@ class SchneiderProfiles(ccl.halos.profiles.HaloProfile):
     model_param_names = model_params
 
     def __init__(self, mass_def = ccl.halos.massdef.MassDef200c, 
-                 use_fftlog_projection = False, 
+                 c_M_relation = None, use_fftlog_projection = False, 
                  padding_lo_proj = 0.1, padding_hi_proj = 10, n_per_decade_proj = 10, 
                  r_min_int = 1e-6, r_max_int = 1e3, r_steps = 500,
                  xi_mm = None, 
@@ -91,6 +92,12 @@ class SchneiderProfiles(ccl.halos.profiles.HaloProfile):
                 setattr(self, m, 1e14)
             else:
                 setattr(self, m, None)
+
+        #Let user specify their own c_M_relation as desired
+        if c_M_relation is not None:
+            self.c_M_relation = c_M_relation(mass_def = mass_def)
+        else:
+            self.c_M_relation = None
                     
         #Some params for handling the realspace projection
         self.padding_lo_proj   = padding_lo_proj
@@ -232,21 +239,31 @@ class SchneiderProfiles(ccl.halos.profiles.HaloProfile):
         int_max = self.padding_hi_proj   * np.max(r_use)
         int_N   = self.n_per_decade_proj * np.int32(np.log10(int_max/int_min))
         
-        #If proj_cutoff was passed, then rewrite the integral max limit
+        #If proj_cutoff was passed, then use the largest of the two
+        if self.proj_cutoff is not None: 
+            int_max = np.max([self.proj_cutoff, int_max])
+
+        r_integral  = np.geomspace(int_min, int_max, int_N)
+        
+        
+        #Use proj_cutoff and if it is not passed then default to the regular cutoff
         if self.proj_cutoff is not None:
-            int_max = self.proj_cutoff
-
-        r_integral = np.geomspace(int_min, int_max, int_N)
-
-        prof = self._real(cosmo, r_integral, M, a)
+            r_max = self.proj_cutoff
+        elif self.cutoff is not None:
+            r_max = self.cutoff
+        else:
+            r_max = 1e4
+            warnings.warn("WARNING: projected() profile requested without specifying proj_cutoff or cutoff. "
+                          "Defaulting the integral upper limit to 10,000 (comoving) Mpc.")
+            
+        r_proj = np.geomspace(int_min, r_max, int_N)
+        prof   = self._real(cosmo, r_integral, M, a)
 
         #The prof object is already "squeezed" in some way.
         #Code below removes that squeezing so rest of code can handle
         #passing multiple radii and masses.
-        if np.ndim(r) == 0:
-            prof = prof[:, None]
-        if np.ndim(M) == 0:
-            prof = prof[None, :]
+        if np.ndim(r) == 0: prof = prof[:, None]
+        if np.ndim(M) == 0: prof = prof[None, :]
 
         proj_prof = np.zeros([M_use.size, r_use.size])
 
@@ -255,9 +272,8 @@ class SchneiderProfiles(ccl.halos.profiles.HaloProfile):
         for i in range(M_use.size):
             for j in range(r_use.size):
 
-                proj_prof[i, j] = 2*np.trapz(np.interp(np.sqrt(r_integral**2 + r_use[j]**2), r_integral, prof[i]), r_integral)
+                proj_prof[i, j] = 2*np.trapz(np.interp(np.sqrt(r_proj**2 + r_use[j]**2), r_integral, prof[i]), r_proj)
 
-        
         #Handle dimensions so input dimensions are mirrored in the output
         if np.ndim(r) == 0:
             proj_prof = np.squeeze(proj_prof, axis=-1)
@@ -338,6 +354,41 @@ class SchneiderProfiles(ccl.halos.profiles.HaloProfile):
 
 
 
+class SchneiderFractions:
+    
+    def _get_star_frac(self, M_use, a, cosmo):
+        
+        eta_cga = self.eta + self.eta_delta
+        tau_cga = self.tau + self.tau_delta
+        
+        f_bar  = cosmo.cosmo.params.Omega_b/cosmo.cosmo.params.Omega_m
+        f_star = 2 * self.A * ((M_use/self.M1)**self.tau + (M_use/self.M1)**self.eta)**-1
+        f_cga  = 2 * self.A * ((M_use/self.M1)**tau_cga  + (M_use/self.M1)**eta_cga)**-1
+        
+        #Star frac cannot be larger than baryon fraction. If it is 0 then the code fails
+        #when taking logs of profiles. So give it a super small value instead.
+        #Similarly, the cga fraction cannot be larger than the star fraction.
+        f_star = np.clip(f_star, 1e-10, f_bar)
+        f_cga  = np.clip(f_cga,  1e-10, f_star)
+        
+        f_star = f_star[:, None]
+        f_cga  = f_cga[:, None]
+        
+        f_sga  = np.clip(f_star - f_cga, 1e-10, None) 
+        
+        return f_star, f_cga, f_sga
+    
+    
+    def _get_gas_frac(self, M_use, a, cosmo):
+        
+        f_star = self._get_star_frac(M_use, a, cosmo)[0]
+        f_bar  = cosmo.cosmo.params.Omega_b/cosmo.cosmo.params.Omega_m
+        f_gas  = np.clip(f_bar - f_star, 1e-10, None) #Cannot let the fraction be identically 0.        
+        
+        return f_gas
+        
+        
+        
 class DarkMatter(SchneiderProfiles):
     """
     Class representing the total Dark Matter (DM) profile using the NFW (Navarro-Frenk-White) profile.
@@ -393,14 +444,16 @@ class DarkMatter(SchneiderProfiles):
 
         z = 1/a - 1
 
-        if self.cdelta is None:
+        if (self.cdelta is None) and (self.c_M_relation is None):
             c_M_relation = ccl.halos.concentration.ConcentrationDiemer15(mass_def = self.mass_def) #Use the diemer calibration
-            
+        elif self.c_M_relation is not None:
+            c_M_relation = self.c_M_relation
         else:
+            assert self.cdelta is not None, "Either provide cdelta or a c_M_relation input"
             c_M_relation = ccl.halos.concentration.ConcentrationConstant(self.cdelta, mass_def = self.mass_def)
-            #c_M_relation = ccl.halos.concentration.ConcentrationConstant(7, mdef = self.mass_def) #needed to get Schneider result
             
         c   = c_M_relation(cosmo, M_use, a)
+        c   = np.where(np.isfinite(c), c, 1) #Set default to r_s = R200c if c200c broken (normally for low mass obj in some cosmologies)
         R   = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
         r_s = R/c
         r_t = R*self.epsilon
@@ -524,7 +577,7 @@ class TwoHalo(SchneiderProfiles):
         return prof
 
 
-class Stars(SchneiderProfiles):
+class Stars(SchneiderProfiles, SchneiderFractions):
     """
     Class representing the exponential stellar mass profile.
 
@@ -600,14 +653,8 @@ class Stars(SchneiderProfiles):
 
         R   = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
 
-        eta_cga = self.eta + self.eta_delta
-        tau_cga = self.tau + self.tau_delta
-        
-        f_cga  = 2 * self.A * ((M_use/self.M1)**tau_cga  + (M_use/self.M1)**eta_cga)**-1
-
-        R_h   = self.epsilon_h * R
-
-        f_cga, R_h = f_cga[:, None], R_h[:, None]
+        f_cga  = self._get_star_frac(M_use, a, cosmo)[1]
+        R_h    = self.epsilon_h * R[:, None]
 
         r_integral = np.geomspace(self.r_min_int, self.r_max_int, self.r_steps)
         DM    = DarkMatter(**self.model_params); setattr(DM, 'cutoff', 1e3) #Set large cutoff just for normalization calculation
@@ -627,7 +674,7 @@ class Stars(SchneiderProfiles):
         return prof
 
 
-class Gas(SchneiderProfiles):
+class Gas(SchneiderProfiles, SchneiderFractions):
 
     """
     Class representing the gas density profile.
@@ -695,10 +742,7 @@ class Gas(SchneiderProfiles):
 
         R = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
 
-        f_star = 2 * self.A * ((M_use/self.M1)**self.tau + (M_use/self.M1)**self.eta)**-1
-        f_bar  = cosmo.cosmo.params.Omega_b/cosmo.cosmo.params.Omega_m
-        f_gas  = f_bar - f_star
-        f_gas  = f_gas[:, None]
+        f_gas  = self._get_gas_frac(M_use, a, cosmo)
         
         #Get gas params
         beta, theta_ej, theta_co, delta, gamma = self._get_gas_params(M_use, z)
@@ -819,7 +863,7 @@ class ShockedGas(Gas):
         return prof
 
 
-class CollisionlessMatter(SchneiderProfiles):
+class CollisionlessMatter(SchneiderProfiles, SchneiderFractions):
 
     """
     Class representing the collisionless matter density profile.
@@ -978,24 +1022,21 @@ class CollisionlessMatter(SchneiderProfiles):
         eta_cga = self.eta + self.eta_delta
         tau_cga = self.tau + self.tau_delta
         
-        f_star = 2 * self.A * ((M_use/self.M1)**self.tau + (M_use/self.M1)**self.eta)**-1
-        f_cga  = 2 * self.A * ((M_use/self.M1)**tau_cga  + (M_use/self.M1)**eta_cga)**-1
-        f_star = f_star[:, None]
-        f_cga  = f_cga[:, None]
-        f_sga  = f_star - f_cga
+        f_sga  = self._get_star_frac(M_use, a, cosmo)[2]
         f_clm  = 1 - cosmo.cosmo.params.Omega_b/cosmo.cosmo.params.Omega_m + f_sga
-        
         
         rho_i      = self.DarkMatter.real(cosmo, r_integral, M_use, a)
         rho_cga    = self.Stars.real(cosmo, r_integral, M_use, a)
         rho_gas    = self.Gas.real(cosmo, r_integral, M_use, a)
 
+        #Need to add the offset manually now since scipy deprecates initial != 0
+        #Offset required so that the integrated array has the same size as the profile array
         dlnr  = np.log(r_integral[1]) - np.log(r_integral[0])
-        dV    = r_integral**3 * dlnr
-        M_i   = 4 * np.pi * integrate.cumulative_simpson(dV * rho_i  , axis = -1, initial = dV[0] * rho_i[:, [0]])
-        M_cga = 4 * np.pi * integrate.cumulative_simpson(dV * rho_cga, axis = -1, initial = dV[0] * rho_cga[:, [0]])
-        M_gas = 4 * np.pi * integrate.cumulative_simpson(dV * rho_gas, axis = -1, initial = dV[0] * rho_gas[:, [0]])
-        
+        dV    = 4 * np.pi * r_integral**3 * dlnr
+        M_i   = integrate.cumulative_simpson(dV * rho_i  , axis = -1, initial = 0) + dV[0] * rho_i[:, [0]]
+        M_cga = integrate.cumulative_simpson(dV * rho_cga, axis = -1, initial = 0) + dV[0] * rho_cga[:, [0]]
+        M_gas = integrate.cumulative_simpson(dV * rho_gas, axis = -1, initial = 0) + dV[0] * rho_gas[:, [0]]
+
         #We intentionally set Extrapolate = True. This is to handle behavior at extreme small-scales (due to stellar profile)
         #and radius limits at largest scales. Using extrapolate=True does not introduce numerical artifacts into predictions
         ln_M_NFW = [interpolate.PchipInterpolator(np.log(r_integral), np.log(M_i[m_i]),   extrapolate = True) for m_i in range(M_i.shape[0])]
@@ -1046,11 +1087,12 @@ class CollisionlessMatter(SchneiderProfiles):
         log_der  = ln_M_clm.derivative(nu = 1)(np.log(r_use))
         lin_der  = log_der * np.exp(ln_M_clm(np.log(r_use))) / r_use
         prof     = 1/(4*np.pi*r_use**2) * lin_der
+        prof     = np.clip(prof, 0, None) #If prof < 0 due to interpolation errors, then force it to 0.
         
         arg  = (r_use[None, :] - self.cutoff)
         arg  = np.where(arg > 30, np.inf, arg) #This is to prevent an overflow in the exponential
         kfac = 1/( 1 + np.exp(2*arg) ) #Extra exponential cutoff
-        prof = np.where(np.isnan(prof), 0, prof) * kfac
+        prof = np.where(np.isfinite(prof), prof, 0) * kfac
 
         #Handle dimensions so input dimensions are mirrored in the output
         if np.ndim(r) == 0:
@@ -1058,6 +1100,35 @@ class CollisionlessMatter(SchneiderProfiles):
         if np.ndim(M) == 0:
             prof = np.squeeze(prof, axis=0)
 
+        return prof
+    
+
+class SatelliteStars(CollisionlessMatter, SchneiderFractions):
+
+    """
+    Class representing the matter density profile of stars in satellites.
+
+    It uses the `CollisionlessMatter` profiles with a simple rescaling to
+    get just the SG (satellite galaxies) term alone. See that class for
+    more details.
+    """
+    
+    def _real(self, cosmo, r, M, a):
+
+        M_use = np.atleast_1d(M)
+
+        eta_cga = self.eta + self.eta_delta
+        tau_cga = self.tau + self.tau_delta
+        
+        f_sga  = self._get_star_frac(M_use, a, cosmo)[2]
+        f_clm  = 1 - cosmo.cosmo.params.Omega_b/cosmo.cosmo.params.Omega_m + f_sga
+        
+        if np.ndim(M) == 0: 
+            f_clm = np.squeeze(f_clm, axis = 0)
+            f_sga = np.squeeze(f_sga, axis = 0)
+
+        prof   = super()._real(cosmo, r, M, a) * (f_sga/f_clm)
+        
         return prof
 
 
@@ -1139,7 +1210,7 @@ class DarkMatterOnly(SchneiderProfiles):
         return prof
 
 
-class DarkMatterBaryon(SchneiderProfiles):
+class DarkMatterBaryon(SchneiderProfiles, SchneiderFractions):
 
     """
     Class representing a combined dark matter and baryonic matter profile.

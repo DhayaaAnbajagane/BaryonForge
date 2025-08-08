@@ -5,7 +5,7 @@ import warnings
 
 from scipy import interpolate, special, integrate
 from ..utils import _set_parameter, safe_Pchip_minimize
-from .misc import Zeros
+from .misc import Zeros, Truncation
 from . import Schneider19 as S19
 from .Thermodynamic import (G, Msun_to_Kg, Mpc_to_m, kb_cgs, m_p, m_to_cm)
 
@@ -21,7 +21,8 @@ model_params = ['cdelta', 'a', 'n', #DM profle params and relaxation params
                 'theta_out', 'theta_inn', 'M_inn', 'M_c', 'mu', 'beta', 
                 'M_r', 'beta_r', 'eta', 'theta_rg', 'sigma_rg', 'epsilon_hydro', #Default gas profile param
 
-                'alpha_sat', 'M1_0', 'alpha_g', 'epsilon_h', #Star params
+                'M1_0', 'alpha_g', 'epsilon_h', #Star params
+                'M1_fsat', 'eps_fsat', 'alpha_fsat', 'delta_fsat', 'gamma_fsat', #Satellite galaxy params
 
                 'A_nt', 'alpha_nt', #Pressure params
                 'mean_molecular_weight', #Gas number density params
@@ -53,7 +54,7 @@ class AricoProfiles(S19.SchneiderProfiles):
         self.proj_cutoff = kwargs['proj_cutoff'] if 'proj_cutoff' in kwargs.keys() else self.cutoff
                 
     
-    def _get_gas_params(self, M, z):
+    def _get_gas_params(self, M, a, cosmo):
         """
         Compute gas parameters based on halo mass and redshift.
 
@@ -98,7 +99,7 @@ class AricoProfiles(S19.SchneiderProfiles):
         return beta, theta_out, theta_inn
     
 
-    def _get_star_frac(self, M, z, satellite = False):
+    def _get_star_frac(self, M, a, cosmo, satellite = False):
         """
         Compute the stellar fraction as a function of halo mass and redshift.
 
@@ -155,7 +156,7 @@ class AricoProfiles(S19.SchneiderProfiles):
         gamma_a = 1.319
         gamma_z = 0.279
 
-        a   = 1/(1 + z)
+        z   = 1/a - 1
         nu  = np.exp(-4*a**2)
         M1  = self.M1_0 * np.power(10, (M1_a*(a - 1) + M1_z * z)*nu)
         eps = np.power(10, eps_0 + nu*(eps_a*(a - 1)) + eps_a2 * (a - 1))
@@ -163,21 +164,89 @@ class AricoProfiles(S19.SchneiderProfiles):
         delta = delta_0 + nu*(delta_a*(a - 1) + delta_z*z)
         gamma = gamma_0 + nu*(gamma_a*(a - 1) + gamma_z*z)
 
-        if satellite:
-
-            M1     = np.power(M1,  self.alpha_sat)
-            eps    = np.power(eps, self.alpha_sat)
-            alpha *= self.alpha_sat
-            delta *= self.alpha_sat
-            gamma *= self.alpha_sat
-
         x   = np.log10(M/M1)
         g_x = -np.log10(np.power(10, alpha * x) + 1) + delta * np.power(np.log10(1 + np.exp(x)), gamma)/(1 + np.exp(np.clip(10**-x, None, 30)))
         g_0 = -np.log10(np.power(10, alpha * 0) + 1) + delta * np.power(np.log10(1 + np.exp(0)), gamma)/(1 + np.exp(10**-0))
         fCG = eps * (M1/M) * np.power(10, g_x - g_0)
+        
+        
+        #Now compute the satellite galaxy fraction
+        M1    *= self.M1_fsat
+        eps   *= self.eps_fsat
+        alpha *= self.alpha_fsat
+        delta *= self.delta_fsat
+        gamma *= self.gamma_fsat
+        
+        x   = np.log10(M/M1)
+        g_x = -np.log10(np.power(10, alpha * x) + 1) + delta * np.power(np.log10(1 + np.exp(x)), gamma)/(1 + np.exp(np.clip(10**-x, None, 30)))
+        g_0 = -np.log10(np.power(10, alpha * 0) + 1) + delta * np.power(np.log10(1 + np.exp(0)), gamma)/(1 + np.exp(10**-0))
+        fSG = eps * (M1/M) * np.power(10, g_x - g_0)
+        
+        
+        #Some simple consistency relations that must be obeyed
+        #f_CG <= f_bar. We enforce this by clipping.
+        #f_star <= f_bar. We enforced this by reducing fSG accordingly
+        f_bar = cosmo.cosmo.params.Omega_b/cosmo.cosmo.params.Omega_m
+        fCG   = np.clip(fCG, 1e-10, f_bar) #Need small value, not literally 0 to avoid log10(0) errors.
+        f_str = fCG + fSG
+        fSG   = fSG - np.clip(f_str - f_bar, 0, None)
+        fSG   = np.clip(fSG, 0, None) #This can be literally 0 since there is no log10 step
 
-        return fCG    
+        return fSG[:, None] if satellite else fCG[:, None]
+    
+    
+    def _get_gas_frac(self, M, a, cosmo, satellite = False):
+        """
+        Compute the gas fraction as a function of halo mass and redshift.
 
+        Parameters
+        ----------
+        M : array_like
+            Halo masses, in units of solar masses.
+        a : array_like
+            Redshift values corresponding to the input halo masses.
+        satellite : bool, optional
+            If True, modifies the stellar fraction parameters for satellite galaxies. 
+            Default is False.
+
+        Returns
+        -------
+        fCG : array_like
+            The computed stellar fraction for each input halo mass and redshift.
+
+        Notes
+        -----
+        - The model parameters are derived from the fitting functions in Behroozi et al. (2013) 
+        and include terms for redshift evolution and halo mass dependence.
+        - For satellite galaxies, all parameters are adjusted using a scaling factor, `alpha_sat`.
+        - The stellar fraction is computed as:
+
+        .. math::
+
+            f_{\\text{CG}} = \epsilon \\cdot \frac{M_1}{M} 
+            \\cdot 10^{g(x) - g(0)}
+
+        where:
+        - \( x = \log_{10}(M / M_1) \)
+        - \( g(x) \) is a complex function of \( x \), \(\alpha\), \(\delta\), and \(\gamma\).
+        - \(\epsilon\), \(M_1\), \(\alpha\), \(\delta\), and \(\gamma\) are redshift-dependent parameters.
+        """
+
+        f_cg  = self._get_star_frac(M, a, cosmo)
+        f_sg  = self._get_star_frac(M, a, cosmo, satellite = True)
+        f_str = f_cg + f_sg
+        f_bar = cosmo.cosmo.params.Omega_b/cosmo.cosmo.params.Omega_m
+        
+        f_gas = np.clip(f_bar - f_str, 1e-10, None) #Total gas fraction should be non-zero to avoid log10 errors
+        
+        f_hg  = f_gas / (1 + np.power(self.M_c/M[:, None], self.beta))
+        f_eg  = f_gas - f_hg #By definition f_hg <= f_gas
+        f_rg  = (f_gas - f_hg) / (1 + np.power(self.M_r/M[:, None], self.beta_r))
+        f_rg  = np.clip(f_rg, None, f_hg) #Reaccreted gas cannot be more than halo gas 
+        f_bg  = f_hg - f_rg
+        
+        return f_bg, f_rg, f_eg
+    
 
     def __str_par__(self):
         '''
@@ -227,12 +296,16 @@ class DarkMatter(AricoProfiles):
 
         z = 1/a - 1
 
-        if self.cdelta is None:
+        if (self.cdelta is None) and (self.c_M_relation is None):
             c_M_relation = ccl.halos.concentration.ConcentrationDiemer15(mass_def = self.mass_def) #Use the diemer calibration
+        elif self.c_M_relation is not None:
+            c_M_relation = self.c_M_relation
         else:
+            assert self.cdelta is not None, "Either provide cdelta or a c_M_relation input"
             c_M_relation = ccl.halos.concentration.ConcentrationConstant(self.cdelta, mass_def = self.mass_def)
             
         c   = c_M_relation(cosmo, M_use, a)
+        c   = np.where(np.isfinite(c), c, 1) #Set default to r_s = R200c if c200c broken (normally for low mass obj in some cosmologies)
         R   = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
         r_s = R/c
 
@@ -313,7 +386,7 @@ class Stars(AricoProfiles):
         R     = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
         z     = 1/a - 1
 
-        f_cga = self._get_star_frac(M_use, z)[:, None]
+        f_cga = self._get_star_frac(M_use, a, cosmo)
         R_h   = self.epsilon_h * R[:, None]
 
         #Integrate over wider region in radii to get normalization of star profile
@@ -332,17 +405,123 @@ class Stars(AricoProfiles):
         return prof
 
 
-class BoundGas(AricoProfiles):
+class BoundGasUntruncated(AricoProfiles):
     """
-    Class for modeling the bound gas density profile in halos.
+    Computes the bound gas density profile in halos.
+
+    This class extends `AricoProfiles` to model the density profile of bound gas in halos,
+    following the updated model from [Arico et al. (2020)](https://arxiv.org/pdf/2009.14225).
+    Unlike previous models, this profile is not truncated at the halo boundary, making it
+    suitable for extended temperature and pressure calculations.
+
+    Parameters
+    ----------
+    None
+        This class inherits all parameters from `AricoProfiles`.
+
+    Notes
+    -----
+    - The radial profile is governed by two characteristic radii:
+        1. \( R_{\\text{co}} \): Core radius, controlling the inner density profile.
+        2. \( R_{\\text{ej}} \): Outer radius, regulating the decline at large scales.
+    - The bound gas fraction (\( f_{\\text{bg}} \)) is obtained by subtracting the stellar 
+      and ejected gas fractions from the total baryon fraction.
+    - The density profile is defined as:
+
+      .. math::
+
+          \\rho_{\\text{bg}}(r) = \\frac{f_{\\text{bg}} M}{N} 
+          \\cdot \\frac{1}{(1 + u)^{\\beta}} 
+          \\cdot \\frac{1}{(1 + v^2)^2}
+
+      where:
+      - \( u = r / R_{\\text{co}} \), \( v = r / R_{\\text{ej}} \)
+      - \( R_{\\text{co}} = \\theta_{\\text{inn}} R \), \( R_{\\text{ej}} = \\theta_{\\text{out}} R \)
+      - \( \\beta \) is a slope parameter, and \( N \) is a normalization factor.
+      - \( R \) represents the halo radius defined by a spherical overdensity criterion.
+
+    This model naturally transitions to an NFW profile at large scales, ensuring consistency
+    with standard halo models. The implementation includes an adaptive radial integration
+    to account for sharp transitions at the halo boundary.
+    """
+
+    def _real(self, cosmo, r, M, a):
+
+
+        r_use = np.atleast_1d(r)
+        M_use = np.atleast_1d(M)
+
+        z = 1/a - 1
+
+        R = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
+
+        f_bg = self._get_gas_frac(M_use, a, cosmo)[0]
+
+        #Get gas params
+        beta, theta_out, theta_inn = self._get_gas_params(M_use, a, cosmo)
+        R_co = theta_inn*R[:, None]
+        R_ej = theta_out*R[:, None]
+        
+        u = r_use/R_co
+        v = r_use/R_ej
+
+        #Now compute the large-scale behavior (which is an NFW profile)
+        if (self.cdelta is None) and (self.c_M_relation is None):
+            c_M_relation = ccl.halos.concentration.ConcentrationDiemer15(mass_def = self.mass_def) #Use the diemer calibration
+        elif self.c_M_relation is not None:
+            c_M_relation = self.c_M_relation
+        else:
+            assert self.cdelta is not None, "Either provide cdelta or a c_M_relation input"
+            c_M_relation = ccl.halos.concentration.ConcentrationConstant(self.cdelta, mass_def = self.mass_def)
+            
+        c     = c_M_relation(cosmo, M_use, a)
+        c     = np.where(np.isfinite(c), c, 1) #Set default to r_s = R200c if c200c broken (normally for low mass obj in some cosmologies)
+        r_s   = (R/c)[:, None]
+        x     = r_use / r_s
+        y1    = np.power(1 + R_ej/R_co, -beta)/4 * (R_ej/r_s) * np.power(1 + R_ej/r_s, 2)
+        
+        #Do normalization halo-by-halo, since we want custom radial ranges.
+        #This way, we can handle sharp transition at R200c without needing
+        #super fine resolution in the grid.
+        Normalization = np.ones_like(M_use)
+        for m_i in range(M_use.shape[0]):
+            r_integral = np.geomspace(self.r_min_int, R[m_i], self.r_steps)
+            u_integral = r_integral/R_co[m_i]
+            v_integral = r_integral/R_ej[m_i]        
+
+            prof_integral = 1/(1 + u_integral)**beta[m_i] / (1 + v_integral**2)**2
+            prof_integral = np.where(r_integral <= R[m_i], prof_integral, 0)
+            Normalization[m_i] = np.trapz(4 * np.pi * r_integral**2 * prof_integral, r_integral)
+
+        Normalization = Normalization[:, None]
+
+        del u_integral, v_integral, prof_integral
+
+        prof  = 1/(1 + u)**beta / (1 + v**2)**2
+        nfw   = y1 / x / np.power(1 + x, 2)
+        prof  = np.where(v <= 1, prof, nfw) 
+        prof *= f_bg*M_use[:, None] / Normalization #This profile is allowed to go beyond R200c!
+        
+        arg   = (r_use[None, :] - self.cutoff)
+        arg   = np.where(arg > 30, np.inf, arg) #This is to prevent an overflow in the exponential
+        kfac  = 1/( 1 + np.exp(2*arg) ) #Extra exponential cutoff
+        prof  = prof * kfac
+        
+        #Handle dimensions so input dimensions are mirrored in the output
+        if np.ndim(r) == 0: prof = np.squeeze(prof, axis=-1)
+        if np.ndim(M) == 0: prof = np.squeeze(prof, axis=0)
+
+        return prof
+    
+
+class BoundGas(BoundGasUntruncated):
+    """
+    Class for modeling the bound gas density profile in halos. Simply the `BoundGasUntruncated`
+    class but with a truncation at R200c.
 
     This class extends `AricoProfiles` to compute the density profile of bound gas within halos.
     This follows the updated model from https://arxiv.org/pdf/2009.14225 rather than the original
     model.
-
-    Parameters
-    ----------
-    None (inherits all parameters from `AricoProfiles`).
 
     Notes
     -----
@@ -372,64 +551,10 @@ class BoundGas(AricoProfiles):
     - R is the spherical overdensity radius of the halo
     """
 
-    def _real(self, cosmo, r, M, a):
-
-
-        r_use = np.atleast_1d(r)
-        M_use = np.atleast_1d(M)
-
-        z = 1/a - 1
-
-        R = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
-
-        f_cg  = self._get_star_frac(M_use, z)
-        f_sg  = self._get_star_frac(M_use, z, satellite = True)
-        f_bar = cosmo.cosmo.params.Omega_b/cosmo.cosmo.params.Omega_m
-        beta  = self._get_gas_params(M_use, z)[0]
-        f_gas = f_bar - f_cg - f_sg
-        f_hg  = f_gas / (1 + np.power(self.M_c/M_use, self.beta))
-        f_rg  = (f_gas - f_hg) / (1 + np.power(self.M_r/M_use, self.beta_r))
-        f_rg  = np.clip(f_rg, None, f_hg) #Reaccreted gas cannot be more than halo gas 
-        f_bg  = f_hg - f_rg
-
-        #Get gas params
-        beta, theta_out, theta_inn = self._get_gas_params(M_use, z)
-        R_co = theta_inn*R[:, None]
-        R_ej = theta_out*R[:, None]
-        f_bg = f_bg[:, None]
+    def _real(self, cosmo, R, M, a):
+        return super()._real(cosmo, R, M, a) * Truncation(epsilon = 1)._real(cosmo, R, M, a)
         
-        u = r_use/R_co
-        v = r_use/R_ej
-        
-        #Do normalization halo-by-halo, since we want custom radial ranges.
-        #This way, we can handle sharp transition at R200c without needing
-        #super fine resolution in the grid.
-        Normalization = np.ones_like(M_use)
-        for m_i in range(M_use.shape[0]):
-            r_integral = np.geomspace(self.r_min_int, R[m_i], self.r_steps)
-            u_integral = r_integral/R_co[m_i]
-            v_integral = r_integral/R_ej[m_i]        
 
-            prof_integral = 1/(1 + u_integral)**beta[m_i] / (1 + v_integral**2)**2
-            prof_integral = np.where(r_integral < R[m_i], prof_integral, 0)
-            Normalization[m_i] = np.trapz(4 * np.pi * r_integral**2 * prof_integral, r_integral)
-        Normalization = Normalization[:, None]
-
-        del u_integral, v_integral, prof_integral
-
-        arg   = (r_use[None, :] - self.cutoff)
-        arg   = np.where(arg > 30, np.inf, arg) #This is to prevent an overflow in the exponential
-        kfac  = 1/( 1 + np.exp(2*arg) ) #Extra exponential cutoff
-        prof  = 1/(1 + u)**beta / (1 + v**2)**2 * kfac
-        prof *= f_bg*M_use[:, None]/Normalization #This profile is allowed to go beyond R200c!
-
-        #Handle dimensions so input dimensions are mirrored in the output
-        if np.ndim(r) == 0: prof = np.squeeze(prof, axis=-1)
-        if np.ndim(M) == 0: prof = np.squeeze(prof, axis=0)
-
-
-        return prof
-    
 
 class EjectedGas(AricoProfiles):
     """
@@ -471,14 +596,7 @@ class EjectedGas(AricoProfiles):
         z = 1/a - 1
         R = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
 
-        f_cg  = self._get_star_frac(M_use, z)
-        f_sg  = self._get_star_frac(M_use, z, satellite = True)
-        f_bar = cosmo.cosmo.params.Omega_b/cosmo.cosmo.params.Omega_m
-        beta  = self._get_gas_params(M_use, z)[0]
-        f_gas = f_bar - f_cg - f_sg
-        f_hg  = f_gas / (1 + np.power(self.M_c/M_use, self.beta))
-        f_eg  = f_gas - f_hg #By definition f_hg <= f_gas
-        f_eg  = f_eg[:, None]
+        f_eg = self._get_gas_frac(M_use, a, cosmo)[2]
 
         #Now use the escape radius, which is r_esc = v_esc * t_hubble
         #and this reduces down to just 1/2 * sqrt(Delta) * R_Delta
@@ -541,19 +659,11 @@ class ReaccretedGas(AricoProfiles):
 
         R = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
 
-        f_cg  = self._get_star_frac(M_use, z)
-        f_sg  = self._get_star_frac(M_use, z, satellite = True)
-        f_bar = cosmo.cosmo.params.Omega_b/cosmo.cosmo.params.Omega_m
-        beta  = self._get_gas_params(M_use, z)[0]
-        f_gas = f_bar - f_cg - f_sg
-        f_hg  = f_gas / (1 + np.power(self.M_c/M_use, self.beta))
-        f_rg  = (f_gas - f_hg) / (1 + np.power(self.M_r/M_use, self.beta_r))
-        f_rg  = np.clip(f_rg, None, f_hg) #Reaccreted gas cannot be more than halo gas 
+        f_rg = self._get_gas_frac(M_use, a, cosmo)[1]
         
         #Get gas params
         R_rg = self.theta_rg*R[:, None]
         S_rg = self.sigma_rg*R[:, None]
-        f_rg = f_rg[:, None]
         R    = R[:, None]
         
         #Can get normalization analytically
@@ -663,12 +773,16 @@ class ModifiedDarkMatter(AricoProfiles):
 
         z = 1/a - 1
 
-        if self.cdelta is None:
+        if (self.cdelta is None) and (self.c_M_relation is None):
             c_M_relation = ccl.halos.concentration.ConcentrationDiemer15(mass_def = self.mass_def) #Use the diemer calibration
+        elif self.c_M_relation is not None:
+            c_M_relation = self.c_M_relation
         else:
+            assert self.cdelta is not None, "Either provide cdelta or a c_M_relation input"
             c_M_relation = ccl.halos.concentration.ConcentrationConstant(self.cdelta, mass_def = self.mass_def)
             
         c   = c_M_relation(cosmo, M_use, a)
+        c   = np.where(np.isfinite(c), c, 1) #Set default to r_s = R200c if c200c broken (normally for low mass obj in some cosmologies)
         R   = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
         r_s = R/c        
         r_s = r_s[:, None]
@@ -724,7 +838,7 @@ class CollisionlessMatter(AricoProfiles):
         self.max_iter   = max_iter
         self.reltol     = reltol
         
-        super().__init__(**kwargs, r_min_int = 1e-8, r_max_int = 1e5, r_steps = 5000)
+        super().__init__(**kwargs, r_min_int = r_min_int, r_max_int = r_max_int, r_steps = r_steps)
 
     def _real(self, cosmo, r, M, a):
 
@@ -739,7 +853,7 @@ class CollisionlessMatter(AricoProfiles):
         z = 1/a - 1
         R = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
 
-        f_sg   = self._get_star_frac(M_use, z, satellite = True)
+        f_sg   = self._get_star_frac(M_use, a, cosmo, satellite = True)
         f_dm   = 1 - cosmo.cosmo.params.Omega_b/cosmo.cosmo.params.Omega_m
         f_clm  = f_dm + f_sg
         
@@ -762,10 +876,10 @@ class CollisionlessMatter(AricoProfiles):
             rho_gas    = self.Gas.real(cosmo, r_integral, M_use[m_i], a)
 
             dlnr  = np.log(r_integral[1]) - np.log(r_integral[0])
-            dV    = r_integral**3 * dlnr
-            M_i   = 4 * np.pi * integrate.cumulative_simpson(dV * rho_i  , axis = -1, initial = dV[0] * rho_i[0])
-            M_cga = 4 * np.pi * integrate.cumulative_simpson(dV * rho_cga, axis = -1, initial = dV[0] * rho_cga[0])
-            M_gas = 4 * np.pi * integrate.cumulative_simpson(dV * rho_gas, axis = -1, initial = dV[0] * rho_gas[0])
+            dV    = 4 * np.pi * r_integral**3 * dlnr
+            M_i   = integrate.cumulative_simpson(dV * rho_i  , axis = -1, initial = 0) + dV[0] * rho_i[0]
+            M_cga = integrate.cumulative_simpson(dV * rho_cga, axis = -1, initial = 0) + dV[0] * rho_cga[0]
+            M_gas = integrate.cumulative_simpson(dV * rho_gas, axis = -1, initial = 0) + dV[0] * rho_gas[0]
 
             #Assume extrapolation is used only for r > r_max. In this case, the extrapolation
             #coefficients are just the integrated mass at r_max. Our r_min is sufficientyly
@@ -794,7 +908,7 @@ class CollisionlessMatter(AricoProfiles):
                     M_f1 = f_clm[m_i]*M_i
                     M_f2 = np.exp(ln_M_cga(np.log(r_f)))
                     M_f3 = np.exp(ln_M_gas(np.log(r_f)))
-                    M_f  = (np.where(np.isfinite(M_f1), M_f1, M_i_max) + 
+                    M_f  = (np.where(np.isfinite(M_f1), M_f1, f_clm[m_i] * M_i_max) + 
                             np.where(np.isfinite(M_f2), M_f2, M_cga_max) + 
                             np.where(np.isfinite(M_f3), M_f3, M_gas_max)
                             )
@@ -860,6 +974,18 @@ class CollisionlessMatter(AricoProfiles):
         return prof
 
 
+class SatelliteStars(CollisionlessMatter):
+
+    def _real(self, cosmo, r, M, a):
+
+        f_sg   = self._get_star_frac(np.atleast_1d(M), a, cosmo, satellite = True)
+        f_dm   = 1 - cosmo.cosmo.params.Omega_b/cosmo.cosmo.params.Omega_m
+        f_clm  = f_dm + f_sg
+        factor = f_sg / f_clm
+
+        return super()._real(cosmo, r, M, a) * factor
+
+
 class DarkMatterOnly(DarkMatter):
     """
     For Arico20, the DarkMatterOnly model includes just an NFW profile.
@@ -921,53 +1047,70 @@ class DarkMatterBaryonwithLSS(DarkMatterBaryon):
 
 class Pressure(AricoProfiles):
     """
-    Class for modeling the gas pressure profile in halos.
+    Computes the pressure profile of gas in halos using a polytropic equation of state.
 
-    This class extends `AricoProfiles` to compute the pressure profile of gas within halos. 
-    Contrary to the  `Thermodynamic.Pressure` class in BaryonForge, this class here follows
-    Arico20 and computes the pressure through a polytropic equation of state.
+    This class extends `AricoProfiles` to model the pressure distribution of gas bound 
+    to dark matter halos. The pressure is computed from the density of the bound gas 
+    and its effective equation of state. The final profile is in units of comoving
+    volume. Use a factor of 1/a^3 (not 1/a^4) to convert to physical pressure.
 
     Parameters
     ----------
-    gas : BoundGas, optional
-        Instance of the `BoundGas` class representing the bound gas component.
-        If not provided, a default `BoundGas` object is created.
-    **kwargs
-        Additional arguments passed to initialize the parent `AricoProfiles` class and associated components.
+    bound_gas_untruncated : BoundGasUntruncated, optional
+        The Bound gas profile. It must extend beyond R200c so that we can
+        assign realistic temperatures to the ejected gas as well. This is used
+        only for computing the gas temperature
+    gas : Gas, optional
+        The actual gas profile; a sum of all different subcomponents
+        relevant for the analysis
+    **kwargs : dict
+        Additional parameters passed to the parent class.
 
     Notes
     -----
-    - The pressure profile is derived from the bound gas density profile and the effective 
-      equation of state (\( \Gamma_{\\text{eff}} \)).
-    - The profile normalization is calculated based on the gravitational potential, halo 
-      properties, and the gas density at the halo center.
-    
+    - This model calculates pressure from the bound gas density profile and an 
+      effective polytropic equation of state.
+    - We first use the bound gas to compute the temperature across all scales. Then
+      this temperature is assigned to all the gas (not just bound gas). It is therefore
+      important that the bound gas profile for this step is not truncated (even though 
+      the fiducial profile IS truncated at R200c)
+
     The pressure profile is given by:
 
     .. math::
 
-        P(r) = P_0 \\cdot \\rho_{\\text{BG}}^{\\Gamma_{\\text{eff}}}
+        P(r) = P_0 \cdot \\rho_{\\text{BG}}^{\Gamma_{\\text{eff}}}
 
     where:
-    - \( P_0 \) is the normalization constant, computed as:
+    - \( P_0 \) is the pressure normalization, defined as:
 
       .. math::
 
-          P_0 = 4 \\pi G \\cdot \\frac{\\rho_c r_s^2}{\\rho_0^{\\Gamma_{\\text{eff}} - 1}} \\cdot (1 - \\frac{1}{\\Gamma_{\\text{eff}}})
+          P_0 = 4\pi G \cdot \\frac{\\rho_c r_s^2}{\\rho_0^{\Gamma_{\\text{eff}} - 1}} 
+          \cdot \left(1 - \\frac{1}{\Gamma_{\\text{eff}}}\\right)
 
-      \( \\rho_c \) is the characteristic density, \( r_s \) is the scale radius, and 
-      \( \\rho_0 \) is the gas density at the center of the halo.
-    - \( \\Gamma_{\\text{eff}} \) is the effective equation of state, derived from the gas 
-      distribution parameters.
-    - \( \\rho_{\\text{BG}}(r) \) is the bound gas density profile.
+      where:
+      - \( \\rho_c \) is the characteristic density of the halo.
+      - \( r_s \) is the scale radius.
+      - \( \\rho_0 \) is the gas density at the halo center.
+      - \( \Gamma_{\\text{eff}} \) is the effective polytropic index.
+
+    - \( \\rho_{\\text{BG}}(r) \) represents the bound gas density profile.
+
+    This implementation ensures consistency with large-scale gas behavior 
+    and provides a physically motivated description of halo gas pressure.
     """
 
-    def __init__(self, gas = None, **kwargs):
+    def __init__(self, bound_gas_untruncated = None, gas = None, **kwargs):
         
-        self.Gas = gas
-        if self.Gas is None: self.Gas = BoundGas(**kwargs)        
+        self.BoundGas = bound_gas_untruncated
+        self.Gas      = gas
+
+        if self.BoundGas is None: self.BoundGas = BoundGasUntruncated(**kwargs)  
+        if self.Gas is None:      self.Gas      = Gas(**kwargs)        
 
         super().__init__(**kwargs)
+
 
     def _real(self, cosmo, r, M, a):
 
@@ -979,13 +1122,17 @@ class Pressure(AricoProfiles):
 
         R = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
 
-        if self.cdelta is None:
+        if (self.cdelta is None) and (self.c_M_relation is None):
             c_M_relation = ccl.halos.concentration.ConcentrationDiemer15(mass_def = self.mass_def) #Use the diemer calibration
+        elif self.c_M_relation is not None:
+            c_M_relation = self.c_M_relation
         else:
+            assert self.cdelta is not None, "Either provide cdelta or a c_M_relation input"
             c_M_relation = ccl.halos.concentration.ConcentrationConstant(self.cdelta, mass_def = self.mass_def)
 
         #Get concentration values, and the effective equation of state, Gamma    
         c    = c_M_relation(cosmo, M_use, a)[:, None]
+        c    = np.where(np.isfinite(c), c, 1) #Set default to r_s = R200c if c200c broken (normally for low mass obj in some cosmologies)
         r_s  = R[:, None]/c
         Norm = 4*np.pi*r_s**3 * (np.log(1 + c) - c/(1 + c))
         rhoc = M_use[:, None]/Norm
@@ -993,14 +1140,23 @@ class Pressure(AricoProfiles):
         Geff = 1 + ((1 + xp)*np.log(1 + xp) - xp) / ((1 + 3*xp) * np.log(1 + xp))
         
         #Normalization from Equation 5 in https://arxiv.org/pdf/2406.01672v1
-        rho0  = self.Gas.real(cosmo, np.atleast_1d([0]), M_use, a) #To get normalization of gas profile
-        P0    = 4*np.pi*G * (rhoc * r_s**2)/np.power(rho0, Geff - 1) * (1 - 1/Geff) 
+        rho0  = self.BoundGas.real(cosmo, np.atleast_1d([0]), M_use, a) #To get normalization of gas profile
+        P0    = (rhoc * r_s**2)/np.power(rho0, Geff - 1) * (1 - 1/Geff)
+        P0    = P0 * 4*np.pi*G #Separate steps to avoid numerical precision issues
         P0    = P0 * (Msun_to_Kg * 1e3) / (Mpc_to_m * 1e2) #Convert to CGS. Using only one factor of Mpc_to_m is correct!
+        P0    = P0 / a #This is so temperature piece of P = T x rho is always in physical units.
 
-        #Now compute the final profile
-        rhoBG = self.Gas.real(cosmo, r_use, M_use, a)
+        #Now compute the pressure profile for the bound component 
+        #But this component is extended beyond R200c (for now) 
+        rhoBG = self.BoundGas.real(cosmo, r_use, M_use, a)
+        rhoG  = self.Gas.real(cosmo, r_use, M_use, a)
         prof  = P0 * np.power(rhoBG, Geff)
         prof  = np.where(np.isfinite(prof), prof, 0) #Really happens when f_BG = 0 because of weird param space
+        rhoBG = np.where(rhoBG > 0, rhoBG, np.inf) #So that 1/rhoBG is well-defined
+
+        #Compute the temperature of the background gas alone
+        #and then apply that temp to all gas in the halo.
+        prof  = rhoG * (prof / rhoBG)
         
         arg   = (r_use[None, :] - self.cutoff)
         arg   = np.where(arg > 30, np.inf, arg) #This is to prevent an overflow in the exponential
@@ -1059,7 +1215,7 @@ class NonThermalFrac(AricoProfiles):
         mdef  = ccl.halos.massdef.MassDef(200, 'matter')
         cnvrt = ccl.halos.mass_translator(mass_in = self.mass_def, mass_out = mdef, concentration = 'Diemer15')
         M200m = cnvrt(cosmo, M_use, a)
-        R200m = mdef.get_radius(cosmo, M_use, a)/a #in comoving distance
+        R200m = mdef.get_radius(cosmo, M200m, a)/a #in comoving distance
 
         x = r_use/R200m[:, None]
 
@@ -1082,7 +1238,7 @@ class NonThermalFrac(AricoProfiles):
             prof = np.squeeze(prof, axis=0)
 
         return prof
-    
+
 class ThermalPressure(Gas):
     """
     Convenience class for combining Pressure and NonthermalFraction.
@@ -1099,7 +1255,8 @@ class Temperature(AricoProfiles):
     Class for modeling the temperature profile of gas in halos.
 
     This class extends `AricoProfiles` to compute the temperature profile of gas, 
-    based on the ideal gas law, using the pressure and gas density profiles.
+    based on the ideal gas law, using the pressure and gas density profiles. The output
+    is a physical temperature (not in any comoving unit)
 
     Parameters
     ----------
@@ -1137,23 +1294,16 @@ class Temperature(AricoProfiles):
         self.Pressure = pressure
         self.Gas      = gas
         
-        if self.Pressure is None: self.Pressure = Pressure(**kwargs) * (1 - NonThermalFrac(**kwargs))
-        if self.Gas is None:      self.Gas      = BoundGas(**kwargs)
+        if self.Pressure is None: self.Pressure = ThermalPressure(**kwargs)
+        if self.Gas is None:      self.Gas      = Gas(**kwargs)
             
         super().__init__(**kwargs)
         
     
     def _real(self, cosmo, r, M, a):
         
-        r_use = np.atleast_1d(r)
-        M_use = np.atleast_1d(M)
-
-        z = 1/a - 1
-
-        R = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
-
-        P   = self.Pressure.real(cosmo, r_use, M, a)
-        n   = self.Gas.real(cosmo, r_use, M, a) / (self.mean_molecular_weight * m_p) / (Mpc_to_m * m_to_cm)**3
+        P   = self.Pressure.real(cosmo, r, M, a)
+        n   = self.Gas.real(cosmo, r, M, a) / (self.mean_molecular_weight * m_p) / (Mpc_to_m * m_to_cm)**3
         
         #We'll have instances of n == 0, which isn't a problem so let's ignore
         #warnings of divide errors, because we know they happen here.
@@ -1178,108 +1328,6 @@ class Temperature(AricoProfiles):
         with np.errstate(divide = 'ignore', invalid = 'ignore'):
             prof = P/(n * kb_cgs)
             prof = np.where(n == 0, 0, prof)
-
-        return prof
-    
-
-class ExtendedBoundGas(AricoProfiles):
-    """
-    Class for modeling the extended bound gas density profile in halos.
-
-    This class follows `BoundGas` but enforces an additional criteria that
-    the profile follows an NFW form for r > r_out.
-
-    Notes
-    -----
-    - The bound gas fraction (\( f_{\\text{bg}} \)) is calculated by accounting for the contributions 
-      of stellar and reaccreted gas fractions, as well as the total baryon fraction.
-    - The radial profile transitions from a power-law form with two characteristic radii (\( R_{\\text{inn}} \) and \( R_{\\text{out}} \)) 
-      to an NFW-like behavior at large radii.
-    - The profile is normalized to ensure consistency with the total bound gas mass.
-
-    The density profile is given by:
-
-    .. math::
-
-        \\rho_{\\text{bg}}(r) = 
-        \\begin{cases} 
-        \\frac{1}{(1 + u)^\\beta (1 + v^2)^2}, & v \\leq 1 \\\\ 
-        \\frac{y_1}{x (1 + x)^2}, & v > 1
-        \\end{cases}
-
-    where:
-    - \( u = r / R_{\\text{inn}} \), \( v = r / R_{\\text{out}} \), and \( x = r / r_s \).
-    - \( \\beta \) is the slope parameter.
-    - \( R_{\\text{inn}} = \\theta_{\\text{inn}} R \), \( R_{\\text{out}} = \\theta_{\\text{out}} R \).
-    - \( y_1 \) is a normalization factor for the large-scale NFW-like behavior, set by matching profiles at R_out.
-    - \( r_s = R / c \) is the scale radius.
-    - The profile is normalized to get the correct gas fraction within the overdensity radius, R.
-    """
-
-    def _real(self, cosmo, r, M, a):
-
-
-        r_use = np.atleast_1d(r)
-        M_use = np.atleast_1d(M)
-
-        z = 1/a - 1
-
-        R = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
-
-        f_cg  = self._get_star_frac(M_use, z)
-        f_sg  = self._get_star_frac(M_use, z, satellite = True)
-        f_bar = cosmo.cosmo.params.Omega_b/cosmo.cosmo.params.Omega_m
-        beta  = self._get_gas_params(M_use, z)[0]
-        f_hg  = (f_bar - f_cg - f_sg) / (1 + np.power(self.M_c/M_use, self.beta))
-        f_rg  = (f_bar - f_cg - f_sg - f_hg) / (1 + np.power(self.M_r/M_use, self.beta_r))
-        f_bg  = (f_hg - f_rg)
-
-        #Get gas params
-        beta, theta_out, theta_inn = self._get_gas_params(M_use, z)
-        R_inn = theta_inn*R[:, None]
-        R_out = theta_out*R[:, None]
-        f_bg = f_bg[:, None]
-        
-        u = r_use/R_inn
-        v = r_use/R_out
-
-        #Now compute the large-scale behavior (which is an NFW profile)
-        if self.cdelta is None:
-            c_M_relation = ccl.halos.concentration.ConcentrationDiemer15(mass_def = self.mass_def) #Use the diemer calibration
-        else:
-            c_M_relation = ccl.halos.concentration.ConcentrationConstant(self.cdelta, mass_def = self.mass_def)
-            
-        c     = c_M_relation(cosmo, M_use, a)
-        r_s   = (R/c)[:, None]
-        x     = r_use / r_s
-        y1    = np.power(1 + R_out/R_inn, -beta)/4 * (R_out/r_s) * np.power(1 + R_out/r_s, 2)
-        
-        #Integrate over wider region in radii to get normalization of gas profile
-        #Using a number narrower range than Schneider cause we only need to go to R200c
-        r_integral = np.geomspace(self.r_min_int, self.r_max_int, self.r_steps)
-        u_integral = r_integral/R_inn
-        v_integral = r_integral/R_out
-
-        prof_integral = 1/(1 + u_integral)**beta / (1 + v_integral**2)**2
-        prof_integral = np.where(r_integral[None, :] < R[:, None], prof_integral, 0)
-        Normalization = np.trapz(4 * np.pi * r_integral**2 * prof_integral, r_integral, axis = -1)[:, None]
-
-        del u_integral, v_integral, prof_integral
-
-        prof  = 1/(1 + u)**beta / (1 + v**2)**2
-        nfw   = y1 / x / np.power(1 + x, 2)
-        prof  = np.where(v <= 1, prof, nfw) / Normalization
-        prof *= f_bg*M_use[:, None] #This profile is allowed to go beyond R200c!
-        
-        arg   = (r_use[None, :] - self.cutoff)
-        arg   = np.where(arg > 30, np.inf, arg) #This is to prevent an overflow in the exponential
-        kfac  = 1/( 1 + np.exp(2*arg) ) #Extra exponential cutoff
-        prof  = prof * kfac
-        
-        #Handle dimensions so input dimensions are mirrored in the output
-        if np.ndim(r) == 0: prof = np.squeeze(prof, axis=-1)
-        if np.ndim(M) == 0: prof = np.squeeze(prof, axis=0)
-
 
         return prof
     
@@ -1333,17 +1381,21 @@ class BoundGasDeprecated(AricoProfiles):
         z = 1/a - 1
         R = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
 
-        f_cg  = self._get_star_frac(M_use, z)
+        f_cg  = self._get_star_frac(M_use, a, cosmo)
         f_bar = cosmo.cosmo.params.Omega_b/cosmo.cosmo.params.Omega_m
         f_bg  = (f_bar - f_cg) / (1 + np.power(self.M_c/M_use, self.beta))
         f_bg  = f_bg[:, None]
         
-        if self.cdelta is None:
-            c_M_relation = ccl.halos.concentration.ConcentrationDiemer15(mdef = self.mass_def) #Use the diemer calibration
+        if (self.cdelta is None) and (self.c_M_relation is None):
+            c_M_relation = ccl.halos.concentration.ConcentrationDiemer15(mass_def = self.mass_def) #Use the diemer calibration
+        elif self.c_M_relation is not None:
+            c_M_relation = self.c_M_relation
         else:
-            c_M_relation = ccl.halos.concentration.ConcentrationConstant(self.cdelta, mdef = self.mass_def)
+            assert self.cdelta is not None, "Either provide cdelta or a c_M_relation input"
+            c_M_relation = ccl.halos.concentration.ConcentrationConstant(self.cdelta, mass_def = self.mass_def)
             
         c    = c_M_relation.get_concentration(cosmo, M_use, a)
+        c    = np.where(np.isfinite(c), c, 1) #Set default to r_s = R200c if c200c broken (normally for low mass obj in some cosmologies)
         r_s  = (R/c)[:, None]
         eps  = self.epsilon_hydro
         e5   = c[:, None] / eps

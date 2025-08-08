@@ -310,6 +310,9 @@ class LightconeShell(object):
         A dictionary containing the cosmological parameters. Must include keys for 'Omega_m', 'sigma8', 'h',
         'Omega_b', 'n_s', and 'w0'.
 
+    redshift : float
+        The redshift value associated with the map.
+
     Attributes
     ----------
     map : ndarray
@@ -335,7 +338,7 @@ class LightconeShell(object):
         If neither `map` nor `path` is provided, or if the required cosmological parameters are not included.
     """
 
-    def __init__(self, map = None, path = None, cosmo = None):
+    def __init__(self, map = None, path = None, cosmo = None, redshift = None):
 
         if (path is None) & (map is None):
             raise ValueError("Need to provide either path to map, or provide map values in healpix ring configuration")
@@ -347,7 +350,8 @@ class LightconeShell(object):
             self.map = map
 
 
-        self.NSIDE = hp.npix2nside(self.map.size)
+        self.NSIDE    = hp.npix2nside(self.map.size)
+        self.redshift = redshift
 
         
         keys = cosmo.keys()
@@ -460,6 +464,8 @@ class GriddedMap(object):
         else:
             assert (self.map.shape[0] == self.map.shape[1]) & (self.map.shape[1] == self.map.shape[2]) #Maps have to be cubic maps
             self.grid = np.meshgrid(bins, bins, bins, indexing = 'xy')
+
+        assert self.Npix == self.bins.size, f"Map has {self.Npix} pixels a side, but you passed {self.bins.size} bins"
             
         self.inds = np.arange(self.grid[0].size).reshape(self.grid[0].shape)
 

@@ -1,6 +1,6 @@
-
 import numpy as np
 import pyccl as ccl
+import warnings
 
 from tqdm import tqdm
 from numba import njit
@@ -223,11 +223,17 @@ class DefaultRunnerGrid(object):
     mass_def : object
         The mass definition object.
     
-    verbose : bool
-        Whether verbose output is enabled.
+    verbose : bool, optional
+        Whether verbose output is enabled. Defaults to True.
     
-    use_ellipticity : bool
-        Whether to use ellipticity in calculations.
+    include_pixel_size : bool, optional
+        Only used when painting, not baryonifying.
+        If True, then the returned map is multiplied by the area/volume of the pixel.
+        Thus, painting with a density profile results in a Mass map. 
+        Defaults to True.
+
+    use_ellipticity : bool, optional
+        Whether to use ellipticity in calculations. Defaults to False.
 
     Methods
     -------
@@ -247,7 +253,7 @@ class DefaultRunnerGrid(object):
     """
     
     def __init__(self, HaloNDCatalog, GriddedMap, epsilon_max, model, use_ellipticity = False,
-                 mass_def = ccl.halos.massdef.MassDef(200, 'critical'), verbose = True):
+                 mass_def = ccl.halos.massdef.MassDef(200, 'critical'), include_pixel_size = True, verbose = True):
 
         self.HaloNDCatalog = HaloNDCatalog
         self.GriddedMap    = GriddedMap
@@ -259,7 +265,8 @@ class DefaultRunnerGrid(object):
         self.mass_def    = mass_def
         self.verbose     = verbose
         
-        self.use_ellipticity = use_ellipticity
+        self.use_ellipticity    = use_ellipticity
+        self.include_pixel_size = include_pixel_size
         
         #Assert that all the required quantities are in the input catalog
         if use_ellipticity:
@@ -493,7 +500,7 @@ class BaryonifyGrid(DefaultRunnerGrid):
             res    = self.GriddedMap.res
             Nsize  = 2 * R_q / res
             Nsize  = int(Nsize // 2)*2 #Force it to be even
-            if Nsize < 2: continue #Skip if halo is too small because the displacements will be zero anyway then.
+            Nsize  = np.clip(Nsize, 2, bins.size//2)
 
             x  = np.linspace(-Nsize/2, Nsize/2, Nsize) * res
             cutout_width = Nsize//2
@@ -622,6 +629,9 @@ class PaintProfilesGrid(DefaultRunnerGrid):
     of a given property (mass, temperature, pressure) by painting halo profiles. It uses a halo catalog to 
     determine the necessary profiles based on halo properties, cosmological parameters, and a specified model.
 
+    The returned map by default includes an integration over pixel size. For example, 
+    passing model = density_profile will return a map of the Mass = density * dV and not the density alone.
+
     Methods
     -------
     process()
@@ -709,6 +719,8 @@ class PaintProfilesGrid(DefaultRunnerGrid):
             txt = (f"You asked to use {keys} properties in Baryonification. You must pass a ParamTabulatedProfile"
                    f"as the model. You have passed {type(self.model)} instead")
             assert isinstance(self.model, ParamTabulatedProfile), txt
+
+        dV = np.power(self.GriddedMap.res, 2 if self.GriddedMap.is2D else 3)
 
         for j in tqdm(range(self.HaloNDCatalog.cat.size), desc = 'Painting field', disable = not self.verbose):
 
@@ -808,8 +820,12 @@ class PaintProfilesGrid(DefaultRunnerGrid):
             #Add the offsets to the new map at the right indices
             new_map[inds] += Painting
             
-        new_map = new_map.reshape(orig_map.shape)
+        #Add a factor of the map pixel area/volume if requested by the user.
+        #This helps convert a density map to mass map (for example).
+        if self.include_pixel_size: new_map *= dV
 
+        new_map = new_map.reshape(orig_map.shape)
+        
         return new_map
     
 
@@ -818,13 +834,14 @@ class PaintProfilesAnisGrid(PaintProfilesGrid):
 
     def __init__(self, HaloNDCatalog, GriddedMap, epsilon_max, model, Tracer_model, Mtot_model, 
                  background_val, global_tracer_fraction, 
-                 mass_def = ccl.halos.massdef.MassDef(200, 'critical'), use_ellipticity = False, verbose = True):
+                 mass_def = ccl.halos.massdef.MassDef(200, 'critical'), 
+                 include_pixel_size = True, use_ellipticity = False, verbose = True):
         
         self.Tracer_model   = Tracer_model
         self.Mtot_model     = Mtot_model
         self.background_val = background_val
         self.global_tracer_fraction = global_tracer_fraction
-        super().__init__(HaloNDCatalog, GriddedMap, epsilon_max, model, use_ellipticity, mass_def, verbose)
+        super().__init__(HaloNDCatalog, GriddedMap, epsilon_max, model, use_ellipticity, mass_def, include_pixel_size, verbose)
     
     
     def process(self):
@@ -848,20 +865,21 @@ class PaintProfilesAnisGrid(PaintProfilesGrid):
         keys = vars(self.model).get('p_keys', []) #Check if model has property keys
 
         #First we need to generate a model for the total mass distribution, according to the mass model
-        Mtot_map = PaintProfilesGrid(HaloNDCatalog = self.HaloNDCatalog, GriddedMap = self.GriddedMap, 
+        Mtot_map = PaintProfilesGrid(include_pixel_size = False,
+                                     HaloNDCatalog = self.HaloNDCatalog, GriddedMap = self.GriddedMap, 
                                      epsilon_max = self.epsilon_max, model = self.Mtot_model, 
-                                     use_ellipticity = self.use_ellipticity, 
+                                     use_ellipticity = self.use_ellipticity,
                                      mass_def = self.mass_def, verbose = self.verbose).process()
         Mtot_map = Mtot_map.flatten() #Put it back in 1D array
         
-        #Volume of the cell is different depending on whether we've projected down or not
+        #Volume of the cell is different depending on whether we've projected (or not) down one axis
         if self.GriddedMap.is2D:
-            dL = (2 * _get_parameter(self.Mtot_model, 'proj_cutoff')) #Fractor of 2 since proj_cutoff == Lproj/2
+            dL = (2 * _get_parameter(self.Mtot_model, 'proj_cutoff')) #Factor of 2 since proj_cutoff == Lproj/2
             dV = np.power(res, 2) * dL 
-            rho_halos = np.sum(Mtot_map) / (self.GriddedMap.L**2 * dL)
+            rho_halos = np.average(Mtot_map) / dL
         else:
             dV = np.power(res, 3)
-            rho_halos = np.sum(Mtot_map) / self.GriddedMap.L**3
+            rho_halos = np.average(Mtot_map)
 
         #Now add the background contribution (we so far only have the halo contribution)
         #Force the background to be positive, incase the pasted density is larger than the box size.
@@ -872,6 +890,10 @@ class PaintProfilesAnisGrid(PaintProfilesGrid):
         if self.verbose:
             print(f"Inputted halos contribute {100*(rho_halos/rho_m):0.2f}% of the total matter density.")
             print(f"Remaining density is assigned to a uniform background.")
+
+        if rho_halos > rho_m:
+            warnings.warn("Inputted halos contribute more mass than is available for this mean matter density."
+                          "Your Mtot_model profiles are either too extended or you are using the wrong cosmology.")
 
         #We are ready to loop over halos now!
         for j in tqdm(range(self.HaloNDCatalog.cat.size), desc = 'Painting field', disable = not self.verbose):
@@ -962,11 +984,10 @@ class PaintProfilesAnisGrid(PaintProfilesGrid):
                                      y_grid_ell**2/br_j**2 +
                                      z_grid_ell**2/cr_j**2).reshape(x_grid_ell.shape)
 
-
             Painting = Paint(cosmo,  r_grid.flatten(), M_j, a_j, **o_j)
             Canvas   = Tracer(cosmo, r_grid.flatten(), M_j, a_j, **o_j)
             Canvas   = np.where(np.isfinite(Canvas) & np.invert(np.isnan(Canvas)), Canvas, 0)
-            Mfrac    = np.divide(Canvas, Mtot_map[inds], out = np.zeros_like(Canvas), where = Mtot_map[inds] > 0) 
+            Mfrac    = np.divide(Canvas, Mtot_map[inds], out = np.zeros_like(Canvas), where = Mtot_map[inds] > 0)
             Mfrac   *= orig_map_flattened[inds]
                         
             mask = np.isfinite(Painting) & np.invert(np.isnan(Painting)) #Remove parts of map that have irregular values
@@ -980,13 +1001,16 @@ class PaintProfilesAnisGrid(PaintProfilesGrid):
             new_map[inds] += Painting * Mfrac
 
         #Missing mass was assigned to uniform background. Here we account for that background's contribution
+        #The Mtot_map here already has the contribution from dV * drho_m added to it.
         Mfrac    = np.divide(dV * drho_m, Mtot_map, out = np.zeros_like(Mtot_map), where = Mtot_map > 0)
         Mfrac   *= orig_map_flattened
         new_map += self.background_val * self.global_tracer_fraction * Mfrac
-        
-        assert np.invert(np.isnan(np.sum(new_map))), "new_map past add is NaN"
-        assert np.invert(np.isnan(np.sum(drho_m))), "drho_m is NaN"
         new_map  = new_map.reshape(orig_map.shape)
-        assert np.invert(np.isnan(np.sum(new_map))), "new_map past reshape is NaN"
 
+        #Add a factor of the map pixel area/volume if requested by the user.
+        #This helps convert a density map to mass map (for example).
+        if self.include_pixel_size: 
+            new_map *= np.power(self.GriddedMap.res, 2 if self.GriddedMap.is2D else 3)
+
+        
         return new_map    

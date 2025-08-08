@@ -5,7 +5,6 @@ from tqdm import tqdm
 from itertools import product
 from scipy import interpolate
 from .misc import destory_Pk
-from .Pixel import ConvolvedProfile
 
 __all__ = ['_set_parameter', '_get_parameter', 'TabulatedProfile', 'ParamTabulatedProfile']
 
@@ -61,7 +60,7 @@ def _set_parameter(obj, key, value):
     for k in obj_keys:
         if k == key:
             setattr(obj, key, value)
-        elif isinstance(getattr(obj, k), (ccl.halos.profiles.HaloProfile, ConvolvedProfile, ParamTabulatedProfile)):
+        elif isinstance(getattr(obj, k), (ccl.halos.profiles.HaloProfile,)):
             _set_parameter(getattr(obj, k), key, value)
 
 def _get_parameter(obj, key):
@@ -93,7 +92,7 @@ def _get_parameter(obj, key):
     for k in obj_keys:
         if k == key: 
             return getattr(obj, key)
-        elif isinstance(getattr(obj, k), (ccl.halos.profiles.HaloProfile, ConvolvedProfile, ParamTabulatedProfile)):
+        elif isinstance(getattr(obj, k), (ccl.halos.profiles.HaloProfile,)):
             return _get_parameter(getattr(obj, k), key)
 
             
@@ -115,9 +114,6 @@ class TabulatedProfile(ccl.halos.profiles.HaloProfile):
     cosmo : object
         A `ccl.Cosmology` object representing the cosmological parameters.
     
-    mass_def : object, optional
-        A `ccl.halos.massdef.MassDef` object that defines the mass definition. Default is `MassDef(200, 'critical')`.
-
     Attributes
     ----------    
     raw_input_3D : ndarray
@@ -178,15 +174,13 @@ class TabulatedProfile(ccl.halos.profiles.HaloProfile):
 
     """
 
-    def __init__(self, model, cosmo, mass_def = ccl.halos.massdef.MassDef(200, 'critical')):
+    def __init__(self, model, cosmo):
 
         self.model    = model
         self.cosmo    = cosmo #CCL cosmology instance
-        self.mass_def = mass_def
 
-        #Get all the other params. Particularly those
-        #needed for projecting profiles
-        super().__init__(mass_def = mass_def)
+        #We just set this to the same as the inputted profile.
+        super().__init__(mass_def = model.mass_def)
 
 
     def setup_interpolator(self, z_min = 1e-2, z_max = 5, N_samples_z = 30, z_linear_sampling = False, 
@@ -473,7 +467,7 @@ class ParamTabulatedProfile(object):
     """
 
     
-    def __init__(self, model, cosmo, mass_def = ccl.halos.massdef.MassDef(200, 'critical')):
+    def __init__(self, model, cosmo):
         """
         Initializes the ParamTabulatedProfile class with a given model, cosmology, and mass definition.
 
@@ -485,14 +479,10 @@ class ParamTabulatedProfile(object):
         
         cosmo : object
             A `ccl.Cosmology` object representing the cosmological parameters.
-        
-        mass_def : object, optional
-            A `ccl.halos.massdef.MassDef` object that defines the mass definition. Default is `MassDef(200, 'critical')`.
         """
 
         self.model    = model
         self.cosmo    = cosmo #CCL cosmology instance
-        self.mass_def = mass_def
         
         assert not isinstance(model, TabulatedProfile), "Input model cannot be 'TabulatedProfile' object."
 
