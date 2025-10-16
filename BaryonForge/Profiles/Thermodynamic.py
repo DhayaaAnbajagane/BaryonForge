@@ -65,6 +65,9 @@ class BaseThermodynamicProfile(SchneiderProfiles):
             self.c_M_relation = c_M_relation(mass_def = mass_def)
         else:
             self.c_M_relation = None
+
+        #Also save the original input to propogate into profile ops.
+        self._c_M_relation    = c_M_relation
                     
         #Some params for handling the realspace projection
         self.padding_lo_proj   = padding_lo_proj
