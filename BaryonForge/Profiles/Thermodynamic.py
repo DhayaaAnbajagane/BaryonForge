@@ -98,6 +98,8 @@ class BaseThermodynamicProfile(SchneiderProfiles):
                     f"You have cutoff = {self.cutoff} and proj_cutoff = {self.proj_cutoff}")
             assert self.cutoff == self.proj_cutoff, text
 
+        #Save to propogate into profile-operated classes (+, -, %, *, etc.)
+        self._use_fftlog_projection = use_fftlog_projection
 
         #Constant that helps with the fourier transform convolution integral.
         #This value minimized the ringing due to the transforms
