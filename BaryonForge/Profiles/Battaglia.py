@@ -294,7 +294,7 @@ class GasDensity(ccl.halos.profiles.HaloProfile):
         RHO_CRIT = RHO_CRIT * a**3
 
         rho_0, alpha, beta = rho_0[:, None], alpha[:, None], beta[:, None]
-        prof = RHO_CRIT * fb * rho_0 * (x/x_c)**gamma * (1 + (x/x_c)**alpha)**-((beta - gamma)/alpha)
+        prof = RHO_CRIT * fb * rho_0 * (x/x_c)**gamma * (1 + (x/x_c)**alpha)**-((beta + gamma)/alpha)
 
         # Battaglia profile has validity limits for redshift, mass, and distance from halo center.
         # Here, we enforce the distance limit at R/R_Delta > X, where X is input by user
