@@ -27,6 +27,10 @@ model_params = ['cdelta', 'epsilon', 'a', 'n', #DM profle params
                 'alpha_nt', 'nu_nt', 'gamma_nt', 'mean_molecular_weight' #Non-thermal pressure and gas density
                ]
 
+hyper_params = ['mass_def', 'c_M_relation', 'use_fftlog_projection', 
+                'padding_hi_proj', 'padding_hi_proj', 'n_per_decade_proj',
+                'r_min_int', 'r_max_int', 'r_steps', 'xi_mm']
+
 class SchneiderProfiles(ccl.halos.profiles.HaloProfile):
     """
     Base class for defining halo density profiles based on Schneider et al. models.
@@ -73,6 +77,7 @@ class SchneiderProfiles(ccl.halos.profiles.HaloProfile):
 
     #Define the params used in this model
     model_param_names = model_params
+    hyper_param_names = hyper_params
 
     def __init__(self, mass_def = ccl.halos.massdef.MassDef200c, 
                  c_M_relation = None, use_fftlog_projection = False, 
@@ -159,6 +164,24 @@ class SchneiderProfiles(ccl.halos.profiles.HaloProfile):
         
         params = {k:v for k,v in vars(self).items() if k in self.model_param_names}
                   
+        return params
+    
+
+    @property
+    def hyper_params(self):
+        """
+        Returns a dictionary containing all hyper parameters oof the calculation and their current values.
+
+        Returns
+        -------
+        params : dict
+            Dictionary of hyper parameters.
+        """
+        
+        params = {k:v for k,v in vars(self).items() if k in self.hyper_param_names}
+        params['c_M_relation']          = self._c_M_relation #Swap this one specifically
+        params['use_fftlog_projection'] = self._use_fftlog_projection #This one isn't saved normally so do it here
+
         return params
         
         
@@ -662,7 +685,7 @@ class Stars(SchneiderProfiles, SchneiderFractions):
         R_h    = self.epsilon_h * R[:, None]
 
         r_integral = np.geomspace(self.r_min_int, self.r_max_int, self.r_steps)
-        DM    = DarkMatter(**self.model_params); setattr(DM, 'cutoff', 1e3) #Set large cutoff just for normalization calculation
+        DM    = DarkMatter(**self.model_params, **self.hyper_params); setattr(DM, 'cutoff', 1e3) #Set large cutoff just for normalization calculation
         rho   = DM.real(cosmo, r_integral, M_use, a)
         M_tot = np.trapz(4*np.pi*r_integral**2 * rho, r_integral, axis = -1)
         M_tot = np.atleast_1d(M_tot)[:, None]
@@ -769,7 +792,7 @@ class Gas(SchneiderProfiles, SchneiderFractions):
 
         del u_integral, v_integral, prof_integral
 
-        DM    = DarkMatter(**self.model_params); setattr(DM, 'cutoff', 1e3) #Set large cutoff just for normalization calculation
+        DM    = DarkMatter(**self.model_params, **self.hyper_params); setattr(DM, 'cutoff', 1e3) #Set large cutoff just for normalization calculation
         rho   = DM.real(cosmo, r_integral, M_use, a)
         M_tot = np.trapz(4*np.pi*r_integral**2 * rho, r_integral, axis = -1)
         M_tot = np.atleast_1d(M_tot)[:, None]
