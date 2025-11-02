@@ -57,10 +57,10 @@ class Truncation(SchneiderProfiles):
     >>> truncated = other_bfg_profile.real(cosmo, r, M, a)
     """
 
-    def __init__(self, epsilon, mass_def = ccl.halos.massdef.MassDef200c):
+    def __init__(self, epsilon, mass_def = ccl.halos.massdef.MassDef200c, **kwargs):
 
         self.epsilon = epsilon
-        ccl.halos.profiles.HaloProfile.__init__(self, mass_def = mass_def)
+        super().__init__(mass_def = mass_def, **kwargs)
 
 
     def _real(self, cosmo, r, M, a):
@@ -97,9 +97,9 @@ class Identity(SchneiderProfiles):
         density is 200 times the critical density.
 
     """
-    def __init__(self, mass_def = ccl.halos.massdef.MassDef200c):
+    def __init__(self, mass_def = ccl.halos.massdef.MassDef200c, **kwargs):
 
-        ccl.halos.profiles.HaloProfile.__init__(self, mass_def = mass_def)
+        super().__init__(mass_def = mass_def, **kwargs)
 
     def _real(self, cosmo, r, M, a):
 
@@ -136,9 +136,9 @@ class Zeros(SchneiderProfiles):
         density is 200 times the critical density.
 
     """
-    def __init__(self, mass_def = ccl.halos.massdef.MassDef200c):
+    def __init__(self, mass_def = ccl.halos.massdef.MassDef200c, **kwargs):
 
-        ccl.halos.profiles.HaloProfile.__init__(self, mass_def = mass_def)
+        super().__init__(mass_def = mass_def, **kwargs)
 
     def _real(self, cosmo, r, M, a):
 
@@ -177,7 +177,8 @@ class TruncatedFourier(object):
         density is 200 times the critical density.
 
     """
-    def __init__(self, Profile, epsilon_max, epsilon_min = None): 
+    def __init__(self, Profile, epsilon_max, epsilon_min = None, **kwargs): 
+        
         self.Profile     = Profile
         self.epsilon_max = epsilon_max
         self.epsilon_min = epsilon_min
@@ -225,7 +226,7 @@ class TruncatedFourier(object):
         return kprof
     
 
-class ComovingToPhysical(ccl.halos.profiles.HaloProfile):
+class ComovingToPhysical(SchneiderProfiles):
     """
     Converts a given profile from comoving to physical units by applying 
     a user-specified scale factor (`a`) correction. The projected profile is rescaled
@@ -246,13 +247,14 @@ class ComovingToPhysical(ccl.halos.profiles.HaloProfile):
         scale factor `a` to the appropriate power.
     """
     
-    def __init__(self, profile, factor):
+    def __init__(self, profile, factor, **kwargs):
         
         self.profile = profile
         self.factor  = factor
 
         #We just set this to the same as the inputted profile.
-        super().__init__(mass_def = profile.mass_def)
+        super().__init__(mass_def = profile.mass_def, **kwargs)
+    
         
     def real(self, cosmo, r, M, a):      return self.profile.real(cosmo, r, M, a)      * np.power(a, self.factor)
     def projected(self, cosmo, r, M, a): return self.profile.projected(cosmo, r, M, a) * np.power(a, self.factor + 1)
