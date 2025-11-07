@@ -976,13 +976,13 @@ class PaintProfilesAnisGrid(PaintProfilesGrid):
 
                     raise ValueError("use_ellipticity is not implemented for 3D maps")
 
-                    assert q_j > 0, "The axis ratio in halo %d is zero" % j
+                    # assert q_j > 0, "The axis ratio in halo %d is zero" % j
 
-                    Rmat = self.build_Rmat(A_j, np.array([0., 1., 0.]))
-                    x_grid_ell, y_grid_ell, z_grid_ell = (self.coord_array(x_grid + dx, y_grid + dy, z_grid + dz) @ Rmat).T
-                    r_grid = np.sqrt(x_grid_ell**2/ar_j**2 + 
-                                     y_grid_ell**2/br_j**2 +
-                                     z_grid_ell**2/cr_j**2).reshape(x_grid_ell.shape)
+                    # Rmat = self.build_Rmat(A_j, np.array([0., 1., 0.]))
+                    # x_grid_ell, y_grid_ell, z_grid_ell = (self.coord_array(x_grid + dx, y_grid + dy, z_grid + dz) @ Rmat).T
+                    # r_grid = np.sqrt(x_grid_ell**2/ar_j**2 + 
+                    #                  y_grid_ell**2/br_j**2 +
+                    #                  z_grid_ell**2/cr_j**2).reshape(x_grid_ell.shape)
 
             Painting = Paint(cosmo,  r_grid.flatten(), M_j, a_j, **o_j)
             Canvas   = Tracer(cosmo, r_grid.flatten(), M_j, a_j, **o_j)
