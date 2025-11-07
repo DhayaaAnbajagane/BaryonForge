@@ -1,0 +1,10 @@
+[build-system]
+requires = ["setuptools>=68", "setuptools-scm>=8", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+dynamic = ["version"]
+
+[tool.setuptools_scm]
+write_to = "BaryonForge/_version.py"
+git_describe_command = "git describe --dirty --tags --long --match *[0-9]*"

@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name='BaryonForge',
-    version='1.1.0',
+    version='1.3.0',
     author='Dhayaa Anbajagane',
     author_email='dhayaa@uchicago.edu',
     description='A pipeline for adding baryonic imprints and thermodynamic maps to N-body simulations',
