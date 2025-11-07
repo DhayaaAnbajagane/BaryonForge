@@ -6,7 +6,7 @@ import warnings
 from scipy import interpolate, special
 from ..utils import _set_parameter, safe_Pchip_minimize
 from .misc import Zeros
-from . import Schneider19 as S19, Arico20 as A20
+from . import Schneider19 as S19, Arico20 as A20, Base
 from .Thermodynamic import (G, Msun_to_Kg, Mpc_to_m, kb_cgs, m_p, m_to_cm)
 
 __all__ = ['model_params', 'MeadProfiles', 
@@ -30,7 +30,7 @@ model_params = ['cdelta', 'eps1', 'nu_eps1', 'eps2', #DM profle param and relaxa
                ]
 
 
-class MeadProfiles(A20.AricoProfiles):
+class MeadProfiles(Base.BaseBFGProfiles):
     __doc__ = A20.AricoProfiles.__doc__.replace('Arico', 'Mead')
 
     #Define the new param names

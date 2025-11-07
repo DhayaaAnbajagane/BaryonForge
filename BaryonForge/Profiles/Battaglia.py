@@ -1,6 +1,6 @@
 import numpy as np
 import pyccl as ccl
-from .Thermodynamic import (Msun_to_Kg, Mpc_to_m, G, Y, Pth_to_Pe, Pressure_at_infinity)
+from ..utils.constants import (Msun_to_Kg, Mpc_to_m, G, Y, Pth_to_Pe)
 
 
 __all__ = ['Pressure', 'ElectronPressure', 'GasDensity']
