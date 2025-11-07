@@ -287,9 +287,19 @@ class BaryonifyShell(DefaultRunner):
         orig_map = self.LightconeShell.map
         NSIDE    = self.LightconeShell.NSIDE
 
+        #If somehow the map is just zeros, then we don't need to
+        #do anything and can just return the map back. I don't know
+        #why you'd pass a zero-map though....
+        if np.allclose(orig_map, 0):
+            return orig_map
+
         #Build interpolator between redshift and ang-diam-dist. Assume we never use z > 30
-        z_t = np.linspace(0, 30, 1000)
+        z_m = np.max(self.HaloLightConeCatalog.cat['z'])
+        z_t = np.linspace(0, z_m + 0.1, 1000)
         D_a = interpolate.CubicSpline(z_t, ccl.angular_diameter_distance(cosmo, 1/(1 + z_t)))
+        
+        assert np.max(self.HaloLightConeCatalog.cat['z']) <= 30, f"We assume max(z) = 30, but your catalog has max(z) = {np.max(self.HaloLightConeCatalog.cat['z'])}"
+        
         
         keys = vars(self.model).get('p_keys', []) #Check if model has property keys
 
@@ -346,7 +356,7 @@ class BaryonifyShell(DefaultRunner):
         
         new_vec = np.stack( hp.pix2vec(NSIDE, np.arange(orig_map.size)), axis = 1) + pix_offsets
         new_ang = np.stack( hp.vec2ang(new_vec, lonlat = True), axis = 1)
-        p_pix   = np.where(orig_map > 0)[0] #Only select regions with positive mass. Zero mass pixels don't matter
+        p_pix   = np.where(orig_map != 0)[0] #Only select regions with non-zero map-values. Zero value pixels don't matter
         
         c_pix, c_weight = hp.get_interp_weights(NSIDE, new_ang[p_pix, 0], new_ang[p_pix, 1], lonlat = True)
         c_pix, c_weight = c_pix.T, c_weight.T
@@ -416,8 +426,12 @@ class PaintProfilesShell(DefaultRunner):
         pixarea  = hp.nside2pixarea(NSIDE, degrees = False)
 
         #Build interpolator between redshift and ang-diam-dist. Assume we never use z > 30
-        z_t = np.linspace(0, 30, 1000)
+        z_m = np.max(self.HaloLightConeCatalog.cat['z'])
+        z_t = np.linspace(0, z_m + 0.1, 1000)
         D_a = interpolate.CubicSpline(z_t, ccl.angular_diameter_distance(cosmo, 1/(1 + z_t)))
+
+        assert np.max(self.HaloLightConeCatalog.cat['z']) <= 30, f"We assume max(z) = 30, but your catalog has max(z) = {np.max(self.HaloLightConeCatalog.cat['z'])}"
+        
         
         keys = vars(self.model).get('p_keys', []) #Check if model has property keys
 
@@ -535,7 +549,8 @@ class PaintProfilesAnisShell(DefaultRunner):
         pixarea  = hp.nside2pixarea(NSIDE, degrees = False)
 
         #Build interpolator between redshift and ang-diam-dist. Assume we never use z > 30
-        z_t = np.linspace(0, 30, 1000)
+        z_m = np.max(self.HaloLightConeCatalog.cat['z'])
+        z_t = np.linspace(0, z_m + 0.1, 1000)
         D_a = interpolate.CubicSpline(z_t, ccl.angular_diameter_distance(cosmo, 1/(1 + z_t)))
         
         keys = vars(self.model).get('p_keys', []) #Check if model has property keys
