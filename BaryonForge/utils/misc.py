@@ -51,16 +51,16 @@ def generate_operator_method(op, reflect = False):
 
             assert isinstance(other, (int, float, ccl.halos.profiles.HaloProfile)), f"Object must be int/float/SchneiderProfile but is type '{type(other).__name__}'."
 
-            Combined = self.__class__(**self.model_params, xi_mm = self.xi_mm, 
-                                      padding_lo_proj   = self.padding_lo_proj, 
-                                      padding_hi_proj   = self.padding_hi_proj, 
-                                      n_per_decade_proj = self.n_per_decade_proj,
-                                      mass_def  = self.mass_def,
-                                      r_min_int = self.r_min_int, 
-                                      r_max_int = self.r_max_int, 
-                                      r_steps   = self.r_steps,
-                                      use_fftlog_projection = self._use_fftlog_projection,
-                                      c_M_relation          = self._c_M_relation)
+
+            mdl_pars = self.model_params
+            hyp_pars = self.hyper_params
+
+            if isinstance(other, ccl.halos.profiles.HaloProfile):
+                mdl_pars |= other.model_params
+                hyp_pars |= other.hyper_params
+
+
+            Combined = self.__class__(**mdl_pars, **hyp_pars)
 
             def __tmp_real__(cosmo, r, M, a):
 
@@ -126,12 +126,8 @@ def generate_operator_method(op, reflect = False):
     elif op in [abs, neg, pos]:
 
         def operator_method(self):
-            
-            Combined = self.__class__(**self.model_params, xi_mm = self.xi_mm, 
-                                      padding_lo_proj = self.padding_lo_proj, 
-                                      padding_hi_proj = self.padding_hi_proj, 
-                                      n_per_decade_proj = self.n_per_decade_proj,
-                                      mass_def = self.mass_def)
+
+            Combined = self.__class__(**self.model_params, **self.hyper_params)
 
             def __tmp_real__(cosmo, r, M, a):
 
