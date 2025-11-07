@@ -6,7 +6,7 @@ import warnings
 from scipy import interpolate, special, integrate
 from ..utils import _set_parameter, safe_Pchip_minimize
 from .misc import Zeros, Truncation
-from . import Schneider19 as S19
+from . import Schneider19 as S19, Base
 from .Thermodynamic import (G, Msun_to_Kg, Mpc_to_m, kb_cgs, m_p, m_to_cm)
 
 __all__ = ['model_params', 'AricoProfiles', 
@@ -29,7 +29,7 @@ model_params = ['cdelta', 'a', 'n', #DM profle params and relaxation params
                ]
 
 
-class AricoProfiles(S19.SchneiderProfiles):
+class AricoProfiles(Base.BaseBFGProfiles):
     __doc__ = S19.SchneiderProfiles.__doc__.replace('Schneider', 'Arico')
 
     #Define the new param names
@@ -39,19 +39,6 @@ class AricoProfiles(S19.SchneiderProfiles):
     def __init__(self, r_max_int = 10, **kwargs):
         
         super().__init__(**kwargs, r_max_int = r_max_int)
-        
-        #Go through all input params, and assign Nones to ones that don't exist.
-        #If mass/redshift/conc-dependence, then set to 1 if don't exist
-        for m in self.model_param_names:
-            if m in kwargs.keys():
-                setattr(self, m, kwargs[m])
-            else:
-                setattr(self, m, None)
-
-        #Sets the cutoff scale of all profiles, in comoving Mpc. Prevents divergence in FFTLog
-        #Also set cutoff of projection integral. Should be the box side length
-        self.cutoff      = kwargs['cutoff'] if 'cutoff' in kwargs.keys() else 1e3 #1Gpc is a safe default choice
-        self.proj_cutoff = kwargs['proj_cutoff'] if 'proj_cutoff' in kwargs.keys() else self.cutoff
                 
     
     def _get_gas_params(self, M, a, cosmo):
@@ -552,7 +539,7 @@ class BoundGas(BoundGasUntruncated):
     """
 
     def _real(self, cosmo, R, M, a):
-        return super()._real(cosmo, R, M, a) * Truncation(epsilon = 1)._real(cosmo, R, M, a)
+        return super()._real(cosmo, R, M, a) * Truncation(epsilon_trunc = 1)._real(cosmo, R, M, a)
         
 
 

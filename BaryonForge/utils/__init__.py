@@ -6,3 +6,4 @@ from ..utils.Pixel import *
 from ..utils.misc import *
 from ..utils.halomodel import *
 from ..utils.concentration import *
+from ..utils.constants import *
