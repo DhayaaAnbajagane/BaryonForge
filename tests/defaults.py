@@ -2,8 +2,8 @@ import pyccl as ccl, numpy as np
 
 #Load cosmology object from CCL. Linear P(k) is needed since we use it for 2-halo term.
 #We don't use P(k) anywhere else in this model, so it's ok to use linear P(k) throughout
-cosmo = ccl.Cosmology(Omega_c = 0.26, Omega_b = 0.04, h = 0.7, sigma8 = 0.8, n_s = 0.96, matter_power_spectrum='linear')
-h     = cosmo.cosmo.params.h
+ccl_dict = dict(Omega_c = 0.26, Omega_b = 0.04, h = 0.7, sigma8 = 0.8, n_s = 0.96, matter_power_spectrum='linear')
+h        = ccl_dict['h']
 
 #Config params. Can change as you need. I store these as a dict and then unpack.
 bpar_S19 = dict(theta_ej = 4, theta_co = 0.1, M_c = 1e14/h, mu_beta = 0.4,
