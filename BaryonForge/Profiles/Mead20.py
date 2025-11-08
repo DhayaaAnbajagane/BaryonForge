@@ -11,7 +11,7 @@ from .Thermodynamic import (G, Msun_to_Kg, Mpc_to_m, kb_cgs, m_p, m_to_cm)
 
 __all__ = ['model_params', 'MeadProfiles', 
            'DarkMatter', 'TwoHalo', 'CentralStars', 'SatelliteStars', 'Stars', 
-           'Gas', 'BoundGas', 'EjectedGas', 'ReaccretedGas', 'CollisionlessMatter',
+           'Gas', 'BoundGas', 'EjectedGas', 'CollisionlessMatter',
            'DarkMatterOnly', 'DarkMatterBaryon',
            'Temperature', 'Pressure',
            'Tagn2pars']

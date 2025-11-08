@@ -6,7 +6,7 @@ from ..utils.Tabulate import _set_parameter
 from pyccl.pyutils import resample_array, _fftlog_transform
 fftlog = _fftlog_transform
 
-__all__ = ['Truncation', 'Identity', 'Zeros', 'Comoving_to_Physical', 'Mdelta_to_Mtot']
+__all__ = ['Truncation', 'Identity', 'Zeros', 'ComovingToPhysical', 'Mdelta_to_Mtot']
 
 class Truncation(BaseBFGProfiles):
     """
