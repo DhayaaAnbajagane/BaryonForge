@@ -37,7 +37,6 @@ def test_mead20():
 
 
 if __name__ == '__main__':
-    pass
-    # test_schneider19()
-    # test_arico20()
-    # test_mead20()
+    test_schneider19()
+    test_arico20()
+    test_mead20()

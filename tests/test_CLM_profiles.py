@@ -37,9 +37,7 @@ def test_mead20():
         bfg.Profiles.Mead20.CollisionlessMatter(**bpar_M20).projected(cosmo, R, M, a)
         bfg.Profiles.Mead20.CollisionlessMatter(**bpar_M20).fourier(cosmo, k, M, a)
 
-
 if __name__ == '__main__':
-    pass
-    # test_schneider19()
-    # test_arico20()
-    # test_mead20()
+    test_schneider19()
+    test_arico20()
+    test_mead20()
