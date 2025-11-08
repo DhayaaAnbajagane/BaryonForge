@@ -3,7 +3,37 @@ requires = ["setuptools>=68", "setuptools-scm>=8", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
+name = "BaryonForge"
+description = "A pipeline for adding baryonic imprints and thermodynamic maps to N-body simulations"
+readme = "README.md"
+requires-python = ">=3.9"
+authors = [{ name = "Dhayaa Anbajagane", email = "dhayaa@uchicago.edu" }]
+license = { text = "MIT" }
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+]
+dependencies = [
+  "tqdm",
+  "healpy",
+  "scipy>=1.12",
+  "numpy==1.*",
+  "numba",
+  "pyccl>=3.1.2",
+]
 dynamic = ["version"]
+
+[project.urls]
+Homepage = "https://github.com/DhayaaAnbajagane/BaryonForge"
+Repository = "https://github.com/DhayaaAnbajagane/BaryonForge"
+
+[project.scripts]
+# example: baryonforge = "BaryonForge.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+# If your package directory is named "BaryonForge", this will pick it up.
 
 [tool.setuptools_scm]
 write_to = "BaryonForge/_version.py"
