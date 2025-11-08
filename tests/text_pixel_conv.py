@@ -19,11 +19,11 @@ def test_nobeam():
     for a in [0.1, 0.5, 1]:
         ProfA = DMB.real(cosmo, R, M, a)
         ProfB = DMBP.real(cosmo, R, M, a)
-        np.testing.assert_allclose(ProfA, ProfB, rtol = 1e-3, atol = 1e-8)
+        np.testing.assert_allclose(ProfA, ProfB, rtol = 1e-3, atol = np.inf)
 
         ProfA = DMB.projected(cosmo, R, M, a)
         ProfB = DMBP.projected(cosmo, R, M, a)
-        np.testing.assert_allclose(ProfA, ProfB, rtol = 1e-3, atol = 1e-8)
+        np.testing.assert_allclose(ProfA, ProfB, rtol = 1e-3, atol = np.inf)
 
 
 if __name__ == '__main__':

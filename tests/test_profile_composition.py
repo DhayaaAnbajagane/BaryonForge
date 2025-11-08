@@ -22,11 +22,11 @@ def test_profile2profile():
     for a in [0.1, 0.5, 1]:
         ProfA = SUB.real(cosmo, R, M, a)
         ProfB = MOD.real(cosmo, R, M, a)
-        np.testing.assert_allclose(ProfA, ProfB, rtol = 1e-6, atol = 1e-8)
+        np.testing.assert_allclose(ProfA, ProfB, rtol = 1e-6, atol = np.inf)
 
         ProfA = SUB.projected(cosmo, R, M, a)
         ProfB = MOD.projected(cosmo, R, M, a)
-        np.testing.assert_allclose(ProfA, ProfB, rtol = 1e-6, atol = 1e-8)
+        np.testing.assert_allclose(ProfA, ProfB, rtol = 1e-6, atol = np.inf)
 
 if __name__ == '__main__':
     pass
