@@ -4,7 +4,7 @@ import pyccl as ccl
 
 from defaults import bpar_S19, bpar_A20, ccl_dict, h
 cosmo = ccl.Cosmology(**ccl_dict)
-cosmo.compute_power()
+cosmo.compute_growth()
 
 if __name__ == '__main__':
     pass

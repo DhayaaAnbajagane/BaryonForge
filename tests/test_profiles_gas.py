@@ -4,7 +4,8 @@ import pyccl as ccl
 
 from defaults import bpar_S19, bpar_A20, ccl_dict, h
 cosmo = ccl.Cosmology(**ccl_dict)
-cosmo.compute_power()
+cosmo.compute_growth()
+
 M = np.geomspace(1e11, 1e16, 5)
 R = np.geomspace(1e-3, 1e3, 10)
 k = np.geomspace(1e-3, 1e3, 10)
