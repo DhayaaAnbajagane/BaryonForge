@@ -27,7 +27,7 @@ def _sample_sky(n, degrees=True, seed=None):
 def test_baryonification():
 
     N = 100
-    ra, dec = _sample_sky(N, rng = 42)
+    ra, dec = _sample_sky(N, seed = 42)
     M = np.power(10, np.random.uniform(12, 15.5, N))
     z = np.random.uniform(0.4, 0.5, N)
 
