@@ -31,7 +31,7 @@ def test_baryonification():
     M = np.power(10, np.random.uniform(12, 15.5, N))
     z = np.random.uniform(0.4, 0.5, N)
 
-    Cat  = bfg.HaloLightConeCatalog(ra, dec, M, z, cosmo)
+    Cat  = bfg.HaloLightConeCatalog(ra, dec, M, z, bfg.utils.build_cosmodict(cosmo))
 
     bpar_S19['proj_cutoff'] = 50/2
     
