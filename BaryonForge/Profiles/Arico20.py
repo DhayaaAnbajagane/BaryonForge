@@ -235,9 +235,9 @@ class AricoProfiles(Base.BaseBFGProfiles):
         
         f_gas = np.clip(f_bar - f_str, 1e-10, None) #Total gas fraction should be non-zero to avoid log10 errors
         
-        f_hg  = f_gas / (1 + np.power(self.M_c/M[:, None], self.beta))
+        f_hg  = f_gas / (1 + np.power(self.M_c/M, self.beta))
         f_eg  = f_gas - f_hg #By definition f_hg <= f_gas
-        f_rg  = (f_gas - f_hg) / (1 + np.power(self.M_r/M[:, None], self.beta_r))
+        f_rg  = (f_gas - f_hg) / (1 + np.power(self.M_r/M, self.beta_r))
         f_rg  = np.clip(f_rg, None, f_hg) #Reaccreted gas cannot be more than halo gas 
         f_bg  = f_hg - f_rg
         
