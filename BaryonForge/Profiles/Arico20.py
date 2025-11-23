@@ -456,7 +456,7 @@ class BoundGasUntruncated(AricoProfiles):
 
         R = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
 
-        f_bg = self._get_gas_frac(M_use, a, cosmo)[0]
+        f_bg = self._get_gas_frac(M_use, a, cosmo)[0][:, None]
 
         #Get gas params
         beta, theta_out, theta_inn = self._get_gas_params(M_use, a, cosmo)
@@ -597,7 +597,7 @@ class EjectedGas(AricoProfiles):
         z = 1/a - 1
         R = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
 
-        f_eg = self._get_gas_frac(M_use, a, cosmo)[2]
+        f_eg = self._get_gas_frac(M_use, a, cosmo)[2][:, None]
 
         #Now use the escape radius, which is r_esc = v_esc * t_hubble
         #and this reduces down to just 1/2 * sqrt(Delta) * R_Delta
@@ -660,7 +660,7 @@ class ReaccretedGas(AricoProfiles):
 
         R = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
 
-        f_rg = self._get_gas_frac(M_use, a, cosmo)[1]
+        f_rg = self._get_gas_frac(M_use, a, cosmo)[1][:, None]
         
         #Get gas params
         R_rg = self.theta_rg*R[:, None]
