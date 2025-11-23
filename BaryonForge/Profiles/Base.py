@@ -97,7 +97,7 @@ class BaseBFGProfiles(ccl.halos.profiles.HaloProfile):
         self.r_steps   = r_steps
         
         #Import all other parameters from the base CCL Profile class
-        super().__init__(mass_def = mass_def)
+        ccl.halos.profiles.HaloProfile.__init__(self,mass_def = mass_def)
 
         #Function that returns correlation func at different radii
         self.xi_mm = xi_mm

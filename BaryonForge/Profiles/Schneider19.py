@@ -138,21 +138,31 @@ class SchneiderProfiles(BaseBFGProfiles):
         f_star = np.clip(f_star, 1e-10, f_bar)
         f_cga  = np.clip(f_cga,  1e-10, f_star)
         
-        f_star = f_star[:, None]
-        f_cga  = f_cga[:, None]
-        
         f_sga  = np.clip(f_star - f_cga, 1e-10, None) 
         
         return f_star, f_cga, f_sga
+
+    def get_f_star(self, M_use, a, cosmo):
+        return self._get_star_frac(M_use, a, cosmo)[0]
+    
+    def get_f_star_cen(self, M_use, a, cosmo):
+        return self._get_star_frac(M_use, a, cosmo)[1]
+    
+    def get_f_star_sat(self, M_use, a, cosmo):
+        return self._get_star_frac(M_use, a, cosmo)[2]        
     
     
     def _get_gas_frac(self, M_use, a, cosmo):
         
-        f_star = self._get_star_frac(M_use, a, cosmo)[0]
+        f_star = self.get_f_star(M_use, a, cosmo)
         f_bar  = cosmo.cosmo.params.Omega_b/cosmo.cosmo.params.Omega_m
         f_gas  = np.clip(f_bar - f_star, 1e-10, None) #Cannot let the fraction be identically 0.        
         
         return f_gas
+    
+
+    def get_f_gas(self, M_use, a, cosmo):
+        return self._get_gas_frac(M_use, a, cosmo)
         
         
         
@@ -420,7 +430,7 @@ class Stars(SchneiderProfiles):
 
         R   = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
 
-        f_cga  = self._get_star_frac(M_use, a, cosmo)[1]
+        f_cga  = self.get_f_star_cen(M_use, a, cosmo)[:, None]
         R_h    = self.epsilon_h * R[:, None]
 
         r_integral = np.geomspace(self.r_min_int, self.r_max_int, self.r_steps)
@@ -436,7 +446,8 @@ class Stars(SchneiderProfiles):
                 
         #Handle dimensions so input dimensions are mirrored in the output
         if np.ndim(r) == 0: prof = np.squeeze(prof, axis=-1)
-        if np.ndim(M) == 0: prof = np.squeeze(prof, axis=0)
+        if np.ndim(M) == 0: 
+            prof = np.squeeze(prof, axis=0)
 
         return prof
 
@@ -509,7 +520,7 @@ class Gas(SchneiderProfiles):
 
         R = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
 
-        f_gas  = self._get_gas_frac(M_use, a, cosmo)
+        f_gas  = self.get_f_gas(M_use, a, cosmo)[:, None]
         
         #Get gas params
         beta, theta_ej, theta_co, delta, gamma = self._get_gas_params(M_use, z)
@@ -789,7 +800,7 @@ class CollisionlessMatter(SchneiderProfiles):
         eta_cga = self.eta + self.eta_delta
         tau_cga = self.tau + self.tau_delta
         
-        f_sga  = self._get_star_frac(M_use, a, cosmo)[2]
+        f_sga  = self.get_f_star_sat(M_use, a, cosmo)[:, None]
         f_clm  = 1 - cosmo.cosmo.params.Omega_b/cosmo.cosmo.params.Omega_m + f_sga
         
         rho_i      = self.DarkMatter.real(cosmo, r_integral, M_use, a)
@@ -884,10 +895,7 @@ class SatelliteStars(CollisionlessMatter):
 
         M_use = np.atleast_1d(M)
 
-        eta_cga = self.eta + self.eta_delta
-        tau_cga = self.tau + self.tau_delta
-        
-        f_sga  = self._get_star_frac(M_use, a, cosmo)[2]
+        f_sga  = self.get_f_star_sat(M_use, a, cosmo)[:, None]
         f_clm  = 1 - cosmo.cosmo.params.Omega_b/cosmo.cosmo.params.Omega_m + f_sga
         
         if np.ndim(M) == 0: 
