@@ -2,13 +2,14 @@ import pyccl as ccl
 import numpy as np, healpy as hp
 from scipy import interpolate, special
 from .Tabulate import _set_parameter
+from ..Profiles.Base import BaseBFGProfiles
 
 __all__ = ['ConvolvedProfile', 'GridPixelApprox', 'HealPixel']
 
 #Define a shorthand to use everywhere
 fftlog = ccl.pyutils._fftlog_transform
 
-class ConvolvedProfile(ccl.halos.profiles.HaloProfile):
+class ConvolvedProfile(BaseBFGProfiles):
     """
     A class to compute profiles convolved with a pixel window function.
 
@@ -74,7 +75,16 @@ class ConvolvedProfile(ccl.halos.profiles.HaloProfile):
         self.isHarmonic = Pixel.isHarmonic
 
         #We just set this to the same as the inputted profile.
-        super().__init__(mass_def = Profile.mass_def)
+        BaseBFGProfiles.__init__(self, mass_def = Profile.mass_def)
+
+        self.update_precision_fftlog(**self.Profile.precision_fftlog.to_dict())
+
+
+    def __str_prf__(self):
+
+        return f"Convolution[{self.Profile.__str_prf__()}, {self.Pixel.__class__.__name__}]"
+    
+    def __str_par__(self): return self.Profile.__str_par__()
         
         
     def __getattr__(self, name):
