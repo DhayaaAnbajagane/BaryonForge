@@ -1,10 +1,9 @@
 import numpy as np
 import pyccl as ccl
-from operator import add, mul, sub, truediv, pow, neg, pos, abs
 import warnings
 
 from scipy import interpolate, special
-from ..utils import _set_parameter, safe_Pchip_minimize
+from ..utils import safe_Pchip_minimize
 from .misc import Zeros
 from . import Schneider19 as S19, Arico20 as A20, Base
 from .Thermodynamic import (G, Msun_to_Kg, Mpc_to_m, kb_cgs, m_p, m_to_cm)
@@ -109,18 +108,32 @@ class MeadProfiles(Base.BaseBFGProfiles):
         f_cen = f_str * np.clip(np.where(M_use < Mstr, 1, np.power(M_use/Mstr, self.eta)), 0, 1)
         f_sat = f_str * np.clip(np.where(M_use < Mstr, 0, 1 - np.power(M_use/Mstr, self.eta)), 0, 1)
         
-        return f_str, f_cen, f_sat    
+        return f_str, f_cen, f_sat  
+
+    def get_f_star(self, M_use, a, cosmo):
+        return self._get_star_frac(M_use, a, cosmo)[0]
+    
+    def get_f_star_cen(self, M_use, a, cosmo):
+        return self._get_star_frac(M_use, a, cosmo)[1]
+    
+    def get_f_star_sat(self, M_use, a, cosmo):
+        return self._get_star_frac(M_use, a, cosmo)[2]  
 
     def _get_gas_params(self): return self.M0, self.beta
 
     def _get_gas_frac(self, M_use, a, cosmo):
 
-        f_str, f_cen, f_sat = self._get_star_frac(M_use, a, cosmo)
+        f_str = self.get_f_star(M_use, a, cosmo)
         f_bar = cosmo.cosmo.params.Omega_b/cosmo.cosmo.params.Omega_m
         f_bnd = f_bar * np.power(M_use/self.M_0, self.beta) / (1 + np.power(M_use/self.M_0, self.beta))
         f_ej  = ((f_bar - f_str) - f_bnd)
         
         return f_bnd, f_ej
+    
+    def get_f_gas(self, M_use, a, cosmo):
+        f = self._get_gas_frac(M_use, a, cosmo)
+        return f[0] + f[1]
+    
     
     def _modify_concentration(self, cosmo, c, M, a):
         """
@@ -270,8 +283,7 @@ class CentralStars(MeadProfiles):
         M_use = np.atleast_1d(M)
 
         R     = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
-        f_str, f_cen, f_sat = self._get_star_frac(M_use, a, cosmo)
-        f_cen = f_cen[:, None]
+        f_cen = self.get_f_star_cen(M_use, a, cosmo)[:, None]
         R_h   = self.epsilon_h * R[:, None]
 
         #Final profile. No truncation needed since exponential cutoff already does that for us
@@ -295,7 +307,7 @@ class SatelliteStars(DarkMatter):
     
     def _real(self, cosmo, r, M, a):
 
-        f_str, f_cen, f_sat = self._get_star_frac(M, a, cosmo)
+        f_sat = self.get_f_star_sat(M, a, cosmo)
         
         if np.atleast_1d(f_sat).size > 1:
             f_sat = f_sat[:, None]
@@ -365,8 +377,7 @@ class DeltaStars(MeadProfiles):
         k_use = np.atleast_1d(k)
         M_use = np.atleast_1d(M)
 
-        f_str, f_cen, f_sat = self._get_star_frac(M_use, a, cosmo)
-        f_cen = f_cen[:, None]
+        f_cen = self.get_f_star_cen(M_use, a, cosmo)[:, None]
         
         #Final profile. No truncation needed since exponential cutoff already does that for us
         prof = f_cen*M_use[:, None] * np.ones_like(k_use)
@@ -669,7 +680,6 @@ class CollisionlessMatter(MeadProfiles):
         #Get the normalization (rho_c) analytically since we don't have a truncation radii like S19 does
         Norm  = 4*np.pi*r_s**3 * (np.log(1 + c) - c/(1 + c))
         rho_c = M_use/Norm
-        f_str, f_cen, f_sat = self._get_star_frac(M_use, a, cosmo)
         f_bar = cosmo.cosmo.params.Omega_b/cosmo.cosmo.params.Omega_m
         rho_c = rho_c * (1 - f_bar) #Rescale to correct fraction of mass
 
