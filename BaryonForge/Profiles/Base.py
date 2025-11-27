@@ -146,6 +146,26 @@ class BaseBFGProfiles(ccl.halos.profiles.HaloProfile):
         return params
     
 
+    def update_precision_fftlog(self, **pars):
+        """
+        Updates the FFT parameters for the fourier method, and does so
+        recursively for any and all BaryonForge (BFG) profiles that are
+        held as attributes within a given class.
+        """
+        
+        Haloprofile = ccl.halos.profiles.HaloProfile
+        #Set precision for yourself
+        Haloprofile.update_precision_fftlog(self, **pars)
+
+        #Now check if you have any attributes that also need
+        #to have their precision updated
+        obj_keys = dir(self)
+    
+        for k in obj_keys:
+            if isinstance(getattr(self, k), (ccl.halos.profiles.HaloProfile,)):
+                BaseBFGProfiles.update_precision_fftlog(getattr(self, k), **pars)
+                      
+
     @property
     def hyper_params(self):
         """
