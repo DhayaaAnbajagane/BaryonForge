@@ -5,7 +5,7 @@ from scipy import interpolate, integrate
 from .Base import BaseBFGProfiles, hyper_params
 from .Schneider19 import Gas, DarkMatterBaryon, TwoHalo
 from ..utils.constants import (G, Msun_to_Kg, Mpc_to_m, Pth_to_Pe, m_p, m_to_cm, kb_cgs, sigma_T_cgs, c_cgs, m_e_cgs)
-
+from ..utils.Tabulate import _set_parameter, _get_parameter
 from .Schneider19 import model_params as S19_mp
 from .Arico20     import model_params as A20_mp
 from .Mead20      import model_params as M20_mp
@@ -143,8 +143,8 @@ class Pressure(BaseThermodynamicProfile):
         #Now make sure the cutoff is sufficiently high
         #We don't want small cutoff of 1-halo term when computing the TRUE pressure profile.
         #The cutoff is reapplied to the derives pressure profiles in _real()
-        self.Gas.set_parameter('cutoff', 1000)
-        self.DarkMatterBaryon.set_parameter('cutoff', 1000)
+        _set_parameter(self.Gas,              'cutoff', 1000)
+        _set_parameter(self.DarkMatterBaryon, 'cutoff', 1000)
             
         self.prof4params = self.Gas
         
