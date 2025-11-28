@@ -124,14 +124,16 @@ class CachedProfile(BaseBFGProfiles):
 
     """
 
-    def __init__(self, Profile, maxsize = 64):
+    def __init__(self, Profile, maxsize = 64, methods = ['real', 'projected', 'fourier']):
         
-        self.Profile  = Profile
-        self.maxsize  = maxsize
+        assert isinstance(methods, list), f"You passed methods = {methods}, but we need a list of strings"
 
-        self.real      = SimpleArrayCache(self.maxsize)(self.Profile.real)
-        self.projected = SimpleArrayCache(self.maxsize)(self.Profile.projected)
-        self.fourier   = SimpleArrayCache(self.maxsize)(self.Profile.fourier)
+        self.Profile   = Profile
+        self.maxsize   = maxsize
+        self.methods   = methods
+
+        for m in self.methods:
+            setattr(self, m, SimpleArrayCache(self.maxsize)(getattr(self.Profile, m)))
         
         #We just set this to the same as the inputted profile.
         super().__init__(mass_def = self.Profile.mass_def)
@@ -141,7 +143,7 @@ class CachedProfile(BaseBFGProfiles):
 
     def __getattr__(self, key):
 
-        safe_keys = ['real', 'projected', 'fourier', 'Profile', 'maxsize']
+        safe_keys = self.methods + ['Profile', 'maxsize']
 
         if key in safe_keys:
             return object.__getattribute__(self, key)
@@ -154,3 +156,21 @@ class CachedProfile(BaseBFGProfiles):
         return f"Cached[{self.Profile.__str_prf__()}]"
     
     def __str_par__(self): return self.Profile.__str_par__()
+
+
+class CachedHODProfile(CachedProfile, ccl.halos.profiles.hod.HaloProfileHOD):
+
+    def __init__(self, Profile, maxsize = 64, 
+                 methods = ['get_normalization', '_fourier_variance', '_fourier', 'fourier', 'real']):
+
+        self.Profile   = Profile
+        self.maxsize   = maxsize
+        self.methods   = methods
+
+        for m in self.methods:
+            setattr(self, m, SimpleArrayCache(self.maxsize)(getattr(self.Profile, m)))
+        
+        #We just set this to the same as the inputted profile.
+        ccl.halos.profiles.hod.HaloProfileHOD.__init__(self, mass_def = self.Profile.mass_def)
+
+        self.update_precision_fftlog(**self.Profile.precision_fftlog.to_dict())
