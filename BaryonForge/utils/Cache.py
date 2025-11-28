@@ -3,8 +3,9 @@ import numpy as np
 import pyccl as ccl
 from collections import OrderedDict
 from ..Profiles.Base import BaseBFGProfiles
+import functools
 
-__all__ = ['SimpleArrayCache', 'CachedProfile']
+__all__ = ['SimpleArrayCache', 'CachedProfile', 'CachedHODProfile']
 
 class SimpleArrayCache:
     """
@@ -53,10 +54,12 @@ class SimpleArrayCache:
         self.maxsize = maxsize
         self._store = OrderedDict()
 
-    def _key(self, *args):
+    def _key(self, *args, **kwargs):
 
-        key = []
-        for a in args:
+        key    = []
+        inputs = list(args) + [kwargs[k] for k in kwargs.keys()]
+
+        for a in inputs:
 
             if isinstance(a, (int, float, str)):
                 key.append(a)
@@ -78,15 +81,15 @@ class SimpleArrayCache:
         return tuple(key)
     
 
-    def get(self, *args):
-        k = self._key(*args)
+    def get(self, *args, **kwargs):
+        k = self._key(*args, **kwargs)
         if k in self._store:
             self._store.move_to_end(k)
             return self._store[k]
         return None
 
-    def set(self, value, *args):
-        k = self._key(*args)
+    def set(self, value, *args, **kwargs):
+        k = self._key(*args, **kwargs)
         self._store[k] = value
         self._store.move_to_end(k)
         if len(self._store) > self.maxsize:
@@ -95,14 +98,15 @@ class SimpleArrayCache:
 
     def __call__(self, func):
 
-        def cached_func(*args):
-            cached = self.get(*args)
+        functools.wraps(func)
+        def cached_func(*args, **kwargs):
+            cached = self.get(*args, **kwargs)
             
             if cached is not None:
                 return cached
             
-            val = func(*args)
-            self.set(val, *args)
+            val = func(*args, **kwargs)
+            self.set(val, *args, **kwargs)
 
             return val
         
@@ -161,7 +165,7 @@ class CachedProfile(BaseBFGProfiles):
 class CachedHODProfile(CachedProfile, ccl.halos.profiles.hod.HaloProfileHOD):
 
     def __init__(self, Profile, maxsize = 64, 
-                 methods = ['get_normalization', '_fourier_variance', '_fourier', 'fourier', 'real']):
+                 methods = ['get_normalization', '_fourier_variance', '_usat_fourier', '_fourier',  'fourier', 'real']):
 
         self.Profile   = Profile
         self.maxsize   = maxsize
@@ -171,6 +175,6 @@ class CachedHODProfile(CachedProfile, ccl.halos.profiles.hod.HaloProfileHOD):
             setattr(self, m, SimpleArrayCache(self.maxsize)(getattr(self.Profile, m)))
         
         #We just set this to the same as the inputted profile.
-        ccl.halos.profiles.hod.HaloProfileHOD.__init__(self, mass_def = self.Profile.mass_def)
+        BaseBFGProfiles.__init__(self, mass_def = self.Profile.mass_def)
 
         self.update_precision_fftlog(**self.Profile.precision_fftlog.to_dict())
