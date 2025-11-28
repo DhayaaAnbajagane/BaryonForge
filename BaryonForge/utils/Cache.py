@@ -13,19 +13,20 @@ class SimpleArrayCache:
     unhashable arguments (e.g. ``numpy.ndarray``) by constructing a stable
     byte-based key from the array contents.
 
-    The cache stores results keyed by a tuple consisting of:
-        - ``str(cosmo)``: a string representation of the cosmology object;
-        - ``a``: the scale factor as a float;
-        - For each array argument (``R`` and ``M``):
+    The cache stores results keyed by a tuple that is dynamically generated
+    according to the function being cached:
+        - floats, ints, and strings are saved as single values
+        - For each array argument, we store:
             * its shape,
             * its dtype,
             * its raw byte buffer from ``.tobytes()``.
+        - Any lists and tuples are converted to arrays and follow the above
+        - Other objects (custom classes) are converted to string representations
 
     When used as a decorator, the cache wraps a function of the form
-    ``func(cosmo, R, M, a)`` and automatically caches its return value based
+    ``func(*args)`` and automatically caches its return value based
     on these arguments. Repeated calls with identical inputs return the
-    cached result without re-evaluating the function. For fourier functions.
-    R is simply the wavenumber rather than radius.
+    cached result without re-evaluating the function.
 
     Parameters
     ----------
@@ -36,12 +37,11 @@ class SimpleArrayCache:
 
     Notes
     -----
-    - This cache treats the *contents* of ``R`` and ``M`` as part of the key,
+    - This cache treats the *contents* of arrays as part of the key,
       so even small differences in floating-point values produce distinct cache
       entries.
-    - ``cosmo`` is converted to a string and used verbatim. Two cosmology
-      objects that print identically will collide; two identical cosmologies
-      with different string representations will not.
+    - Custom classes are converted to a string and used verbatim. Two custom
+      objects that print identically will collide.
     - The cache is implemented using ``collections.OrderedDict`` and maintains
       LRU behavior manually.
 
@@ -53,25 +53,40 @@ class SimpleArrayCache:
         self.maxsize = maxsize
         self._store = OrderedDict()
 
-    def _key(self, cosmo, R, M, a):
-        R = np.atleast_1d(R)
-        M = np.atleast_1d(M)
-        return (
-            str(cosmo),
-            float(a),
-            R.shape, R.dtype.str, R.tobytes(),
-            M.shape, M.dtype.str, M.tobytes(),
-        )
+    def _key(self, *args):
 
-    def get(self, cosmo, R, M, a):
-        k = self._key(cosmo, R, M, a)
+        key = []
+        for a in args:
+
+            if isinstance(a, (int, float, str)):
+                key.append(a)
+
+            elif isinstance(a, (list, tuple)):
+                a = np.array(a)
+                key.append(a.shape)
+                key.append(a.dtype.str)
+                key.append(a.tobytes())
+
+            elif isinstance(a, (np.ndarray)):
+                key.append(a.shape)
+                key.append(a.dtype.str)
+                key.append(a.tobytes())
+
+            else:
+                key.append(str(a))
+
+        return tuple(key)
+    
+
+    def get(self, *args):
+        k = self._key(*args)
         if k in self._store:
             self._store.move_to_end(k)
             return self._store[k]
         return None
 
-    def set(self, cosmo, R, M, a, value):
-        k = self._key(cosmo, R, M, a)
+    def set(self, value, *args):
+        k = self._key(*args)
         self._store[k] = value
         self._store.move_to_end(k)
         if len(self._store) > self.maxsize:
@@ -80,16 +95,66 @@ class SimpleArrayCache:
 
     def __call__(self, func):
 
-        def cached_func(cosmo, R, M, a):
-            cached = self.get(cosmo, R, M, a)
+        def cached_func(*args):
+            cached = self.get(*args)
+            
             if cached is not None:
                 return cached
-            val = func(cosmo, R, M, a)
-            self.set(cosmo, R, M, a, val)
+            
+            val = func(*args)
+            self.set(val, *args)
+
             return val
         
         return cached_func
         
+
+class CachedProfile(BaseBFGProfiles):
+    """
+    A class that will cache the profile evaluations for the real, projected, and fourier methods.
+
+    This class will take in a BaryonForge (BFG) class and cache its results. It is
+    useful for halo model P(k) calculations, where the same masses, redshifts, wavenumbers/radii
+    are evaluated many times. See also `TabulatedProfile` if you want to only store a sparser grid.
+
+    Parameters
+    ----------
+    Profile : object
+        A profile that we want to cache. Can either be a vanilla CCL profile or a BaryonForge Profile.
+
+    """
+
+    def __init__(self, Profile, maxsize = 64):
+        
+        self.Profile  = Profile
+        self.maxsize  = maxsize
+
+        self.real      = SimpleArrayCache(self.maxsize)(self.Profile.real)
+        self.projected = SimpleArrayCache(self.maxsize)(self.Profile.projected)
+        self.fourier   = SimpleArrayCache(self.maxsize)(self.Profile.fourier)
+        
+        #We just set this to the same as the inputted profile.
+        super().__init__(mass_def = self.Profile.mass_def)
+
+        self.update_precision_fftlog(**self.Profile.precision_fftlog.to_dict())
+
+
+    def __getattr__(self, key):
+
+        safe_keys = ['real', 'projected', 'fourier', 'Profile', 'maxsize']
+
+        if key in safe_keys:
+            return object.__getattribute__(self, key)
+        else:
+            return getattr(object.__getattribute__(self, 'Profile'), key)
+        
+
+    def __str_prf__(self):
+
+        return f"Cached[{self.Profile.__str_prf__()}]"
+    
+    def __str_par__(self): return self.Profile.__str_par__()
+
 
 class CachedProfile(BaseBFGProfiles):
     """
