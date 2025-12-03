@@ -1,11 +1,9 @@
 import numpy as np
 import pyccl as ccl
-from operator import add, mul, sub, truediv, pow, neg, pos, abs
 import warnings
 
 from scipy import interpolate, integrate
-from ..utils.Tabulate import _set_parameter
-from .Base import BaseBFGProfiles, hyper_params
+from . import Schneider19 as S19
 
 __all__ = ['model_params', 'SchneiderProfiles', 
            'DarkMatter', 'TwoHalo', 'Stars', 'SatelliteStars', 
@@ -13,69 +11,52 @@ __all__ = ['model_params', 'SchneiderProfiles',
            'DarkMatterOnly', 'DarkMatterBaryon']
 
 
-model_params = ['cdelta', 'epsilon', 'a', 'n', #DM profle params
-                'q', 'p', #Relaxation params
+model_params = ['cdelta', 'epsilon0', 'epsilon1', 'alpha_excl', 'q', 'p', #DM profle params
                 'cutoff', 'proj_cutoff', #Cutoff parameters (numerical)
+
+                'q0', 'q1', 'q2', 'nu_q0', 'nu_q1', 'nu_q2', 'nstep', #Relaxation params
                 
-                'theta_ej', 'theta_co', 'M_c', 'gamma', 'delta', #Default gas profile param
-                'mu_theta_ej', 'mu_theta_co', 'mu_beta', 'mu_gamma', 'mu_delta', #Mass dep
-                'M_theta_ej',  'M_theta_co', 'M_gamma', 'M_delta', #Mass dep norm
-                'nu_theta_ej', 'nu_theta_co', 'nu_M_c',  'nu_gamma', 'nu_delta', #Redshift  dep
-                'zeta_theta_ej', 'zeta_theta_co', 'zeta_M_c', 'zeta_gamma', 'zeta_delta', #Concentration dep
+                'theta_c', 'M_c', 'gamma', 'delta', 'alpha',  #Default gas profile param
+                'mu_theta_c', 'mu_beta', 'mu_gamma', 'mu_delta', 'mu_alpha', #Mass dep
+                'M_theta_c', 'M_gamma', 'M_delta', 'M_alpha', #Mass dep norm
+                'nu_theta_c', 'nu_M_c',  'nu_gamma', 'nu_delta', 'nu_alpha', #Redshift  dep
+                'zeta_theta_c', 'zeta_M_c', 'zeta_gamma', 'zeta_delta',  'zeta_alpha', #Concentration dep
+                'c_iga', 'nu_c_iga', #proportionality constant for inner gas fraction
                 
-                'A', 'M1', 'eta', 'eta_delta', 'tau', 'tau_delta', 'epsilon_h', #Star params
+                'Nstar', 'Mstar', 'eta', 'eta_delta', 'tau', 'tau_delta', 'epsilon_cga', #Star params
                 
                 'alpha_nt', 'nu_nt', 'gamma_nt', 'mean_molecular_weight' #Non-thermal pressure and gas density
                ]
 
-class SchneiderProfiles(BaseBFGProfiles):
-    """
-    Base class for defining halo density profiles based on Schneider et al. models.
+class Schneider25Profiles(S19.SchneiderProfiles):
 
-    This class extends the `ccl.halos.profiles.HaloProfile` class and provides 
-    additional functionality for handling different halo density profiles. It allows 
-    for custom real-space projection methods, control over parameter initialization, 
-    and adjustments to the Fourier transform settings to minimize artifacts.
-
-    Parameters
-    ----------
-    use_fftlog_projection : bool, optional
-        If True, the default FFTLog projection method is used for the `projected` method. 
-        If False, a custom real-space projection is employed. Default is False.
-    padding_lo_proj : float, optional
-        The lower padding factor for the projection integral in real-space. Default is 0.1.
-    padding_hi_proj : float, optional
-        The upper padding factor for the projection integral in real-space. Default is 10.
-    n_per_decade_proj : int, optional
-        Number of integration points per decade in the real-space projection integral. Default is 10.
-    xi_mm : callable, optional
-        A function that returns the matter-matter correlation function at different radii.
-        Default is None, in which case we use the CCL inbuilt model.
-    **kwargs
-        Additional keyword arguments for setting specific parameters of the profile. If a parameter 
-        is not specified, defaults are assigned based on its type (e.g., mass/redshift/conc-dependence).
-
-    Attributes
-    ----------
-    model_params : dict
-        A dictionary containing all model parameters and their values.
-    precision_fftlog : dict
-        Dictionary with precision settings for the FFTLog convolution. Can be modified 
-        directly or using the update_precision_fftlog() method.
-
-    Methods
-    -------
-    real(cosmo, r, M, a)
-        Computes the real-space density profile.
-    projected(cosmo, r, M, a)
-        Computes the projected density profile.
-
-    """
-
-    #Define the params used in this model
+    #Define the new param names
     model_param_names = model_params
-    hyper_param_names = hyper_params
-    
+
+    #Use a smaller r_max, since most profiles are truncated at R200c now.
+    def __init__(self, r_max_int = 10, **kwargs):
+        
+        super().__init__(**kwargs, r_max_int = r_max_int)
+        
+        #Go through all input params, and assign Nones to ones that don't exist.
+        #If mass/redshift/conc-dependence, then set to 1 if don't exist
+        for m in self.model_param_names:
+            if m in kwargs.keys():
+                setattr(self, m, kwargs[m])
+            elif ('mu_' in m) or ('nu_' in m) or ('zeta_' in m): #Set mass/red/conc dependence
+                setattr(self, m, 0)
+            elif ('M_' in m): #Set mass normalization
+                setattr(self, m, 1e14)
+            else:
+                setattr(self, m, None)
+
+
+        #Sets the cutoff scale of all profiles, in comoving Mpc. Prevents divergence in FFTLog
+        #Also set cutoff of projection integral. Should be the box side length
+        self.cutoff      = kwargs['cutoff'] if 'cutoff' in kwargs.keys() else 1e3 #1Gpc is a safe default choice
+        self.proj_cutoff = kwargs['proj_cutoff'] if 'proj_cutoff' in kwargs.keys() else self.cutoff
+
+
     def _get_gas_params(self, M, z):
         """
         Computes gas-related parameters based on the mass and redshift.
@@ -95,12 +76,14 @@ class SchneiderProfiles(BaseBFGProfiles):
             Small-scale gas slope.
         theta_ej : ndarray
             Ejection radius.
-        theta_co : ndarray
+        theta_c : ndarray
             Core radius parameter.
         delta : ndarray
             Large-scale slope.
         gamma : ndarray
             Intermediate-scale slope.
+        alpha : ndarray
+            core slope.
         """
         
         cdelta   = 1 if self.cdelta is None else self.cdelta
@@ -109,25 +92,27 @@ class SchneiderProfiles(BaseBFGProfiles):
         beta     = 3*(M/M_c)**self.mu_beta / (1 + (M/M_c)**self.mu_beta)
         
         #Use M_c as the mass-normalization for simplicity sake
-        theta_ej = self.theta_ej * (M/self.M_theta_ej)**self.mu_theta_ej * (1 + z)**self.nu_theta_ej * cdelta**self.zeta_theta_ej
-        theta_co = self.theta_co * (M/self.M_theta_co)**self.mu_theta_co * (1 + z)**self.nu_theta_co * cdelta**self.zeta_theta_co
+        theta_c  = self.theta_c  * (M/self.M_theta_c)**self.mu_theta_c   * (1 + z)**self.nu_theta_c  * cdelta**self.zeta_theta_c 
         delta    = self.delta    * (M/self.M_delta)**self.mu_delta       * (1 + z)**self.nu_delta    * cdelta**self.zeta_delta
         gamma    = self.gamma    * (M/self.M_gamma)**self.mu_gamma       * (1 + z)**self.nu_gamma    * cdelta**self.zeta_gamma
+        alpha    = self.alpha    * (M/self.M_alpha)**self.mu_alpha       * (1 + z)**self.nu_alpha    * cdelta**self.zeta_alpha
         
         beta     = beta[:, None]
-        theta_ej = theta_ej[:, None]
-        theta_co = theta_co[:, None]
+        theta_c  = theta_c [:, None]
         delta    = delta[:, None]
         gamma    = gamma[:, None]
+        alpha    = alpha[:, None]
         
-        return beta, theta_ej, theta_co, delta, gamma
-        
+        return beta, theta_c , delta, gamma, alpha
+
+
+class Schneider25Fractions:
     
     def _get_star_frac(self, M_use, a, cosmo):
         
         """
-        Compute the fractional mass components of stars, cold gas (cga), and shocked gas (sga) 
-        for a given set of halo masses and scale factor.
+        Compute the fractional mass components of stars in the full halo, central galaxy (cga), 
+        and satellite galaxy (sga) for a given set of halo masses and scale factor.
 
         Parameters
         ----------
@@ -145,9 +130,9 @@ class SchneiderProfiles(BaseBFGProfiles):
             Stellar mass fraction for each halo, clipped to be between 1e-10 and the cosmic 
             baryon fraction.
         f_cga : ndarray
-            Cold gas mass fraction, clipped to be between 1e-10 and the stellar fraction.
+            Central galaxy mass fraction, clipped to be between 1e-10 and the stellar fraction.
         f_sga : ndarray
-            Shocked gas mass fraction, defined as `f_star - f_cga`, and clipped to be at 
+            Satellite galaxy mass fraction, defined as `f_star - f_cga`, and clipped to be at 
             least 1e-10 to avoid issues in log calculations.
 
         Notes
@@ -155,13 +140,13 @@ class SchneiderProfiles(BaseBFGProfiles):
         The function ensures numerical stability by enforcing lower bounds of 1e-10 on all 
         returned fractions and upper bounds that respect physical limits on baryon content.
         """
-        
+            
         eta_cga = self.eta + self.eta_delta
         tau_cga = self.tau + self.tau_delta
         
         f_bar  = cosmo.cosmo.params.Omega_b/cosmo.cosmo.params.Omega_m
-        f_star = 2 * self.A * ((M_use/self.M1)**self.tau + (M_use/self.M1)**self.eta)**-1
-        f_cga  = 2 * self.A * ((M_use/self.M1)**tau_cga  + (M_use/self.M1)**eta_cga)**-1
+        f_star = self.Nstar / ((M_use/self.Mstar)**self.tau + (M_use/self.Mstar)**self.eta)
+        f_cga  = self.Nstar / ((M_use/self.Mstar)**tau_cga  + (M_use/self.Mstar)**eta_cga)
         
         #Star frac cannot be larger than baryon fraction. If it is 0 then the code fails
         #when taking logs of profiles. So give it a super small value instead.
@@ -169,80 +154,105 @@ class SchneiderProfiles(BaseBFGProfiles):
         f_star = np.clip(f_star, 1e-10, f_bar)
         f_cga  = np.clip(f_cga,  1e-10, f_star)
         
+        f_star = f_star[:, None]
+        f_cga  = f_cga[:, None]
+        
         f_sga  = np.clip(f_star - f_cga, 1e-10, None) 
         
         return f_star, f_cga, f_sga
-
-    def get_f_star(self, M_use, a, cosmo):
-        return self._get_star_frac(M_use, a, cosmo)[0]
-    
-    def get_f_star_cen(self, M_use, a, cosmo):
-        return self._get_star_frac(M_use, a, cosmo)[1]
-    
-    def get_f_star_sat(self, M_use, a, cosmo):
-        return self._get_star_frac(M_use, a, cosmo)[2]        
     
     
     def _get_gas_frac(self, M_use, a, cosmo):
+
+        """
+        Compute the fractional mass components of hot gas (hga) and inner gas (iga) 
+        for a given set of halo masses and scale factor.
+
+        Parameters
+        ----------
+        M_use : ndarray
+            Array of halo masses for which to compute the gas fractions.
+        a : float
+            Scale factor at which the computation is performed.
+        cosmo : object
+            Cosmology object containing cosmological parameters, specifically Omega_b and Omega_m.
+
+        Returns
+        -------
+        f_hga : ndarray
+            Hot gas mass fraction for each halo, defined as the remaining baryon fraction 
+            after accounting for stars and inner gas. Clipped to be at least 1e-10.
+        f_iga : ndarray
+            Inner gas mass fraction for each halo, computed from the hot gas fraction 
+            with a redshift-dependent suppression factor. Clipped to be between 1e-10 and 
+            `f_bar - f_star`.
+
+        Notes
+        -----
+        The function internally calls `_get_star_frac` to obtain the stellar 
+        components. All outputs are clipped to avoid zero values, which would cause issues 
+        in downstream logarithmic calculations.
+        """
+
         
-        f_star = self.get_f_star(M_use, a, cosmo)
+        f_star, f_cga, f_sga = self._get_star_frac(M_use, a, cosmo)
         f_bar  = cosmo.cosmo.params.Omega_b/cosmo.cosmo.params.Omega_m
-        f_gas  = np.clip(f_bar - f_star, 1e-10, None) #Cannot let the fraction be identically 0.        
+        f_iga  = f_cga * self.c_iga * np.power(a, -self.nu_c_iga) #-ve sign since we do a^nu instead of (1 + z)^nu
+        f_iga  = np.clip(f_iga, 1e-10, f_bar - f_star)
+        f_hga  = np.clip(f_bar - f_star - f_iga, 1e-10, f_bar) #Cannot let the fraction be identically 0.        
         
-        return f_gas
-    
-
-    def get_f_gas(self, M_use, a, cosmo):
-        return self._get_gas_frac(M_use, a, cosmo)
+        return f_hga, f_iga
         
         
         
-class DarkMatter(SchneiderProfiles):
+class DarkMatter(Schneider25Profiles):
     """
-    Class representing the total Dark Matter (DM) profile using the NFW (Navarro-Frenk-White) profile.
+    Class representing the dark matter (DM) density profile using a truncated Navarro-Frenk-White (NFW) model.
 
-    This class is derived from the `SchneiderProfiles` class and provides an implementation of the 
-    dark matter profile based on the NFW model. It includes a custom `_real` method for calculating 
-    the real-space dark matter density profile, considering factors like the concentration-mass 
-    relation and truncation radius.
+    This class extends `Schneider25Profiles` to implement a real-space DM density profile that includes:
+    - A standard NFW profile,
+    - A truncation factor based on a halo-specific radius,
+    - An additional exponential cutoff to prevent numerical overflow at large radii.
 
-    See `SchneiderProfiles` for more docstring details.
-
-    Notes
-    -----
-    The `DarkMatter` class calculates the dark matter density profile using the NFW model with a 
-    modification for truncation at a specified radius set by `epsilon`. This profile accounts for the concentration-mass 
-    relation, which can be provided as `cdelta` during class init. If none is provided,
-    we use the `ConcentrationDiemer15` model.
-
-    The profile also includes an additional exponential cutoff to prevent numerical overflow and 
-    artifacts at large radii.
-
-    The dark matter density profile is given by:
+    The truncation radius is defined as:
 
     .. math::
 
-        \\rho_{\\text{DM}}(r) = \\frac{\\rho_c}{\\frac{r}{r_s} \\left(1 + \\frac{r}{r_s}\\right)^2} 
-        \\cdot \\frac{1}{\\left(1 + \\frac{r}{r_t}\\right)^2}
+        r_t = \\epsilon(\\nu) \\cdot R,
 
     where:
 
-    - :math:`\\rho_c` is the characteristic density of the halo.
-    - :math:`r_s` is the scale radius of the halo, defined as :math:`r_s = R/c`.
-    - :math:`r_t = \\epsilon \\cdot R` is the truncation radius, controlled by the parameter `epsilon`.
-    - :math:`r` is the radial distance.
+    .. math::
 
+        \\epsilon(\\nu) = \\epsilon_0 + \\epsilon_1 \\nu,
 
-    Examples
-    --------
-    Create a `DarkMatter` profile and compute the density at specific radii:
+    and \\( \\nu \\) is the peak height of the halo.
 
-    >>> dm_profile = DarkMatter(**parameters)
-    >>> cosmo = ...  # Define or load a cosmology object
-    >>> r = np.logspace(-2, 1, 50)  # Radii in comoving Mpc
-    >>> M = 1e14  # Halo mass in solar masses
-    >>> a = 0.5  # Scale factor corresponding to redshift z
-    >>> density_profile = dm_profile.real(cosmo, r, M, a)
+    The normalization of the profile is computed numerically by integrating over each halo’s radius from 
+    a fixed minimum value to its virial radius. This ensures the total mass is preserved while accounting 
+    for truncation.
+
+    The final density profile is given by:
+
+    .. math::
+
+        \\rho(r) = \\frac{\\rho_c}{(r/r_s)(1 + r/r_s)^2} 
+        \\cdot \\frac{1}{\\left(1 + (r/r_t)^2\\right)^2}
+        \\cdot \\frac{1}{1 + \\exp\\left[2(r - r_\\text{cutoff})\\right]},
+
+    where:
+    - \\( \\rho_c \\) is the normalization to match the total halo mass,
+    - \\( r_s = R / c \\) is the scale radius from the concentration–mass relation,
+    - \\( r_t \\) is the truncation radius as defined above,
+    - \\( r_\\text{cutoff} \\) is a user-defined soft cutoff radius to suppress unphysical densities at large \\( r \\).
+
+    Notes
+    -----
+    If no concentration–mass relation is provided via `cdelta` or `c_M_relation`, the default 
+    Diemer & Kravtsov (2015) relation is used. The method handles both scalar and array inputs 
+    for radii and halo masses.
+
+    See `Schneider25Profiles` for base class documentation.
     """
 
     def _real(self, cosmo, r, M, a):
@@ -264,11 +274,12 @@ class DarkMatter(SchneiderProfiles):
         c   = np.where(np.isfinite(c), c, 1) #Set default to r_s = R200c if c200c broken (normally for low mass obj in some cosmologies)
         R   = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
         r_s = R/c
-        r_t = R*self.epsilon
+        nu  = 1.686/ccl.sigmaM(cosmo, M_use, a)
+        eps = self.epsilon0 + self.epsilon1 * nu
+        r_t = R*eps
         
         r_s, r_t = r_s[:, None], r_t[:, None]
 
-        
         #Get the normalization (rho_c) numerically
         #The analytic integral doesn't work since we have a truncation radii now.
         #We loop over every halo, instead of vectorizing, since the integral limits
@@ -295,15 +306,15 @@ class DarkMatter(SchneiderProfiles):
         return prof
 
 
-class TwoHalo(SchneiderProfiles):
+class TwoHalo(Schneider25Profiles):
     """
     Class representing the two-halo term profile.
 
-    This class is derived from the `SchneiderProfiles` class and provides an implementation 
+    This class is derived from the `Schneider25Profiles` class and provides an implementation 
     of the two-halo term profile. It utilizes the 2-point correlation function directly, rather 
     than employing the full halo model. 
 
-    See `SchneiderProfiles` for more docstring details.
+    See `Schneider25Profiles` for more docstring details.
 
     Notes
     -----
@@ -368,9 +379,10 @@ class TwoHalo(SchneiderProfiles):
         delta_c = 1.686/ccl.growth_factor(cosmo, a)
         nu_M    = delta_c / ccl.sigmaM(cosmo, M_use, a)
         bias_M  = 1 + (self.q*nu_M**2 - 1)/delta_c + 2*self.p/delta_c/(1 + (self.q*nu_M**2)**self.p)
+        f_excl  = 1 - np.exp(-self.alpha_excl * np.clip(r_use / R[:, None], 0, 30)) #Clip to avoid overflow
 
         bias_M  = bias_M[:, None]
-        prof    = (1 + bias_M * xi_mm)*ccl.rho_x(cosmo, a, species = 'matter', is_comoving = True)
+        prof    = f_excl * (1 + bias_M * xi_mm)*ccl.rho_x(cosmo, a, species = 'matter', is_comoving = True)
 
         #Need this truncation so the fourier space integral isnt infinity
         arg  = (r_use[None, :] - self.cutoff)
@@ -385,62 +397,60 @@ class TwoHalo(SchneiderProfiles):
         return prof
 
 
-class Stars(SchneiderProfiles):
+class Stars(Schneider25Profiles, Schneider25Fractions):
     """
-    Class representing the exponential stellar mass profile.
+    Class representing the two-halo term density profile based on linear theory.
 
-    This class is derived from the `SchneiderProfiles` class and provides an implementation 
-    of an exponential stellar mass profile. It calculates the real-space stellar mass 
-    density profile, using parameters to account for factors like stellar mass fraction 
-    and halo radius.
+    This class extends `Schneider25Profiles` and implements the large-scale clustering 
+    contribution to the halo density profile (the two-halo term) using the linear matter 
+    correlation function and a Sheth-Tormen-type halo bias prescription.
 
-    See `SchneiderProfiles` for more docstring details.
-
-    Notes
-    -----
-    The `Stars` class models the stellar mass distribution with an exponential profile, 
-    modulated by parameters such as `eta`, `tau`, `A`, and `M1`. These parameters 
-    adjust the stellar mass fraction as a function of halo mass. The profile also applies 
-    an exponential cutoff controlled by the `epsilon_h` parameter to define the 
-    characteristic radius of the stellar distribution.
-
-    The stellar mass density profile is given by:
+    The real-space profile is defined as:
 
     .. math::
 
-        \\rho_\\star(r) = \\frac{f_{\\text{cga}} M_{\\text{tot}}}{4 \\pi^{3/2} R_h} \\frac{1}{r^2} 
-                          \\exp\\left(-\\frac{r^2}{4 R_h^2}\\right) 
+        \\rho_{\\mathrm{2h}}(r) = \\left[1 + b(M)\\,\\xi_{\\mathrm{mm}}(r)\\right] \\cdot \\bar{\\rho}_m(a) 
+        \\cdot f_{\\mathrm{excl}}(r, R) \\cdot k_{\mathrm{cut}}(r),
 
     where:
-
-    - :math:`f_{\\text{cga}}` is the stellar mass fraction, defined as:
+    - \\( b(M) \\) is the halo bias, given by:
 
       .. math::
 
-          f_{\\text{cga}} = 2 A \\left(\\left(\\frac{M}{M_1}\\right)^{\\tau + \\tau_\\delta} 
-          + \\left(\\frac{M}{M_1}\\right)^{\\eta + \\eta_\\delta}\\right)^{-1}
+          b(M) = 1 + \\frac{q \\nu^2 - 1}{\\delta_c} + \\frac{2p}{\\delta_c\\left[1 + (q \\nu^2)^p\\right]},
 
-    - :math:`M_{\\text{tot}}` is the total halo mass.
-    - :math:`R_h = \\epsilon_h R` is the characteristic scale radius of the stellar distribution.
-    - :math:`r` is the radial distance.
+    - \\( \\nu = \\delta_c / \\sigma(M) \\) is the peak height,
+    - \\( \\delta_c \\) is the critical overdensity for collapse (rescaled by growth factor),
+    - \\( \\xi_{\\mathrm{mm}}(r) \\) is the linear matter correlation function,
+    - \\( \\bar{\\rho}_m(a) \\) is the mean matter density at scale factor \\( a \\),
+    - \\( f_{\\mathrm{excl}}(r, R) = 1 - \\exp\\left[-\\alpha_{\\mathrm{excl}} \\cdot (r / R)\\right] \\) 
+      suppresses the profile at small radii,
+    - \\( k_{\\mathrm{cut}}(r) = [1 + \\exp(2(r - r_{\\mathrm{cutoff}}))]^{-1} \\) imposes an 
+      exponential cutoff at large radii to ensure convergence in Fourier space.
 
-    The class overrides specific `precision_fftlog` settings to prevent ringing artifacts 
-    in the profiles. This is achieved by setting extreme padding values.
+    Notes
+    -----
+    - The two-halo term is valid only when the cosmology object's matter power spectrum is linear.
+      An assertion enforces this requirement.
+    - If `xi_mm` is not provided at initialization, it is computed using 
+      `pyccl.correlation_3d`.
+    - Scalar and vector inputs for mass and radius are supported and mirrored in the output shape.
 
-    An additional exponential cutoff is included to prevent numerical overflow and artifacts 
-    at large radii.
+    See also
+    --------
+    Sheth & Tormen (1999), https://arxiv.org/abs/astro-ph/9901122
+    `Schneider25Profiles` base class for interface and shared attributes.
 
     Examples
     --------
-    Create a `Stars` profile and compute the density at specific radii:
-
-    >>> stars_profile = Stars(**parameters)
-    >>> cosmo = ...  # Define or load a cosmology object
-    >>> r = np.logspace(-2, 1, 50)  # Radii in comoving Mpc
-    >>> M = 1e14  # Halo mass in solar masses
-    >>> a = 0.5  # Scale factor corresponding to redshift z
-    >>> density_profile = stars_profile.real(cosmo, r, M, a)
+    >>> profile = TwoHalo(**parameters)
+    >>> cosmo = ...  # cosmology with linear power spectrum
+    >>> r = np.logspace(-2, 1, 100)
+    >>> M = 1e14
+    >>> a = 0.5
+    >>> rho_2h = profile.real(cosmo, r, M, a)
     """
+
     
     def __init__(self, **kwargs):
         
@@ -461,85 +471,85 @@ class Stars(SchneiderProfiles):
 
         R   = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
 
-        f_cga  = self.get_f_star_cen(M_use, a, cosmo)[:, None]
-        R_h    = self.epsilon_h * R[:, None]
+        f_cga  = self._get_star_frac(M_use, a, cosmo)[1]
+        R_cga  = self.epsilon_cga * R[:, None]
 
         r_integral = np.geomspace(self.r_min_int, self.r_max_int, self.r_steps)
-        DM    = DarkMatter(**self.model_params, **self.hyper_params); setattr(DM, 'cutoff', 1e3) #Set large cutoff just for normalization calculation
+        DM    = DarkMatter(**self.model_params); setattr(DM, 'cutoff', 1e3) #Set large cutoff just for normalization calculation
         rho   = DM.real(cosmo, r_integral, M_use, a)
         M_tot = np.trapz(4*np.pi*r_integral**2 * rho, r_integral, axis = -1)
         M_tot = np.atleast_1d(M_tot)[:, None]
+
+
+        #Integrate over wider region in radii to get normalization of star profile
+        prof_integral = 1 / np.power(r_integral, 2) * np.exp(-r_integral/R_cga)
+        Normalization = np.trapz(4 * np.pi * r_integral**2 * prof_integral, r_integral, axis = -1)[:, None]
         
         arg  = (r_use[None, :] - self.cutoff)
         arg  = np.where(arg > 30, np.inf, arg) #This is to prevent an overflow in the exponential
         kfac = 1/( 1 + np.exp(2*arg) ) #Extra exponential cutoff
-        prof = f_cga*M_tot / (4*np.pi**(3/2)*R_h) * 1/r_use**2 * np.exp(-(r_use/2/R_h)**2) * kfac
+        prof = 1/r_use**2 * np.exp(-r_use/R_cga) * kfac
+        prof = prof * f_cga*M_tot/Normalization
                 
         #Handle dimensions so input dimensions are mirrored in the output
         if np.ndim(r) == 0: prof = np.squeeze(prof, axis=-1)
-        if np.ndim(M) == 0: 
-            prof = np.squeeze(prof, axis=0)
+        if np.ndim(M) == 0: prof = np.squeeze(prof, axis=0)
 
         return prof
 
 
-class Gas(SchneiderProfiles):
+class HotGas(Schneider25Profiles, Schneider25Fractions):
 
     """
-    Class representing the gas density profile.
+    Class representing the hot gas density profile in galaxy halos using a generalized NFW form.
 
-    This class is derived from the `SchneiderProfiles` class and provides an implementation 
-    of a gas density profile. It calculates the real-space gas density profile, using
-    the general NFW (GNFW) model of `Nagai, Kravtsov & Vikhlinin 2009 <https://arxiv.org/pdf/astro-ph/0703661>`_.
+    This class extends both `Schneider25Profiles` and `Schneider25Fractions` and implements the 
+    real-space hot gas density profile following the GNFW parameterization from 
+    Nagai, Kravtsov & Vikhlinin (2007). The profile accounts for feedback-driven redistribution 
+    of gas using mass- and redshift-dependent core and ejection radii.
 
-    See `SchneiderProfiles` for more docstring details.
-
-    Notes
-    -----
-    The `Gas` class models the gas distribution in halos by considering the gas fraction, 
-    which is computed based on the total baryonic fraction minus the stellar fraction. 
-    The gas density profile is defined using parameters such as `beta`, `delta`, `gamma`, 
-    `theta_co`, and `theta_ej`. These parameters characterize the core and ejection properties 
-    of the gas distribution.
-
-    The gas density profile is given by:
+    The real-space profile is given by:
 
     .. math::
 
-        \\rho_{\\text{gas}}(r) = \\frac{f_{\\text{gas}} M_{\\text{tot}}}{N} \\cdot 
-        \\frac{1}{(1 + u)^{\\beta}} \\cdot \\frac{1}{(1 + v)^{(\\delta - \\beta)/\\gamma}}
+        \\rho_{\\mathrm{gas}}(r) = \\frac{f_{\\mathrm{hga}} M_{\\mathrm{tot}}}{N} 
+        \\cdot \\frac{1}{\\left(1 + (r/R_{\\mathrm{co}})^\\alpha\\right)^{\\beta/\\alpha}} 
+        \\cdot \\frac{1}{\\left(1 + (r/R_{\\mathrm{ej}})^\\gamma\\right)^{\\delta/\\gamma}} 
+        \\cdot k_{\\mathrm{cut}}(r),
 
     where:
+    - \\( f_{\\mathrm{hga}} \\) is the hot gas fraction computed from the total baryon budget,
+    - \\( M_{\\mathrm{tot}} \\) is the total halo mass from a dark matter profile,
+    - \\( N \\) is a normalization factor from integrating the GNFW profile,
+    - \\( R_{\\mathrm{co}} = \\theta_{\\mathrm{co}} R \\) is the core radius,
+    - \\( R_{\\mathrm{ej}} = \\epsilon(\\nu) R \\) is the ejection radius,
+    - \\( \\alpha, \\beta, \\gamma, \\delta \\) are slope parameters characterizing the gas profile,
+    - \\( k_{\\mathrm{cut}}(r) = [1 + \\exp(2(r - r_{\\mathrm{cutoff}}))]^{-1} \\) is an exponential 
+      cutoff ensuring profile suppression at large radii.
 
-    - :math:`f_{\\text{gas}} = f_{\\text{bar}} - f_{\\star}` is the gas fraction.
-    - :math:`f_{\\text{bar}}` is the cosmic baryon fraction.
-    - :math:`f_{\\star}` is the stellar mass fraction, defined as:
+    Notes
+    -----
+    - The hot gas fraction \\( f_{\\mathrm{hga}} \\) is derived from the cosmic baryon fraction minus the 
+      stellar and infalling gas fractions, using internal methods from `Schneider25Fractions`.
+    - The profile is normalized by integrating over a wide radial range, with the total mass obtained 
+      from an associated `DarkMatter` profile.
+    - All components are computed in comoving units, with shape-preserving handling of scalar and 
+      array inputs.
 
-      .. math::
-
-          f_{\\star} = 2A \\left(\\left(\\frac{M}{M_1}\\right)^{\\tau} + \\left(\\frac{M}{M_1}\\right)^{\\eta}\\right)^{-1}
-
-    - :math:`M_{\\text{tot}}` is the total halo mass.
-    - :math:`N` is the normalization factor to ensure mass conservation.
-    - :math:`u = \\frac{r}{R_{\\text{co}}}` and :math:`v = \\frac{r}{R_{\\text{ej}}}` are dimensionless radii.
-    - :math:`\\beta` is the power-law slope for :math:`R_{\\text{co}} \lesssim r \lesssim R_{\\text{ej}}`
-    - :math:`\\delta` is the power-law slope at :math:`r \sim \lesssim R_{\\text{ej}}`
-    - :math:`\\gamma` is the power-law slope for :math:`r \gg R_{\\text{ej}}`
-    - :math:`R_{\\text{co}} = \\theta_{\\text{co}} R` is the core radius.
-    - :math:`R_{\\text{ej}} = \\theta_{\\text{ej}} R` is the ejection radius.
-    - :math:`r` is the radial distance.
+    References
+    ----------
+    - Nagai, Kravtsov & Vikhlinin (2007), https://arxiv.org/abs/astro-ph/0703661
 
     Examples
     --------
-    Create a `Gas` profile and compute the density at specific radii:
-
-    >>> gas_profile = Gas(**parameters)
-    >>> cosmo = ...  # Define or load a cosmology object
+    >>> gas_profile = HotGas(**parameters)
+    >>> cosmo = ...  # Cosmology object
     >>> r = np.logspace(-2, 1, 50)  # Radii in comoving Mpc
     >>> M = 1e14  # Halo mass in solar masses
-    >>> a = 0.5  # Scale factor corresponding to redshift z
-    >>> density_profile = gas_profile.real(cosmo, r, M, a)
+    >>> a = 0.5  # Scale factor
+    >>> rho_gas = gas_profile.real(cosmo, r, M, a)
     """
+
 
     def _real(self, cosmo, r, M, a):
 
@@ -551,29 +561,31 @@ class Gas(SchneiderProfiles):
 
         R = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
 
-        f_gas  = self.get_f_gas(M_use, a, cosmo)[:, None]
+        f_hga, f_iga  = self._get_gas_frac(M_use, a, cosmo)
         
         #Get gas params
-        beta, theta_ej, theta_co, delta, gamma = self._get_gas_params(M_use, z)
-        R_co = theta_co*R[:, None]
-        R_ej = theta_ej*R[:, None]
+        beta, theta_c, delta, gamma, alpha = self._get_gas_params(M_use, z)
+        R_c = theta_c*R[:, None]
+        nu  = 1.686/ccl.sigmaM(cosmo, M_use, a)[:, None]
+        eps = self.epsilon0 + self.epsilon1 * nu
+        R_t = eps * R[:, None]
         
-        u = r_use/R_co
-        v = r_use/R_ej
+        u = r_use/R_c
+        v = r_use/R_t
         
         
         #Integrate over wider region in radii to get normalization of gas profile
         r_integral = np.geomspace(self.r_min_int, self.r_max_int, self.r_steps)
-        u_integral = r_integral/R_co
-        v_integral = r_integral/R_ej
+        u_integral = r_integral/R_c
+        v_integral = r_integral/R_t
         
 
-        prof_integral = 1/(1 + u_integral)**beta / (1 + v_integral**gamma)**( (delta - beta)/gamma )
+        prof_integral = 1/(1 + np.power(u_integral, alpha))**(beta/alpha) / (1 + v_integral**gamma)**(delta/gamma)
         Normalization = np.trapz(4 * np.pi * r_integral**2 * prof_integral, r_integral, axis = -1)[:, None]
 
         del u_integral, v_integral, prof_integral
 
-        DM    = DarkMatter(**self.model_params, **self.hyper_params); setattr(DM, 'cutoff', 1e3) #Set large cutoff just for normalization calculation
+        DM    = DarkMatter(**self.model_params); setattr(DM, 'cutoff', 1e3) #Set large cutoff just for normalization calculation
         rho   = DM.real(cosmo, r_integral, M_use, a)
         M_tot = np.trapz(4*np.pi*r_integral**2 * rho, r_integral, axis = -1)
         M_tot = np.atleast_1d(M_tot)[:, None]
@@ -581,8 +593,8 @@ class Gas(SchneiderProfiles):
         arg   = (r_use[None, :] - self.cutoff)
         arg   = np.where(arg > 30, np.inf, arg) #This is to prevent an overflow in the exponential
         kfac  = 1/( 1 + np.exp(2*arg) ) #Extra exponential cutoff
-        prof  = 1/(1 + u)**beta / (1 + v**gamma)**( (delta - beta)/gamma ) * kfac
-        prof *= f_gas*M_tot/Normalization
+        prof  = 1/(1 + np.power(u, alpha))**(beta/alpha) / (1 + v**gamma)**(delta/gamma) * kfac
+        prof *= f_hga*M_tot/Normalization
         
 
         #Handle dimensions so input dimensions are mirrored in the output
@@ -591,59 +603,43 @@ class Gas(SchneiderProfiles):
 
         return prof
     
-    
-class ShockedGas(Gas):
+
+class InnerGas(Schneider25Profiles, Schneider25Fractions):
+
     """
-    Class representing a shocked gas profile.
+    Class representing the inner gas density profile in halos.
 
-    This class is derived from the `Gas` class and provides an implementation 
-    of a shocked gas profile, assuming Rankine-Hugoniot conditions. It models the 
-    effect of a high Mach-number shock, leading to a density suppression by a factor of 4. 
-    This suppression is implemented using a logistic function based on the radial distance.
+    This class extends both `Schneider25Profiles` and `Schneider25Fractions` to implement 
+    a real-space profile for the centrally concentrated inner gas component. The profile 
+    is designed to capture steep gas distributions that dominate at small radii.
 
-    Parameters
-    ----------
-    epsilon_shock : float
-        A scaling factor that sets the shock radius as a fraction of the halo radius.
-    width_shock : float
-        The width of the shock transition, controlling how sharply the gas density changes 
-        across the shock front.
-    **kwargs
-        Additional keyword arguments passed to the `Gas` class.
-
-    Notes
-    -----
-    The `ShockedGas` class modifies the gas density profile inherited from the `Gas` class 
-    by applying a shock model. The shock is characterized by the `epsilon_shock` and `width_shock` 
-    parameters. The density is reduced by a factor of 4 at the shock front, a result that 
-    assumes a high Mach-number shock under Rankine-Hugoniot conditions.
-
-    The gas density profile is calculated as:
+    The real-space profile is given by:
 
     .. math::
 
-        \\rho_{\\text{shocked}}(r) = \\rho_{\\text{gas}}(r) \\cdot 
-        \\left[ \\frac{1 - 0.25}{1 + \\exp\\left(\\frac{\\log(r) - \\log(\\epsilon_{\\text{shock}} R)}{\\text{width}_{\\text{shock}}}\\right)} + 0.25 \\right]
+        \\rho_{\\mathrm{inner}}(r) = \\frac{f_{\\mathrm{iga}} M_{\\mathrm{tot}}}{N} 
+        \\cdot r^{-2} \\cdot e^{-r / R} \\cdot k_{\\mathrm{cut}}(r),
 
     where:
+    - \\( f_{\\mathrm{iga}} \\) is the inner gas fraction computed from the baryon budget,
+    - \\( M_{\\mathrm{tot}} \\) is the total halo mass obtained by integrating a `DarkMatter` profile,
+    - \\( N \\) is a normalization factor ensuring mass conservation over the integration range,
+    - \\( R \\) is the halo radius from the mass definition,
+    - \\( k_{\\mathrm{cut}}(r) = [1 + \\exp(2(r - r_{\\mathrm{cutoff}}))]^{-1} \\) is an exponential cutoff 
+      applied at large radii for numerical stability.
 
-    - :math:`\\rho_{\\text{gas}}(r)` is the gas density profile from the `Gas` class.
-    - :math:`\\epsilon_{\\text{shock}}` sets the location of the shock.
-    - :math:`\\text{width}_{\\text{shock}}` determines the sharpness of the transition.
-    - :math:`r` is the radial distance from the halo center.
-    - The factor of 0.25 represents the maximum possible density drop due to the shock.
-
-    See the `Gas` class for more details on the base gas profile and additional parameters.
+    Notes
+    -----
+    - The inner gas fraction \\( f_{\\mathrm{iga}} \\) is computed using `_get_gas_frac()`, 
+      which also returns the hot gas component.
+    - The profile normalization is computed numerically over a wide radial range to match the 
+      total inner gas mass.
+    - Scalar and array inputs for both radius and halo mass are supported.
     """
-    
-    def __init__(self, epsilon_shock, width_shock, **kwargs):
-        
-        self.epsilon_shock = epsilon_shock
-        self.width_shock   = width_shock
-        
-        super().__init__(**kwargs)
+
 
     def _real(self, cosmo, r, M, a):
+
 
         r_use = np.atleast_1d(r)
         M_use = np.atleast_1d(M)
@@ -652,153 +648,151 @@ class ShockedGas(Gas):
 
         R = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
 
-        #Minimum is 0.25 since a factor of 4x drop is the maximum possible for a shock
-        rho_gas = super()._real(cosmo, r, M, a)
-        g_arg   = 1/self.width_shock*(np.log(r_use) - np.log(self.epsilon_shock*R)[:, None])
-        g_arg   = np.where(g_arg > 1e2, np.inf, g_arg) #To prevent overflows when doing exp
-        factor  = (1 - 0.25)/(1 + np.exp(g_arg)) + 0.25
+        f_hga, f_iga  = self._get_gas_frac(M_use, a, cosmo)
         
-        #Get the right size for rho_gas
-        if M_use.size == 1: rho_gas = rho_gas[None, :]
-            
-        prof = rho_gas * factor
+        #Integrate over wider region in radii to get normalization of gas profile
+        r_integral = np.geomspace(self.r_min_int, self.r_max_int, self.r_steps)
+        
+        prof_integral = np.power(r_integral, -2) * np.exp(-r_integral/R[:, None])
+        Normalization = np.trapz(4 * np.pi * r_integral**2 * prof_integral, r_integral, axis = -1)[:, None]
+
+        DM    = DarkMatter(**self.model_params); setattr(DM, 'cutoff', 1e3) #Set large cutoff just for normalization calculation
+        rho   = DM.real(cosmo, r_integral, M_use, a)
+        M_tot = np.trapz(4*np.pi*r_integral**2 * rho, r_integral, axis = -1)
+        M_tot = np.atleast_1d(M_tot)[:, None]
+        
+        arg   = (r_use[None, :] - self.cutoff)
+        arg   = np.where(arg > 30, np.inf, arg) #This is to prevent an overflow in the exponential
+        kfac  = 1/( 1 + np.exp(2*arg) ) #Extra exponential cutoff
+        prof  = np.power(r_use, -2) * np.exp(-r_use/R[:, None]) * kfac
+        prof *= f_iga*M_tot/Normalization
         
         #Handle dimensions so input dimensions are mirrored in the output
-        if np.ndim(r) == 0:
-            prof = np.squeeze(prof, axis=-1)
-        if np.ndim(M) == 0:
-            prof = np.squeeze(prof, axis=0)
-        
+        if np.ndim(r) == 0: prof = np.squeeze(prof, axis=-1)
+        if np.ndim(M) == 0: prof = np.squeeze(prof, axis=0)
+
         return prof
 
 
-class CollisionlessMatter(SchneiderProfiles):
+class Gas(Schneider25Profiles, Schneider25Fractions):
+    """
+    Convenience class for combining gas components in halos.
+
+    The `Gas` class provides a unified interface for modeling the total gas profile in halos. 
+    It combines contributions from the following components:
+    - `HotGas`: Represents the hot gas component within halos.
+    - `InnerGas`: Represents gas in the inner core of the halo. Generally not a notable fraction of the gas
+
+    This class simplifies calculations by leveraging the logic and methods of these individual 
+    gas components and combining their profiles into a single representation.
+    """
+
+    def __init__(self, **kwargs): self.myprof = HotGas(**kwargs) + InnerGas(**kwargs)
+    def __getattr__(self, name):  return getattr(self.myprof, name)
+    
+    #Need to explicitly set these two methods (to enable pickling)
+    #since otherwise the getattr call above leads to infinite recursions.
+    def __getstate__(self): self.__dict__.copy()    
+    def __setstate__(self, state): self.__dict__.update(state)
+
+
+class CollisionlessMatter(Schneider25Profiles, Schneider25Fractions):
 
     """
-    Class representing the collisionless matter density profile.
+    Class representing the collisionless matter density profile after adiabatic relaxation.
 
-    This class is derived from the `SchneiderProfiles` class and provides an implementation 
-    for the collisionless matter density profile. It combines contributions from gas, stars, 
-    and dark matter to compute the total density profile, using an iterative method to solve
-    for the collisionless matter (dark matter and galaxies) after adiabatic relaxation.
+    This class extends `Schneider25Profiles` and `Schneider25Fractions` to compute the final 
+    density profile of collisionless matter (dark matter + stars) after accounting for 
+    the effects of baryonic components such as hot and inner gas. The computation is 
+    performed using a (non-iterative) relaxation method based on the formalism in Schneider et al. (2025).
+
+    The final profile reflects how baryons gravitationally reshape the collisionless component, 
+    conserving total mass and enforcing physical consistency between baryonic and dark matter 
+    distributions.
 
     Parameters
     ----------
-    gas : Gas, optional
-        An instance of the `Gas` class defining the gas profile. If not provided, a default 
-        `Gas` object is created using `kwargs`.
+    hotgas : HotGas, optional
+        Instance of the `HotGas` class. If not provided, one is created from `kwargs`.
+    innergas : InnerGas, optional
+        Instance of the `InnerGas` class. If not provided, one is created from `kwargs`.
     stars : Stars, optional
-        An instance of the `Stars` class defining the stellar profile. If not provided, a default 
-        `Stars` object is created using `kwargs`.
+        Instance of the `Stars` class. If not provided, one is created from `kwargs`.
     darkmatter : DarkMatter, optional
-        An instance of the `DarkMatter` class defining the dark matter profile. If not provided, 
-        a default `DarkMatter` object is created using `kwargs`.
-    max_iter : int, optional
-        Maximum number of iterations for the relaxation method. Default is 10.
-    reltol : float, optional
-        Relative tolerance for convergence in the relaxation method. Default is 1e-2.
+        Instance of the `DarkMatter` class. If not provided, one is created from `kwargs`.
     r_min_int : float, optional
-        Minimum radius for integration during the iterative relaxation. Default is 1e-8.
+        Minimum radius for internal integrations (default: 1e-8 Mpc).
     r_max_int : float, optional
-        Maximum radius for integration during the iterative relaxation. Default is 1e5.
+        Maximum radius for internal integrations (default: 1e5 Mpc).
     r_steps : int, optional
-        Number of steps in the radius for integration. Default is 5000.
-    **kwargs
-        Additional keyword arguments passed to initialize the `Gas`, `Stars`, and `DarkMatter` 
-        profiles, as well as other parameters from `SchneiderProfiles`.
+        Number of radial steps used for integration (default: 5000).
+    **kwargs : dict
+        Additional keyword arguments passed to initialize subcomponents and the base class.
 
-    
     Notes
     -----
-    The `CollisionlessMatter` class computes the total density profile by combining the 
-    contributions from gas, stars, and dark matter profiles. The relaxation method iteratively 
-    adjusts these profiles to achieve equilibrium, ensuring mass conservation. This approach 
-    accounts for different physical components and their interactions within the halo.
+    The relaxation process proceeds as follows:
 
-    **Calculation Steps:**
-
-    1. **Initial Profiles**: The class starts by calculating the individual density profiles for dark matter, gas, and stars:
+    1. Compute individual density profiles for dark matter, hot gas, inner gas, and stars.
+    2. Integrate each profile to obtain cumulative mass profiles.
+    3. Compute the collisionless matter mass profile:
 
        .. math::
 
-           \\rho_{\\text{DM}}(r), \\; \\rho_{\\text{gas}}(r), \\; \\rho_{\\text{stars}}(r)
+           M_{\\mathrm{CLM}}(r) = f_{\\mathrm{clm}} \\cdot M_{\\mathrm{tot}}(r')
 
-    2. **Cumulative Mass Profiles**: The cumulative mass profiles are calculated by integrating the density profiles:
-
-       .. math::
-
-           M_{\\text{DM}}(r) = 4\\pi \\int_0^r \\rho_{\\text{DM}}(r') r'^2 dr'
+       where \\( f_{\\mathrm{clm}} = 1 - \\Omega_b / \\Omega_m + f_{\\mathrm{sga}} \\) 
+       and \\( r' = r \\cdot \\zeta \\) with the relaxation factor \\( \\zeta \\) defined as:
 
        .. math::
 
-           M_{\\text{gas}}(r) = 4\\pi \\int_0^r \\rho_{\\text{gas}}(r') r'^2 dr'
+           \\zeta = Q_0 / (1 + (r/r_s)^n) + Q_1 f_{\\mathrm{cga}} \\left( \\frac{M_{\\mathrm{stars}}}{M_{\\mathrm{DM}}} - 1 \\right)
+                 + Q_1 f_{\\mathrm{iga}} \\left( \\frac{M_{\\mathrm{inner}}}{M_{\\mathrm{DM}}} - 1 \\right)
+                 + Q_2 f_{\\mathrm{hga}} \\left( \\frac{M_{\\mathrm{hot}}}{M_{\\mathrm{DM}}} - 1 \\right) + 1
+
+    4. Differentiate the relaxed mass profile to obtain the final density:
 
        .. math::
 
-           M_{\\text{stars}}(r) = 4\\pi \\int_0^r \\rho_{\\text{stars}}(r') r'^2 dr'
+           \\rho_{\\mathrm{CLM}}(r) = \\frac{1}{4\\pi r^2} \\frac{dM_{\\mathrm{CLM}}}{dr}
 
-    3. **Relaxation Iteration**: The relaxation method iteratively adjusts the mass profile to achieve equilibrium. The adjusted mass profile is calculated as:
-
-       .. math::
-
-           M_{\\text{CLM}}(r) = f_{\\text{clm}}(M_{\\text{DM}} + M_{\\text{gas}} + M_{\\text{stars}})
-
-       where :math:`f_{\\text{clm}}` is calculated using:
-
-       .. math::
-
-           f_{\\text{clm}} = 1 - \\frac{\\Omega_b}{\\Omega_m} + f_{\\text{sga}}
-
-       Here, :math:`f_{\\text{sga}}` is the satellite galaxy mass fraction
-
-    4. **Relaxation Factor Update**: During each iteration, the relaxation factor \( \zeta \) is updated using:
-
-       .. math::
-
-           \\zeta_{\\text{new}} = a \\left( \\left(\\frac{M_{\\text{DM}}}{M_{\\text{CLM}}}\\right)^n - 1 \\right) + 1
-
-       This equation ensures that the mass distribution relaxes towards equilibrium over successive iterations, where \( a \) and \( n \) are parameters controlling the relaxation process.
-
-    5. **Density Profile Calculation**: The final collisionless matter density profile is derived from the adjusted cumulative mass:
-
-       .. math::
-
-           \\rho_{\\text{CLM}}(r) = \\frac{1}{4\\pi r^2} \\frac{d}{dr} M_{\\text{CLM}}(r)
-
-
-    **Integration Range and Convergence**: The relaxation method uses a logarithmic integration range defined by `r_min_int`, `r_max_int`, and `r_steps`. The method iterates until the relative difference falls below `reltol` or the maximum number of iterations (`max_iter`) is reached.
-
-    See `SchneiderProfiles` and associated classes (`Gas`, `Stars`, `DarkMatter`) for more details on 
-    the underlying profiles and parameters.
+    An additional exponential cutoff is applied at large radii for numerical stability.
 
     Warnings
     --------
-    The method checks if the provided radius values fall within the integration limits. Warnings are 
-    issued if adjustments to `r_min_int` or `r_max_int` are recommended to cover the full range of 
-    the input radii. Note that sometimes warnings occur because the FFTlog asks for a ridiculously
-    high/low radius, and the profile calculation will just return 0s there. In this case the
-    warning is benign and can be safely ignored
+    A warning is issued if the requested radii fall outside the integration bounds. These warnings 
+    are often benign and can be ignored if they arise from extreme FFTlog sampling.
+
+    Examples
+    --------
+    >>> clm = CollisionlessMatter(**parameters)
+    >>> cosmo = ...  # Cosmology object
+    >>> r = np.logspace(-2, 1, 100)
+    >>> M = 1e14
+    >>> a = 0.5
+    >>> rho_clm = clm.real(cosmo, r, M, a)
     """
+
     
-    def __init__(self, gas = None, stars = None, darkmatter = None, max_iter = 10, reltol = 1e-2, r_min_int = 1e-8, r_max_int = 1e5, r_steps = 5000, **kwargs):
+    def __init__(self, hotgas = None, innergas = None, stars = None, darkmatter = None, r_min_int = 1e-8, r_max_int = 1e5, r_steps = 5000, **kwargs):
         
-        self.Gas   = gas
-        self.Stars = stars
+        self.HotGas     = hotgas
+        self.InnerGas   = innergas
+        self.Stars      = stars
         self.DarkMatter = darkmatter
         
-        if self.Gas is None: self.Gas = Gas(**kwargs)          
-        if self.Stars is None: self.Stars = Stars(**kwargs)
+        if self.HotGas is None:     self.HotGas     = HotGas(**kwargs)
+        if self.InnerGas is None:   self.InnerGas   = InnerGas(**kwargs)      
+        if self.Stars is None:      self.Stars      = Stars(**kwargs)
         if self.DarkMatter is None: self.DarkMatter = DarkMatter(**kwargs)
-            
+
         #Stop any artificially cutoffs when doing the relaxation.
         #The profile will be cutoff at the very last step instead
-        self.Gas.set_parameter('cutoff', 1000)
         self.Stars.set_parameter('cutoff', 1000)
+        self.HotGas.set_parameter('cutoff', 1000)
+        self.InnerGas.set_parameter('cutoff', 1000)
         self.DarkMatter.set_parameter('cutoff', 1000)
             
-        self.max_iter   = max_iter
-        self.reltol     = reltol
-
         self.r_min_int  = r_min_int
         self.r_max_int  = r_max_int
         self.r_steps    = r_steps
@@ -806,6 +800,16 @@ class CollisionlessMatter(SchneiderProfiles):
         super().__init__(**kwargs, r_min_int = r_min_int, r_max_int = r_max_int, r_steps = r_steps)
         
 
+    def _get_Qis(self, M, a, cosmo):
+
+        z  = 1/a - 1
+        Q0 = self.q0 * np.power(1 + z, self.nu_q0)
+        Q1 = self.q1 * np.power(1 + z, self.nu_q1)
+        Q2 = self.q2 * np.power(1 + z, self.nu_q2)
+
+        return Q0, Q1, Q2
+    
+        
     def _real(self, cosmo, r, M, a):
 
         r_use = np.atleast_1d(r)
@@ -828,15 +832,20 @@ class CollisionlessMatter(SchneiderProfiles):
 
         R = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
 
-        eta_cga = self.eta + self.eta_delta
-        tau_cga = self.tau + self.tau_delta
-        
-        f_sga  = self.get_f_star_sat(M_use, a, cosmo)[:, None]
-        f_clm  = 1 - cosmo.cosmo.params.Omega_b/cosmo.cosmo.params.Omega_m + f_sga
+        f_star, f_cga, f_sga = self._get_star_frac(M_use, a, cosmo)
+        f_hga,  f_iga        = self._get_gas_frac(M_use, a, cosmo)
+        Q0, Q1, Q2           = self._get_Qis(M_use, a, cosmo)
+
+        f_clm      = 1 - cosmo.cosmo.params.Omega_b/cosmo.cosmo.params.Omega_m + f_sga
+        nu         = 1.686/ccl.sigmaM(cosmo, M_use, a)[:, None]
+        eps        = self.epsilon0 + self.epsilon1 * nu
+        rstep      = eps / self.epsilon0
         
         rho_i      = self.DarkMatter.real(cosmo, r_integral, M_use, a)
         rho_cga    = self.Stars.real(cosmo, r_integral, M_use, a)
-        rho_gas    = self.Gas.real(cosmo, r_integral, M_use, a)
+        rho_hga    = self.HotGas.real(cosmo, r_integral, M_use, a)
+        rho_iga    = self.InnerGas.real(cosmo, r_integral, M_use, a)
+        
 
         #Need to add the offset manually now since scipy deprecates initial != 0
         #Offset required so that the integrated array has the same size as the profile array
@@ -844,54 +853,28 @@ class CollisionlessMatter(SchneiderProfiles):
         dV    = 4 * np.pi * r_integral**3 * dlnr
         M_i   = integrate.cumulative_simpson(dV * rho_i  , axis = -1, initial = 0) + dV[0] * rho_i[:, [0]]
         M_cga = integrate.cumulative_simpson(dV * rho_cga, axis = -1, initial = 0) + dV[0] * rho_cga[:, [0]]
-        M_gas = integrate.cumulative_simpson(dV * rho_gas, axis = -1, initial = 0) + dV[0] * rho_gas[:, [0]]
+        M_hga = integrate.cumulative_simpson(dV * rho_hga, axis = -1, initial = 0) + dV[0] * rho_hga[:, [0]]
+        M_iga = integrate.cumulative_simpson(dV * rho_iga, axis = -1, initial = 0) + dV[0] * rho_iga[:, [0]]
 
         #We intentionally set Extrapolate = True. This is to handle behavior at extreme small-scales (due to stellar profile)
         #and radius limits at largest scales. Using extrapolate=True does not introduce numerical artifacts into predictions
         ln_M_NFW = [interpolate.PchipInterpolator(np.log(r_integral), np.log(M_i[m_i]),   extrapolate = True) for m_i in range(M_i.shape[0])]
-        ln_M_cga = [interpolate.PchipInterpolator(np.log(r_integral), np.log(M_cga[m_i]), extrapolate = True) for m_i in range(M_i.shape[0])]
-        ln_M_gas = [interpolate.PchipInterpolator(np.log(r_integral), np.log(M_gas[m_i]), extrapolate = True) for m_i in range(M_i.shape[0])]
-
-        del M_cga, M_gas, rho_i, rho_cga, rho_gas
-
-        relaxation_fraction = np.ones_like(M_i)
+        ln_M_clm = np.ones_like(M_i)
 
         for m_i in range(M_i.shape[0]):
             
-            counter  = 0
-            max_rel_diff = np.inf #Initializing variable at infinity
-            
-            while max_rel_diff > self.reltol:
+            with np.errstate(over = 'ignore'):
+                 
+                xi0  = Q0 / (1 + np.power(r_integral/rstep, self.nstep))
+                xi1  = Q1 * f_cga * (M_cga[m_i] / M_i[m_i] - 1)
+                xi2  = Q1 * f_iga * (M_iga[m_i] / M_i[m_i] - 1)
+                xi3  = Q2 * f_hga * (M_hga[m_i] / M_i[m_i] - 1)
+                relaxation_fraction = xi0 + xi1 + xi2 + xi3 + 1
 
-                with np.errstate(over = 'ignore'):
-                    r_f  = r_integral*relaxation_fraction[m_i]
-                    M_f  = f_clm[m_i]*M_i[m_i] + np.exp(ln_M_cga[m_i](np.log(r_f))) + np.exp(ln_M_gas[m_i](np.log(r_f)))
+                #Schneider+25 defines relaxation fraction as r_i/r_f so the bottom should indeed be multiplied,
+                #and not divided like we do in Schneider+19, where the definition was r_f/r_i.
+                ln_M_clm[m_i] = np.log(f_clm[m_i]) + ln_M_NFW[m_i](np.log(r_integral * relaxation_fraction[m_i]))
 
-                relaxation_fraction_new = self.a*( (M_i[m_i]/M_f)**self.n - 1 ) + 1
-
-                diff     = relaxation_fraction_new/relaxation_fraction[m_i] - 1
-                abs_diff = np.abs(diff)
-                
-                max_rel_diff = np.max(abs_diff[safe_range])
-                
-                relaxation_fraction[m_i] = relaxation_fraction_new
-
-                counter += 1
-
-                #Though we do a while loop, we break it off after 10 tries
-                #this seems to work well enough. The loop converges
-                #after two or three iterations.
-                if (counter >= self.max_iter) & (max_rel_diff > self.reltol): 
-                    
-                    med_rel_diff = np.max(abs_diff[safe_range])
-                    warn_text = ("Profile of halo index %d did not converge after %d tries. " % (m_i, counter) +
-                                 "Max_diff = %0.5f, Median_diff = %0.5f. Try increasing max_iter." % (max_rel_diff, med_rel_diff)
-                                )
-                    
-                    warnings.warn(warn_text, UserWarning)
-                    break
-
-        ln_M_clm = np.vstack([np.log(f_clm[m_i]) + ln_M_NFW[m_i](np.log(r_integral/relaxation_fraction[m_i])) for m_i in range(M_i.shape[0])])
         ln_M_clm = interpolate.CubicSpline(np.log(r_integral), ln_M_clm, axis = -1, extrapolate = False)
         log_der  = ln_M_clm.derivative(nu = 1)(np.log(r_use))
         lin_der  = log_der * np.exp(ln_M_clm(np.log(r_use))) / r_use
@@ -912,7 +895,7 @@ class CollisionlessMatter(SchneiderProfiles):
         return prof
     
 
-class SatelliteStars(CollisionlessMatter):
+class SatelliteStars(CollisionlessMatter, Schneider25Fractions):
 
     """
     Class representing the matter density profile of stars in satellites.
@@ -926,7 +909,7 @@ class SatelliteStars(CollisionlessMatter):
 
         M_use = np.atleast_1d(M)
 
-        f_sga  = self.get_f_star_sat(M_use, a, cosmo)[:, None]
+        f_sga  = self._get_star_frac(M_use, a, cosmo)[2]
         f_clm  = 1 - cosmo.cosmo.params.Omega_b/cosmo.cosmo.params.Omega_m + f_sga
         
         if np.ndim(M) == 0: 
@@ -938,12 +921,12 @@ class SatelliteStars(CollisionlessMatter):
         return prof
 
 
-class DarkMatterOnly(SchneiderProfiles):
+class DarkMatterOnly(Schneider25Profiles):
 
     """
     Class representing a combined dark matter profile using the NFW profile and the two-halo term.
 
-    This class is derived from the `SchneiderProfiles` class and provides an implementation 
+    This class is derived from the `Schneider25Profiles` class and provides an implementation 
     that combines the contributions from the Navarro-Frenk-White (NFW) profile (representing 
     dark matter within the halo) and the two-halo term (representing the contribution of 
     neighboring halos). This approach models the total dark matter distribution by considering 
@@ -960,7 +943,7 @@ class DarkMatterOnly(SchneiderProfiles):
         is created using `kwargs`.
     **kwargs
         Additional keyword arguments passed to initialize the `DarkMatter` and `TwoHalo` 
-        profiles, as well as other parameters from `SchneiderProfiles`.
+        profiles, as well as other parameters from `Schneider25Profiles`.
 
     Notes
     -----
@@ -1016,12 +999,12 @@ class DarkMatterOnly(SchneiderProfiles):
         return prof
 
 
-class DarkMatterBaryon(SchneiderProfiles):
+class DarkMatterBaryon(Schneider25Profiles, Schneider25Fractions):
 
     """
     Class representing a combined dark matter and baryonic matter profile.
 
-    This class is derived from the `SchneiderProfiles` class and provides an implementation 
+    This class is derived from the `Schneider25Profiles` class and provides an implementation 
     that combines the contributions from dark matter, gas, stars, and collisionless matter 
     to compute the total density profile. It includes both one-halo and two-halo terms, 
     ensuring mass conservation and accounting for both dark matter and baryonic components.
@@ -1045,7 +1028,7 @@ class DarkMatterBaryon(SchneiderProfiles):
         the contribution of neighboring halos. If not provided, a default `TwoHalo` object is created using `kwargs`.
     **kwargs
         Additional keyword arguments passed to initialize the `Gas`, `Stars`, `CollisionlessMatter`, 
-        `DarkMatter`, and `TwoHalo` profiles, as well as other parameters from `SchneiderProfiles`.
+        `DarkMatter`, and `TwoHalo` profiles, as well as other parameters from `Schneider25Profiles`.
 
     Notes
     -----
@@ -1086,7 +1069,7 @@ class DarkMatterBaryon(SchneiderProfiles):
     This method ensures that both dark matter and baryonic matter are accounted for, 
     providing a realistic representation of the total matter distribution.
 
-    See `SchneiderProfiles`, `Gas`, `Stars`, `CollisionlessMatter`, `DarkMatter`, and `TwoHalo` 
+    See `Schneider25Profiles`, `Gas`, `Stars`, `CollisionlessMatter`, `DarkMatter`, and `TwoHalo` 
     classes for more details on the underlying profiles and parameters.
     """
 
