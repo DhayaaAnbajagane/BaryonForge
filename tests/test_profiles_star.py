@@ -25,8 +25,8 @@ def test_schneider25():
         bfg.Profiles.Schneider25.Stars(**bpar_S25).fourier(cosmo, k, M, a)
 
     X = bfg.Profiles.Schneider25.Stars(**bpar_S25).real(cosmo, R, M[0], a);    assert len(X.shape) == 1
-    X = bfg.Profiles.Schneider25.Stars(**bpar_S25).real(cosmo, R[0], M[0], a); assert len(X) == 0
-    
+    X = bfg.Profiles.Schneider25.Stars(**bpar_S25).real(cosmo, R[0], M[0], a); assert isinstance(X, (int, float))
+
 
 def test_arico20():
 

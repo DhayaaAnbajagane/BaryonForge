@@ -23,9 +23,9 @@ def test_schneider19():
     
 
     X = bfg.Profiles.Schneider19.DarkMatter(**bpar_S19).real(cosmo, R, M[0], a);        assert len(X.shape) == 1
-    X = bfg.Profiles.Schneider19.DarkMatter(**bpar_S19).real(cosmo, R[0], M[0], a);     assert len(X) == 0
+    X = bfg.Profiles.Schneider19.DarkMatter(**bpar_S19).real(cosmo, R[0], M[0], a);     assert isinstance(X, (int, float))
     X = bfg.Profiles.Schneider19.DarkMatterOnly(**bpar_S19).real(cosmo, R, M[0], a);    assert len(X.shape) == 1
-    X = bfg.Profiles.Schneider19.DarkMatterOnly(**bpar_S19).real(cosmo, R[0], M[0], a); assert len(X) == 0
+    X = bfg.Profiles.Schneider19.DarkMatterOnly(**bpar_S19).real(cosmo, R[0], M[0], a); assert isinstance(X, (int, float))
 
 
 def test_schneider25():
