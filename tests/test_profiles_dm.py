@@ -23,9 +23,9 @@ def test_schneider19():
     
 
     X = bfg.Profiles.Schneider19.DarkMatter(**bpar_S19).real(cosmo, R, M[0], a);        assert len(X.shape) == 1
-    X = bfg.Profiles.Schneider19.DarkMatter(**bpar_S19).real(cosmo, R[0], M[0], a);     assert isinstance(X, (int, float))
+    X = bfg.Profiles.Schneider19.DarkMatter(**bpar_S19).real(cosmo, R[0], M[0], a);     assert np.isscalar(X)
     X = bfg.Profiles.Schneider19.DarkMatterOnly(**bpar_S19).real(cosmo, R, M[0], a);    assert len(X.shape) == 1
-    X = bfg.Profiles.Schneider19.DarkMatterOnly(**bpar_S19).real(cosmo, R[0], M[0], a); assert isinstance(X, (int, float))
+    X = bfg.Profiles.Schneider19.DarkMatterOnly(**bpar_S19).real(cosmo, R[0], M[0], a); assert np.isscalar(X)
 
 
 def test_schneider25():
@@ -40,9 +40,9 @@ def test_schneider25():
         bfg.Profiles.Schneider25.DarkMatterOnly(**bpar_S25).fourier(cosmo, k, M, a)
 
     X = bfg.Profiles.Schneider25.DarkMatter(**bpar_S25).real(cosmo, R, M[0], a);        assert len(X.shape) == 1
-    X = bfg.Profiles.Schneider25.DarkMatter(**bpar_S25).real(cosmo, R[0], M[0], a);     assert isinstance(X, (int, float))
+    X = bfg.Profiles.Schneider25.DarkMatter(**bpar_S25).real(cosmo, R[0], M[0], a);     assert np.isscalar(X)
     X = bfg.Profiles.Schneider25.DarkMatterOnly(**bpar_S25).real(cosmo, R, M[0], a);    assert len(X.shape) == 1
-    X = bfg.Profiles.Schneider25.DarkMatterOnly(**bpar_S25).real(cosmo, R[0], M[0], a); assert isinstance(X, (int, float))
+    X = bfg.Profiles.Schneider25.DarkMatterOnly(**bpar_S25).real(cosmo, R[0], M[0], a); assert np.isscalar(X)
 
 
 def test_arico20():

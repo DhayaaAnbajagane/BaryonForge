@@ -18,7 +18,7 @@ def test_schneider19():
         bfg.Profiles.Schneider19.Gas(**bpar_S19).fourier(cosmo, k, M, a)
 
     X = bfg.Profiles.Schneider19.Gas(**bpar_S19).real(cosmo, R, M[0], a);    assert len(X.shape) == 1
-    X = bfg.Profiles.Schneider19.Gas(**bpar_S19).real(cosmo, R[0], M[0], a); assert isinstance(X, (int, float))
+    X = bfg.Profiles.Schneider19.Gas(**bpar_S19).real(cosmo, R[0], M[0], a); assert np.isscalar(X)
 
 
 def test_schneider25():
@@ -29,7 +29,7 @@ def test_schneider25():
         bfg.Profiles.Schneider25.Gas(**bpar_S25).fourier(cosmo, k, M, a)
 
     X = bfg.Profiles.Schneider25.Gas(**bpar_S25).real(cosmo, R, M[0], a);    assert len(X.shape) == 1
-    X = bfg.Profiles.Schneider25.Gas(**bpar_S25).real(cosmo, R[0], M[0], a); assert isinstance(X, (int, float))
+    X = bfg.Profiles.Schneider25.Gas(**bpar_S25).real(cosmo, R[0], M[0], a); assert np.isscalar(X)
 
 def test_arico20():
 
@@ -39,7 +39,7 @@ def test_arico20():
         bfg.Profiles.Arico20.Gas(**bpar_A20).fourier(cosmo, k, M, a)
 
     X = bfg.Profiles.Arico20.Gas(**bpar_A20).real(cosmo, R, M[0], a);    assert len(X.shape) == 1
-    X = bfg.Profiles.Arico20.Gas(**bpar_A20).real(cosmo, R[0], M[0], a); assert isinstance(X, (int, float))
+    X = bfg.Profiles.Arico20.Gas(**bpar_A20).real(cosmo, R[0], M[0], a); assert np.isscalar(X)
 
 
 def test_mead20():
