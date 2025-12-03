@@ -1,12 +1,11 @@
 import numpy as np
 import pyccl as ccl
-from operator import add, mul, sub, truediv, pow, neg, pos, abs
 import warnings
 
 from scipy import interpolate, special, integrate
-from ..utils import _set_parameter, safe_Pchip_minimize
+from ..utils import safe_Pchip_minimize
 from .misc import Zeros, Truncation
-from . import Schneider19 as S19
+from . import Schneider19 as S19, Base
 from .Thermodynamic import (G, Msun_to_Kg, Mpc_to_m, kb_cgs, m_p, m_to_cm)
 
 __all__ = ['model_params', 'AricoProfiles', 
@@ -29,7 +28,7 @@ model_params = ['cdelta', 'a', 'n', #DM profle params and relaxation params
                ]
 
 
-class AricoProfiles(S19.SchneiderProfiles):
+class AricoProfiles(Base.BaseBFGProfiles):
     __doc__ = S19.SchneiderProfiles.__doc__.replace('Schneider', 'Arico')
 
     #Define the new param names
@@ -39,19 +38,6 @@ class AricoProfiles(S19.SchneiderProfiles):
     def __init__(self, r_max_int = 10, **kwargs):
         
         super().__init__(**kwargs, r_max_int = r_max_int)
-        
-        #Go through all input params, and assign Nones to ones that don't exist.
-        #If mass/redshift/conc-dependence, then set to 1 if don't exist
-        for m in self.model_param_names:
-            if m in kwargs.keys():
-                setattr(self, m, kwargs[m])
-            else:
-                setattr(self, m, None)
-
-        #Sets the cutoff scale of all profiles, in comoving Mpc. Prevents divergence in FFTLog
-        #Also set cutoff of projection integral. Should be the box side length
-        self.cutoff      = kwargs['cutoff'] if 'cutoff' in kwargs.keys() else 1e3 #1Gpc is a safe default choice
-        self.proj_cutoff = kwargs['proj_cutoff'] if 'proj_cutoff' in kwargs.keys() else self.cutoff
                 
     
     def _get_gas_params(self, M, a, cosmo):
@@ -192,10 +178,20 @@ class AricoProfiles(S19.SchneiderProfiles):
         fSG   = fSG - np.clip(f_str - f_bar, 0, None)
         fSG   = np.clip(fSG, 0, None) #This can be literally 0 since there is no log10 step
 
-        return fSG[:, None] if satellite else fCG[:, None]
+        return fSG if satellite else fCG
     
     
-    def _get_gas_frac(self, M, a, cosmo, satellite = False):
+    def get_f_star(self, M_use, a, cosmo):
+        return self.get_f_star_cen(M_use, a, cosmo) + self.get_f_star_sat(M_use, a, cosmo)
+    
+    def get_f_star_cen(self, M_use, a, cosmo):
+        return self._get_star_frac(M_use, a, cosmo, satellite = False)
+    
+    def get_f_star_sat(self, M_use, a, cosmo):
+        return self._get_star_frac(M_use, a, cosmo, satellite = True)
+    
+
+    def _get_gas_frac(self, M, a, cosmo):
         """
         Compute the gas fraction as a function of halo mass and redshift.
 
@@ -232,20 +228,25 @@ class AricoProfiles(S19.SchneiderProfiles):
         - \(\epsilon\), \(M_1\), \(\alpha\), \(\delta\), and \(\gamma\) are redshift-dependent parameters.
         """
 
-        f_cg  = self._get_star_frac(M, a, cosmo)
-        f_sg  = self._get_star_frac(M, a, cosmo, satellite = True)
+        f_cg  = self.get_f_star_cen(M, a, cosmo)
+        f_sg  = self.get_f_star_sat(M, a, cosmo)
         f_str = f_cg + f_sg
         f_bar = cosmo.cosmo.params.Omega_b/cosmo.cosmo.params.Omega_m
         
         f_gas = np.clip(f_bar - f_str, 1e-10, None) #Total gas fraction should be non-zero to avoid log10 errors
         
-        f_hg  = f_gas / (1 + np.power(self.M_c/M[:, None], self.beta))
+        f_hg  = f_gas / (1 + np.power(self.M_c/M, self.beta))
         f_eg  = f_gas - f_hg #By definition f_hg <= f_gas
-        f_rg  = (f_gas - f_hg) / (1 + np.power(self.M_r/M[:, None], self.beta_r))
+        f_rg  = (f_gas - f_hg) / (1 + np.power(self.M_r/M, self.beta_r))
         f_rg  = np.clip(f_rg, None, f_hg) #Reaccreted gas cannot be more than halo gas 
         f_bg  = f_hg - f_rg
         
         return f_bg, f_rg, f_eg
+    
+
+    def get_f_gas(self, M, a, cosmo):
+        f = self._get_gas_frac(self, M, a, cosmo)
+        return f[0] + f[1] + f[2]
     
 
     def __str_par__(self):
@@ -386,7 +387,7 @@ class Stars(AricoProfiles):
         R     = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
         z     = 1/a - 1
 
-        f_cga = self._get_star_frac(M_use, a, cosmo)
+        f_cga = self.get_f_star_cen(M_use, a, cosmo)[:, None]
         R_h   = self.epsilon_h * R[:, None]
 
         #Integrate over wider region in radii to get normalization of star profile
@@ -455,7 +456,7 @@ class BoundGasUntruncated(AricoProfiles):
 
         R = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
 
-        f_bg = self._get_gas_frac(M_use, a, cosmo)[0]
+        f_bg = self._get_gas_frac(M_use, a, cosmo)[0][:, None]
 
         #Get gas params
         beta, theta_out, theta_inn = self._get_gas_params(M_use, a, cosmo)
@@ -552,7 +553,7 @@ class BoundGas(BoundGasUntruncated):
     """
 
     def _real(self, cosmo, R, M, a):
-        return super()._real(cosmo, R, M, a) * Truncation(epsilon = 1)._real(cosmo, R, M, a)
+        return super()._real(cosmo, R, M, a) * Truncation(epsilon_trunc = 1)._real(cosmo, R, M, a)
         
 
 
@@ -596,7 +597,7 @@ class EjectedGas(AricoProfiles):
         z = 1/a - 1
         R = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
 
-        f_eg = self._get_gas_frac(M_use, a, cosmo)[2]
+        f_eg = self._get_gas_frac(M_use, a, cosmo)[2][:, None]
 
         #Now use the escape radius, which is r_esc = v_esc * t_hubble
         #and this reduces down to just 1/2 * sqrt(Delta) * R_Delta
@@ -659,7 +660,7 @@ class ReaccretedGas(AricoProfiles):
 
         R = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
 
-        f_rg = self._get_gas_frac(M_use, a, cosmo)[1]
+        f_rg = self._get_gas_frac(M_use, a, cosmo)[1][:, None]
         
         #Get gas params
         R_rg = self.theta_rg*R[:, None]
@@ -853,7 +854,7 @@ class CollisionlessMatter(AricoProfiles):
         z = 1/a - 1
         R = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
 
-        f_sg   = self._get_star_frac(M_use, a, cosmo, satellite = True)
+        f_sg   = self.get_f_star_sat(M_use, a, cosmo)[:, None]
         f_dm   = 1 - cosmo.cosmo.params.Omega_b/cosmo.cosmo.params.Omega_m
         f_clm  = f_dm + f_sg
         
@@ -947,9 +948,9 @@ class CollisionlessMatter(AricoProfiles):
             #Compute the relaxed DM profile, and the normalize so it 
             #has the right mass fraction within R200c.
             ln_M_clm  = np.log(f_clm[m_i]) + ln_M_NFW(np.log(r_integral/relaxation_fraction))
+            ln_M_clm  = np.where(np.isfinite(ln_M_clm), ln_M_clm, 0)
             ln_M_clm += np.log(f_clm[m_i] * M_use[m_i]) - np.interp(np.log(R[m_i]), np.log(r_integral), ln_M_clm)
             
-
             log_M    = interpolate.CubicSpline(np.log(r_integral), ln_M_clm, extrapolate = False)
             log_der  = log_M.derivative(nu = 1)(np.log(r_integral))
             lin_der  = log_der * np.exp(ln_M_clm) / r_integral
@@ -978,10 +979,13 @@ class SatelliteStars(CollisionlessMatter):
 
     def _real(self, cosmo, r, M, a):
 
-        f_sg   = self._get_star_frac(np.atleast_1d(M), a, cosmo, satellite = True)
+        f_sg   = self.get_f_star_sat(np.atleast_1d(M), a, cosmo)
         f_dm   = 1 - cosmo.cosmo.params.Omega_b/cosmo.cosmo.params.Omega_m
         f_clm  = f_dm + f_sg
         factor = f_sg / f_clm
+
+        if len(factor) > 1:
+            factor = factor[:, None]
 
         return super()._real(cosmo, r, M, a) * factor
 
@@ -1381,7 +1385,7 @@ class BoundGasDeprecated(AricoProfiles):
         z = 1/a - 1
         R = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
 
-        f_cg  = self._get_star_frac(M_use, a, cosmo)
+        f_cg  = self.get_f_star_cen(M_use, a, cosmo)[:, None]
         f_bar = cosmo.cosmo.params.Omega_b/cosmo.cosmo.params.Omega_m
         f_bg  = (f_bar - f_cg) / (1 + np.power(self.M_c/M_use, self.beta))
         f_bg  = f_bg[:, None]

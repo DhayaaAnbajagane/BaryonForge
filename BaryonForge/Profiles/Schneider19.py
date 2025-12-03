@@ -5,6 +5,7 @@ import warnings
 
 from scipy import interpolate, integrate
 from ..utils.Tabulate import _set_parameter
+from .Base import BaseBFGProfiles, hyper_params
 
 __all__ = ['model_params', 'SchneiderProfiles', 
            'DarkMatter', 'TwoHalo', 'Stars', 'SatelliteStars', 
@@ -27,7 +28,7 @@ model_params = ['cdelta', 'epsilon', 'a', 'n', #DM profle params
                 'alpha_nt', 'nu_nt', 'gamma_nt', 'mean_molecular_weight' #Non-thermal pressure and gas density
                ]
 
-class SchneiderProfiles(ccl.halos.profiles.HaloProfile):
+class SchneiderProfiles(BaseBFGProfiles):
     """
     Base class for defining halo density profiles based on Schneider et al. models.
 
@@ -73,90 +74,7 @@ class SchneiderProfiles(ccl.halos.profiles.HaloProfile):
 
     #Define the params used in this model
     model_param_names = model_params
-
-    def __init__(self, mass_def = ccl.halos.massdef.MassDef200c, 
-                 c_M_relation = None, use_fftlog_projection = False, 
-                 padding_lo_proj = 0.1, padding_hi_proj = 10, n_per_decade_proj = 10, 
-                 r_min_int = 1e-6, r_max_int = 1e3, r_steps = 500,
-                 xi_mm = None, 
-                 **kwargs):
-        
-        #Go through all input params, and assign Nones to ones that don't exist.
-        #If mass/redshift/conc-dependence, then set to 1 if don't exist
-        for m in self.model_param_names:
-            if m in kwargs.keys():
-                setattr(self, m, kwargs[m])
-            elif ('mu_' in m) or ('nu_' in m) or ('zeta_' in m): #Set mass/red/conc dependence
-                setattr(self, m, 0)
-            elif ('M_' in m): #Set mass normalization
-                setattr(self, m, 1e14)
-            else:
-                setattr(self, m, None)
-
-        #Let user specify their own c_M_relation as desired
-        if c_M_relation is not None:
-            self.c_M_relation = c_M_relation(mass_def = mass_def)
-        else:
-            self.c_M_relation = None
-                    
-        #Some params for handling the realspace projection
-        self.padding_lo_proj   = padding_lo_proj
-        self.padding_hi_proj   = padding_hi_proj
-        self.n_per_decade_proj = n_per_decade_proj 
-
-        #Some params that control numerical integration
-        self.r_min_int = r_min_int
-        self.r_max_int = r_max_int
-        self.r_steps   = r_steps
-        
-        #Import all other parameters from the base CCL Profile class
-        super().__init__(mass_def = mass_def)
-
-        #Function that returns correlation func at different radii
-        self.xi_mm = xi_mm
-
-        #Sets the cutoff scale of all profiles, in comoving Mpc. Prevents divergence in FFTLog
-        #Also set cutoff of projection integral. Should be the box side length
-        self.cutoff      = kwargs['cutoff'] if 'cutoff' in kwargs.keys() else 1e3 #1Gpc is a safe default choice
-        self.proj_cutoff = kwargs['proj_cutoff'] if 'proj_cutoff' in kwargs.keys() else self.cutoff
-        
-        
-        #This allows user to force usage of the default FFTlog projection, if needed.
-        #Otherwise, we use the realspace integration, since that allows for specification
-        #of a hard boundary on radius
-        if not use_fftlog_projection:
-            self._projected = self._projected_realspace
-        else:
-            text = ("You must set the same cutoff for 3D profile and projection profile if you want to use fftlog projection. "
-                    f"You have cutoff = {self.cutoff} and proj_cutoff = {self.proj_cutoff}")
-            assert self.cutoff == self.proj_cutoff, text
-
-
-        #Constant that helps with the fourier transform convolution integral.
-        #This value minimized the ringing due to the transforms
-        self.update_precision_fftlog(plaw_fourier = -2)
-
-        #Need this to prevent projected profile from artificially cutting off
-        self.update_precision_fftlog(padding_lo_fftlog = 1e-2, padding_hi_fftlog = 1e2,
-                                     padding_lo_extra  = 1e-4, padding_hi_extra  = 1e4)
-        
-    
-    @property
-    def model_params(self):
-        """
-        Returns a dictionary containing all model parameters and their current values.
-
-        Returns
-        -------
-        params : dict
-            Dictionary of model parameters.
-        """
-        
-        params = {k:v for k,v in vars(self).items() if k in self.model_param_names}
-                  
-        return params
-        
-        
+    hyper_param_names = hyper_params
     
     def _get_gas_params(self, M, z):
         """
@@ -204,157 +122,6 @@ class SchneiderProfiles(ccl.halos.profiles.HaloProfile):
         
         return beta, theta_ej, theta_co, delta, gamma
         
-        
-    def _projected_realspace(self, cosmo, r, M, a):
-        """
-        Computes the projected profile using a custom real-space integration method. 
-        Advantageous as it can avoid any hankel transform artifacts.
-
-        Parameters
-        ----------
-        cosmo : object
-            CCL cosmology object.
-        r : array_like
-            Radii at which to evaluate the profile.
-        M : array_like
-            Halo mass or array of halo masses.
-        a : float
-            Scale factor, related to redshift by `a = 1 / (1 + z)`.
-
-        Returns
-        -------
-        proj_prof : ndarray
-            Projected profile evaluated at the specified radii and masses.
-        """
-
-        r_use = np.atleast_1d(r)
-        M_use = np.atleast_1d(M)
-
-        z = 1/a - 1
-
-        R = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
-
-        #Integral limits
-        int_min = self.padding_lo_proj   * np.min(r_use)
-        int_max = self.padding_hi_proj   * np.max(r_use)
-        int_N   = self.n_per_decade_proj * np.int32(np.log10(int_max/int_min))
-        
-        #If proj_cutoff was passed, then use the largest of the two
-        if self.proj_cutoff is not None: 
-            int_max = np.max([self.proj_cutoff, int_max])
-
-        r_integral  = np.geomspace(int_min, int_max, int_N)
-        
-        
-        #Use proj_cutoff and if it is not passed then default to the regular cutoff
-        if self.proj_cutoff is not None:
-            r_max = self.proj_cutoff
-        elif self.cutoff is not None:
-            r_max = self.cutoff
-        else:
-            r_max = 1e4
-            warnings.warn("WARNING: projected() profile requested without specifying proj_cutoff or cutoff. "
-                          "Defaulting the integral upper limit to 10,000 (comoving) Mpc.")
-            
-        r_proj = np.geomspace(int_min, r_max, int_N)
-        prof   = self._real(cosmo, r_integral, M, a)
-
-        #The prof object is already "squeezed" in some way.
-        #Code below removes that squeezing so rest of code can handle
-        #passing multiple radii and masses.
-        if np.ndim(r) == 0: prof = prof[:, None]
-        if np.ndim(M) == 0: prof = prof[None, :]
-
-        proj_prof = np.zeros([M_use.size, r_use.size])
-
-        #This nested loop saves on memory, and vectorizing the calculation doesn't really
-        #speed things up, so better to keep the loop this way.
-        for i in range(M_use.size):
-            for j in range(r_use.size):
-
-                proj_prof[i, j] = 2*np.trapz(np.interp(np.sqrt(r_proj**2 + r_use[j]**2), r_integral, prof[i]), r_proj)
-
-        #Handle dimensions so input dimensions are mirrored in the output
-        if np.ndim(r) == 0:
-            proj_prof = np.squeeze(proj_prof, axis=-1)
-        if np.ndim(M) == 0:
-            proj_prof = np.squeeze(proj_prof, axis=0)
-
-        if np.any(proj_prof <= 0):
-            warnings.warn("WARNING: Profile is zero/negative in some places."
-                          "Likely a convolution artifact for objects smaller than the pixel scale")
-
-        return proj_prof
-    
-    
-    def __str_par__(self):
-        '''
-        String with all input params and their values
-        '''
-        
-        string = f"("
-        for m in self.model_param_names:
-            string += f"{m} = {self.__dict__[m]}, "
-        string = string[:-2] + ')'
-        return string
-        
-    def __str_prf__(self):
-        '''
-        String with the class/profile name
-        '''
-        
-        string = f"{self.__class__.__name__}"
-        return string
-        
-    
-    def __str__(self):
-        
-        string = self.__str_prf__() + self.__str_par__()
-        return string 
-    
-    
-    def __repr__(self):
-        
-        return self.__str__()
-    
-    
-    #Add routines for consistently changing input params across all profiles
-    def set_parameter(self, key, value): 
-        """
-        Sets a parameter value for the profile. It can do it recursively in
-        case the profile contains other profiles as its attributes.
-
-        Parameters
-        ----------
-        key : str
-            Name of the parameter to set.
-        value : any
-            New value for the parameter.
-        """
-        _set_parameter(self, key, value)
-    
-    
-    #Add routines for doing simple arithmetic operations with the classes
-    from ..utils.misc import generate_operator_method
-    
-    __add__      = generate_operator_method(add)
-    __mul__      = generate_operator_method(mul)
-    __sub__      = generate_operator_method(sub)
-    __truediv__  = generate_operator_method(truediv)
-    __pow__      = generate_operator_method(pow)
-    
-    __radd__     = generate_operator_method(add, reflect = True)
-    __rmul__     = generate_operator_method(mul, reflect = True)
-    __rsub__     = generate_operator_method(sub, reflect = True)
-    __rtruediv__ = generate_operator_method(truediv, reflect = True)
-    
-    __abs__      = generate_operator_method(abs)
-    __pos__      = generate_operator_method(pos)
-    __neg__      = generate_operator_method(neg)    
-
-
-
-class SchneiderFractions:
     
     def _get_star_frac(self, M_use, a, cosmo):
         
@@ -371,21 +138,31 @@ class SchneiderFractions:
         f_star = np.clip(f_star, 1e-10, f_bar)
         f_cga  = np.clip(f_cga,  1e-10, f_star)
         
-        f_star = f_star[:, None]
-        f_cga  = f_cga[:, None]
-        
         f_sga  = np.clip(f_star - f_cga, 1e-10, None) 
         
         return f_star, f_cga, f_sga
+
+    def get_f_star(self, M_use, a, cosmo):
+        return self._get_star_frac(M_use, a, cosmo)[0]
+    
+    def get_f_star_cen(self, M_use, a, cosmo):
+        return self._get_star_frac(M_use, a, cosmo)[1]
+    
+    def get_f_star_sat(self, M_use, a, cosmo):
+        return self._get_star_frac(M_use, a, cosmo)[2]        
     
     
     def _get_gas_frac(self, M_use, a, cosmo):
         
-        f_star = self._get_star_frac(M_use, a, cosmo)[0]
+        f_star = self.get_f_star(M_use, a, cosmo)
         f_bar  = cosmo.cosmo.params.Omega_b/cosmo.cosmo.params.Omega_m
         f_gas  = np.clip(f_bar - f_star, 1e-10, None) #Cannot let the fraction be identically 0.        
         
         return f_gas
+    
+
+    def get_f_gas(self, M_use, a, cosmo):
+        return self._get_gas_frac(M_use, a, cosmo)
         
         
         
@@ -577,7 +354,7 @@ class TwoHalo(SchneiderProfiles):
         return prof
 
 
-class Stars(SchneiderProfiles, SchneiderFractions):
+class Stars(SchneiderProfiles):
     """
     Class representing the exponential stellar mass profile.
 
@@ -653,11 +430,11 @@ class Stars(SchneiderProfiles, SchneiderFractions):
 
         R   = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
 
-        f_cga  = self._get_star_frac(M_use, a, cosmo)[1]
+        f_cga  = self.get_f_star_cen(M_use, a, cosmo)[:, None]
         R_h    = self.epsilon_h * R[:, None]
 
         r_integral = np.geomspace(self.r_min_int, self.r_max_int, self.r_steps)
-        DM    = DarkMatter(**self.model_params); setattr(DM, 'cutoff', 1e3) #Set large cutoff just for normalization calculation
+        DM    = DarkMatter(**self.model_params, **self.hyper_params); setattr(DM, 'cutoff', 1e3) #Set large cutoff just for normalization calculation
         rho   = DM.real(cosmo, r_integral, M_use, a)
         M_tot = np.trapz(4*np.pi*r_integral**2 * rho, r_integral, axis = -1)
         M_tot = np.atleast_1d(M_tot)[:, None]
@@ -669,12 +446,13 @@ class Stars(SchneiderProfiles, SchneiderFractions):
                 
         #Handle dimensions so input dimensions are mirrored in the output
         if np.ndim(r) == 0: prof = np.squeeze(prof, axis=-1)
-        if np.ndim(M) == 0: prof = np.squeeze(prof, axis=0)
+        if np.ndim(M) == 0: 
+            prof = np.squeeze(prof, axis=0)
 
         return prof
 
 
-class Gas(SchneiderProfiles, SchneiderFractions):
+class Gas(SchneiderProfiles):
 
     """
     Class representing the gas density profile.
@@ -742,7 +520,7 @@ class Gas(SchneiderProfiles, SchneiderFractions):
 
         R = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
 
-        f_gas  = self._get_gas_frac(M_use, a, cosmo)
+        f_gas  = self.get_f_gas(M_use, a, cosmo)[:, None]
         
         #Get gas params
         beta, theta_ej, theta_co, delta, gamma = self._get_gas_params(M_use, z)
@@ -764,7 +542,7 @@ class Gas(SchneiderProfiles, SchneiderFractions):
 
         del u_integral, v_integral, prof_integral
 
-        DM    = DarkMatter(**self.model_params); setattr(DM, 'cutoff', 1e3) #Set large cutoff just for normalization calculation
+        DM    = DarkMatter(**self.model_params, **self.hyper_params); setattr(DM, 'cutoff', 1e3) #Set large cutoff just for normalization calculation
         rho   = DM.real(cosmo, r_integral, M_use, a)
         M_tot = np.trapz(4*np.pi*r_integral**2 * rho, r_integral, axis = -1)
         M_tot = np.atleast_1d(M_tot)[:, None]
@@ -863,7 +641,7 @@ class ShockedGas(Gas):
         return prof
 
 
-class CollisionlessMatter(SchneiderProfiles, SchneiderFractions):
+class CollisionlessMatter(SchneiderProfiles):
 
     """
     Class representing the collisionless matter density profile.
@@ -1022,7 +800,7 @@ class CollisionlessMatter(SchneiderProfiles, SchneiderFractions):
         eta_cga = self.eta + self.eta_delta
         tau_cga = self.tau + self.tau_delta
         
-        f_sga  = self._get_star_frac(M_use, a, cosmo)[2]
+        f_sga  = self.get_f_star_sat(M_use, a, cosmo)[:, None]
         f_clm  = 1 - cosmo.cosmo.params.Omega_b/cosmo.cosmo.params.Omega_m + f_sga
         
         rho_i      = self.DarkMatter.real(cosmo, r_integral, M_use, a)
@@ -1103,7 +881,7 @@ class CollisionlessMatter(SchneiderProfiles, SchneiderFractions):
         return prof
     
 
-class SatelliteStars(CollisionlessMatter, SchneiderFractions):
+class SatelliteStars(CollisionlessMatter):
 
     """
     Class representing the matter density profile of stars in satellites.
@@ -1117,10 +895,7 @@ class SatelliteStars(CollisionlessMatter, SchneiderFractions):
 
         M_use = np.atleast_1d(M)
 
-        eta_cga = self.eta + self.eta_delta
-        tau_cga = self.tau + self.tau_delta
-        
-        f_sga  = self._get_star_frac(M_use, a, cosmo)[2]
+        f_sga  = self.get_f_star_sat(M_use, a, cosmo)[:, None]
         f_clm  = 1 - cosmo.cosmo.params.Omega_b/cosmo.cosmo.params.Omega_m + f_sga
         
         if np.ndim(M) == 0: 
@@ -1210,7 +985,7 @@ class DarkMatterOnly(SchneiderProfiles):
         return prof
 
 
-class DarkMatterBaryon(SchneiderProfiles, SchneiderFractions):
+class DarkMatterBaryon(SchneiderProfiles):
 
     """
     Class representing a combined dark matter and baryonic matter profile.

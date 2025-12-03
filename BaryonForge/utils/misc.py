@@ -4,7 +4,7 @@ from operator import add, mul, sub, truediv, pow, abs, neg, pos
 import warnings
 from scipy import interpolate
 
-__all__ = ['generate_operator_method', 'destory_Pk', 'build_cosmodict', 'safe_Pchip_minimize']
+__all__ = ['generate_operator_method', 'destory_Pk', 'build_cosmodict', 'safe_Pchip_minimize', 'combine_fftpars']
 
 def generate_operator_method(op, reflect = False):
     """
@@ -51,11 +51,19 @@ def generate_operator_method(op, reflect = False):
 
             assert isinstance(other, (int, float, ccl.halos.profiles.HaloProfile)), f"Object must be int/float/SchneiderProfile but is type '{type(other).__name__}'."
 
-            Combined = self.__class__(**self.model_params, xi_mm = self.xi_mm, 
-                                      padding_lo_proj   = self.padding_lo_proj, 
-                                      padding_hi_proj   = self.padding_hi_proj, 
-                                      n_per_decade_proj = self.n_per_decade_proj,
-                                      mass_def = self.mass_def)
+
+            mdl_pars = self.model_params
+            hyp_pars = self.hyper_params
+            fft_pars = self.precision_fftlog.to_dict()
+
+            if isinstance(other, ccl.halos.profiles.HaloProfile):
+                mdl_pars |= other.model_params
+                hyp_pars |= other.hyper_params
+                fft_pars  = combine_fftpars(fft_pars, other.precision_fftlog.to_dict())
+
+
+            Combined = self.__class__(**mdl_pars, **hyp_pars)
+            Combined.update_precision_fftlog(**fft_pars)
 
             def __tmp_real__(cosmo, r, M, a):
 
@@ -95,18 +103,35 @@ def generate_operator_method(op, reflect = False):
             Combined._real = __tmp_real__
             Combined.__str_prf__ = __str_prf__
 
+
+            #Do the same operations on fourier side only if the profile exists.
+            #This happens for a small handful of profiles
+            if hasattr(self, '_fourier') & ((not isinstance(other, ccl.halos.profiles.HaloProfile)) | hasattr(other, '_fourier')):
+                def __tmp_fourier__(cosmo, r, M, a):
+
+                    A = self._fourier(cosmo, r, M, a)
+
+                    if isinstance(other, ccl.halos.profiles.HaloProfile):
+                        B = other._fourier(cosmo, r, M, a)
+                    else:
+                        B = other
+
+                    if not reflect:
+                        return op(A, B)
+                    else:
+                        return op(B, A)
+                    
+                Combined._fourier = __tmp_fourier__
+                    
             return Combined
 
     #For some operators we don't need a second input, so rewrite function for that
     elif op in [abs, neg, pos]:
 
         def operator_method(self):
-            
-            Combined = self.__class__(**self.model_params, xi_mm = self.xi_mm, 
-                                      padding_lo_proj = self.padding_lo_proj, 
-                                      padding_hi_proj = self.padding_hi_proj, 
-                                      n_per_decade_proj = self.n_per_decade_proj,
-                                      mass_def = self.mass_def)
+
+            Combined = self.__class__(**self.model_params, **self.hyper_params)
+            Combined.update_precision_fftlog(**self.precision_fftlog.to_dict())
 
             def __tmp_real__(cosmo, r, M, a):
 
@@ -229,3 +254,83 @@ def safe_Pchip_minimize(x, y):
     except ValueError:
         warnings.warn(f"Cannot minimize. Interpolator crashed. Reverting to using np.min()", UserWarning)
         return y[cen]
+    
+
+#FFT params and the rules for determining a 
+#superset of parameter values between two profiles
+_fft_precision_logic = {
+    'padding_lo_fftlog' : min,
+    'padding_hi_fftlog' : max,
+    'n_per_decade'      : max,
+    'extrapol'          : None,
+    'padding_lo_extra'  : min,
+    'padding_hi_extra'  : max,
+    'large_padding_2D'  : None,
+    'plaw_fourier'      : None,
+    'plaw_projected'    : None
+}
+
+
+def combine_fftpars(setA, setB):
+    """
+    Combine two dictionaries of FFT-related parameters using predefined
+    merge rules.
+
+    This function merges two parameter dictionaries (``setA`` and ``setB``)
+    by iterating over a global list of merge rules (``_fft_precision_logic``).
+    Each entry in ``_fft_precision_logic`` specifies:
+    
+    - a key ``k`` expected in both dictionaries, and  
+    - a merge rule ``rule`` which is either a callable or ``None``.
+
+    If ``rule`` is a callable, it is applied to the corresponding entries
+    ``setA[k]`` and ``setB[k]`` to compute the merged value.
+
+    If ``rule`` is ``None`` and the values in ``setA`` and ``setB`` differ,
+    the value from ``setA`` is taken as the default and a warning is issued.
+    If the values match, that value is used.
+
+    Parameters
+    ----------
+    setA, setB : dict
+        First and second dictionary of FFT parameter values. All keys appearing in
+        ``_fft_precision_logic`` must be present.
+
+    Returns
+    -------
+    dict
+        A new dictionary containing the merged FFT parameter values.
+
+    Warns
+    -----
+    UserWarning
+        If a merge rule is ``None`` and the values for a parameter differ
+        between ``setA`` and ``setB``. In this case, the value from ``setA``
+        is used.
+    """
+
+    new_set = {}
+
+    #Loop over all parameters defined by CCL's FFT precision
+    for k, rule in _fft_precision_logic.items():
+
+        A, B = setA[k], setB[k]
+
+        #If we said there is no merging rule, it means we have no
+        #way of automatically setting a value to the combined profile
+        #so just pick the value in the first dict and call it a day (with a warning).
+        if (rule == None):
+
+            new_set[k] = A
+
+            if A != B:
+                warnings.warn(f"Value of parameter {k} is inconsistent between two profiles you are combining ({A}, {B}). "
+                            "We will use {A} as the default value")
+            
+        #Otherwise, we have clear rules for setting params
+        #such that you encompass the requirements of
+        #both profiles.
+        else:
+            new_set[k] = rule(A, B)
+
+    return new_set

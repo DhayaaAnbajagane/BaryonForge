@@ -182,6 +182,13 @@ class TabulatedProfile(ccl.halos.profiles.HaloProfile):
         #We just set this to the same as the inputted profile.
         super().__init__(mass_def = model.mass_def)
 
+        self.update_precision_fftlog(**self.model.precision_fftlog.to_dict())
+    
+    def __str_prf__(self):
+
+        return f"Tabulated[{self.model.__str_prf__()}"
+    
+    def __str_par__(self): return self.model.__str_par__()
 
     def setup_interpolator(self, z_min = 1e-2, z_max = 5, N_samples_z = 30, z_linear_sampling = False, 
                            M_min = 1e12, M_max = 1e16, N_samples_Mass = 30, 

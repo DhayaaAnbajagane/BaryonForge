@@ -1,14 +1,14 @@
 import numpy as np
 import pyccl as ccl
-from .Schneider19 import SchneiderProfiles
+from .Base import BaseBFGProfiles, hyper_params
 from scipy import interpolate
 from ..utils.Tabulate import _set_parameter
 from pyccl.pyutils import resample_array, _fftlog_transform
 fftlog = _fftlog_transform
 
-__all__ = ['Truncation', 'Identity', 'Zeros', 'Comoving_to_Physical', 'Mdelta_to_Mtot']
+__all__ = ['Truncation', 'Identity', 'Zeros', 'ComovingToPhysical', 'Mdelta_to_Mtot']
 
-class Truncation(SchneiderProfiles):
+class Truncation(BaseBFGProfiles):
     """
     Class for truncating profiles conveniently.
 
@@ -57,10 +57,11 @@ class Truncation(SchneiderProfiles):
     >>> truncated = other_bfg_profile.real(cosmo, r, M, a)
     """
 
-    def __init__(self, epsilon, mass_def = ccl.halos.massdef.MassDef200c):
+    hyper_param_names = hyper_params + ['epsilon_trunc']
+    def __init__(self, epsilon_trunc, mass_def = ccl.halos.massdef.MassDef200c, **kwargs):
 
-        self.epsilon = epsilon
-        ccl.halos.profiles.HaloProfile.__init__(self, mass_def = mass_def)
+        self.epsilon_trunc = epsilon_trunc
+        super().__init__(mass_def = mass_def, **kwargs)
 
 
     def _real(self, cosmo, r, M, a):
@@ -69,7 +70,7 @@ class Truncation(SchneiderProfiles):
         M_use = np.atleast_1d(M)
         R     = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
         
-        prof  = r_use[None, :] < R[:, None] * self.epsilon
+        prof  = r_use[None, :] < R[:, None] * self.epsilon_trunc
         
         #Handle dimensions so input dimensions are mirrored in the output
         if np.ndim(r) == 0: prof = np.squeeze(prof, axis=-1)
@@ -79,10 +80,10 @@ class Truncation(SchneiderProfiles):
     
 
     def __str_prf__(self): return "Truncation"
-    def __str_par__(self): return  f"(epsilon = {self.epsilon})"
+    def __str_par__(self): return  f"(epsilon_trunc = {self.epsilon_trunc})"
     
 
-class Identity(SchneiderProfiles):
+class Identity(BaseBFGProfiles):
     """
     Class for the identity profile.
 
@@ -97,9 +98,9 @@ class Identity(SchneiderProfiles):
         density is 200 times the critical density.
 
     """
-    def __init__(self, mass_def = ccl.halos.massdef.MassDef200c):
+    def __init__(self, mass_def = ccl.halos.massdef.MassDef200c, **kwargs):
 
-        ccl.halos.profiles.HaloProfile.__init__(self, mass_def = mass_def)
+        super().__init__(mass_def = mass_def, **kwargs)
 
     def _real(self, cosmo, r, M, a):
 
@@ -120,7 +121,7 @@ class Identity(SchneiderProfiles):
     def __str_par__(self): return  f"()"
     
 
-class Zeros(SchneiderProfiles):
+class Zeros(BaseBFGProfiles):
     """
     Class for the zeros profile.
 
@@ -136,9 +137,9 @@ class Zeros(SchneiderProfiles):
         density is 200 times the critical density.
 
     """
-    def __init__(self, mass_def = ccl.halos.massdef.MassDef200c):
+    def __init__(self, mass_def = ccl.halos.massdef.MassDef200c, **kwargs):
 
-        ccl.halos.profiles.HaloProfile.__init__(self, mass_def = mass_def)
+        super().__init__(mass_def = mass_def, **kwargs)
 
     def _real(self, cosmo, r, M, a):
 
@@ -177,7 +178,9 @@ class TruncatedFourier(object):
         density is 200 times the critical density.
 
     """
-    def __init__(self, Profile, epsilon_max, epsilon_min = None): 
+    
+    def __init__(self, Profile, epsilon_max, epsilon_min = None, **kwargs): 
+        
         self.Profile     = Profile
         self.epsilon_max = epsilon_max
         self.epsilon_min = epsilon_min
@@ -225,7 +228,7 @@ class TruncatedFourier(object):
         return kprof
     
 
-class ComovingToPhysical(ccl.halos.profiles.HaloProfile):
+class ComovingToPhysical(BaseBFGProfiles):
     """
     Converts a given profile from comoving to physical units by applying 
     a user-specified scale factor (`a`) correction. The projected profile is rescaled
@@ -246,13 +249,19 @@ class ComovingToPhysical(ccl.halos.profiles.HaloProfile):
         scale factor `a` to the appropriate power.
     """
     
-    def __init__(self, profile, factor):
+    hyper_param_names = hyper_params + ['profile', 'factor']
+    def __init__(self, profile, factor, **kwargs):
         
         self.profile = profile
         self.factor  = factor
 
+        #Remove mass_def from kwargs if provided because we need to use the
+        #mass_def from the input profile instead
+        kwargs.pop('mass_def', None) 
+
         #We just set this to the same as the inputted profile.
-        super().__init__(mass_def = profile.mass_def)
+        super().__init__(mass_def = profile.mass_def, **kwargs)
+    
         
     def real(self, cosmo, r, M, a):      return self.profile.real(cosmo, r, M, a)      * np.power(a, self.factor)
     def projected(self, cosmo, r, M, a): return self.profile.projected(cosmo, r, M, a) * np.power(a, self.factor + 1)
