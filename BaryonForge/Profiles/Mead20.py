@@ -1,19 +1,19 @@
 import numpy as np
 import pyccl as ccl
-from operator import add, mul, sub, truediv, pow, neg, pos, abs
 import warnings
 
 from scipy import interpolate, special
-from ..utils import _set_parameter, safe_Pchip_minimize
+from ..utils import safe_Pchip_minimize
 from .misc import Zeros
-from . import Schneider19 as S19, Arico20 as A20
+from . import Schneider19 as S19, Arico20 as A20, Base
 from .Thermodynamic import (G, Msun_to_Kg, Mpc_to_m, kb_cgs, m_p, m_to_cm)
 
 __all__ = ['model_params', 'MeadProfiles', 
            'DarkMatter', 'TwoHalo', 'CentralStars', 'SatelliteStars', 'Stars', 
-           'Gas', 'BoundGas', 'EjectedGas', 'ReaccretedGas', 'CollisionlessMatter',
+           'Gas', 'BoundGas', 'EjectedGas', 'CollisionlessMatter',
            'DarkMatterOnly', 'DarkMatterBaryon',
-           'Temperature', 'Pressure']
+           'Temperature', 'Pressure',
+           'Tagn2pars']
 
 model_params = ['cdelta', 'eps1', 'nu_eps1', 'eps2', #DM profle param and relaxation params
                 'cutoff', 'proj_cutoff', #Cutoff parameters (numerical)
@@ -29,7 +29,7 @@ model_params = ['cdelta', 'eps1', 'nu_eps1', 'eps2', #DM profle param and relaxa
                ]
 
 
-class MeadProfiles(A20.AricoProfiles):
+class MeadProfiles(Base.BaseBFGProfiles):
     __doc__ = A20.AricoProfiles.__doc__.replace('Arico', 'Mead')
 
     #Define the new param names
@@ -108,18 +108,32 @@ class MeadProfiles(A20.AricoProfiles):
         f_cen = f_str * np.clip(np.where(M_use < Mstr, 1, np.power(M_use/Mstr, self.eta)), 0, 1)
         f_sat = f_str * np.clip(np.where(M_use < Mstr, 0, 1 - np.power(M_use/Mstr, self.eta)), 0, 1)
         
-        return f_str, f_cen, f_sat    
+        return f_str, f_cen, f_sat  
+
+    def get_f_star(self, M_use, a, cosmo):
+        return self._get_star_frac(M_use, a, cosmo)[0]
+    
+    def get_f_star_cen(self, M_use, a, cosmo):
+        return self._get_star_frac(M_use, a, cosmo)[1]
+    
+    def get_f_star_sat(self, M_use, a, cosmo):
+        return self._get_star_frac(M_use, a, cosmo)[2]  
 
     def _get_gas_params(self): return self.M0, self.beta
 
     def _get_gas_frac(self, M_use, a, cosmo):
 
-        f_str, f_cen, f_sat = self._get_star_frac(M_use, a, cosmo)
+        f_str = self.get_f_star(M_use, a, cosmo)
         f_bar = cosmo.cosmo.params.Omega_b/cosmo.cosmo.params.Omega_m
         f_bnd = f_bar * np.power(M_use/self.M_0, self.beta) / (1 + np.power(M_use/self.M_0, self.beta))
         f_ej  = ((f_bar - f_str) - f_bnd)
         
         return f_bnd, f_ej
+    
+    def get_f_gas(self, M_use, a, cosmo):
+        f = self._get_gas_frac(M_use, a, cosmo)
+        return f[0] + f[1]
+    
     
     def _modify_concentration(self, cosmo, c, M, a):
         """
@@ -269,8 +283,7 @@ class CentralStars(MeadProfiles):
         M_use = np.atleast_1d(M)
 
         R     = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
-        f_str, f_cen, f_sat = self._get_star_frac(M_use, a, cosmo)
-        f_cen = f_cen[:, None]
+        f_cen = self.get_f_star_cen(M_use, a, cosmo)[:, None]
         R_h   = self.epsilon_h * R[:, None]
 
         #Final profile. No truncation needed since exponential cutoff already does that for us
@@ -294,7 +307,7 @@ class SatelliteStars(DarkMatter):
     
     def _real(self, cosmo, r, M, a):
 
-        f_str, f_cen, f_sat = self._get_star_frac(M, a, cosmo)
+        f_sat = self.get_f_star_sat(M, a, cosmo)
         
         if np.atleast_1d(f_sat).size > 1:
             f_sat = f_sat[:, None]
@@ -364,8 +377,7 @@ class DeltaStars(MeadProfiles):
         k_use = np.atleast_1d(k)
         M_use = np.atleast_1d(M)
 
-        f_str, f_cen, f_sat = self._get_star_frac(M_use, a, cosmo)
-        f_cen = f_cen[:, None]
+        f_cen = self.get_f_star_cen(M_use, a, cosmo)[:, None]
         
         #Final profile. No truncation needed since exponential cutoff already does that for us
         prof = f_cen*M_use[:, None] * np.ones_like(k_use)
@@ -668,7 +680,6 @@ class CollisionlessMatter(MeadProfiles):
         #Get the normalization (rho_c) analytically since we don't have a truncation radii like S19 does
         Norm  = 4*np.pi*r_s**3 * (np.log(1 + c) - c/(1 + c))
         rho_c = M_use/Norm
-        f_str, f_cen, f_sat = self._get_star_frac(M_use, a, cosmo)
         f_bar = cosmo.cosmo.params.Omega_b/cosmo.cosmo.params.Omega_m
         rho_c = rho_c * (1 - f_bar) #Rescale to correct fraction of mass
 
@@ -1142,3 +1153,71 @@ Params_TAGN_8p0_MPr =  {'A_star' : 0.0309, 'nu_A_star' : -0.0082, 'M_star' : np.
                         'M_0' : np.power(10, 14.24798)/0.7, 'T_w' : np.power(10, 6.66146), 'nu_T_w' : -0.06167,
                         'eps2' : 0, 'mean_molecular_weight' : 0.59, 'eta_b' : 0.5, 'sigma_star' : 1.2, 'beta' : 0.6,
                         'epsilon_h' : 0.015, 'p' : 0.3, 'q' : 0.707, 'alpha' : 1.0314}
+
+
+def Tagn2pars(Tagn, mode = 'All'):
+    """
+    Interpolate calibrated model parameters as a function of Tagn, like in Mead++.
+    All parameters are interpolated linearly and some (M_0, M_star, T_w) in log-log space.
+    This matches what is done in HMx.
+
+    Parameters
+    ----------
+    Tagn : float or int
+        The AGN temperature (in log10 scale) at which to interpolate the model parameters.
+    mode : {'All', 'MatterPressure'}, default='All'
+        Which calibration set to use:
+        - 'All'           : joint fit to gas, stars, density, and pressure fields.
+        - 'MatterPressure': fit to matter and pressure fields only.
+
+    Returns
+    -------
+    dict[str, float]
+        A dictionary mapping each profile parameter name to its interpolated value
+        at the requested `Tagn`.
+
+    Examples
+    --------
+    >>> # interpolate parameters at Tagn=7.9 using the 'All' calibration
+    >>> params = Tagn2pars(7.9, mode='All')
+    """
+
+    assert isinstance(Tagn, (float, int)), f"T_agn must be a float or int. You passed {type(Tagn)}"
+
+    #Tagn values of the calibrated params
+    Tagn_calib = [7.6, 7.8, 8.0]
+    log_keys   = ['M_0', 'M_star', 'T_w']
+    
+    #Now get the param values themselves
+    if mode == 'All':
+        Pars_a, Pars_b, Pars_c = Params_TAGN_7p6_All, Params_TAGN_7p8_All, Params_TAGN_8p0_All
+    elif mode == 'MatterPressure':
+        Pars_a, Pars_b, Pars_c = Params_TAGN_7p6_MPr, Params_TAGN_7p8_MPr, Params_TAGN_8p0_MPr
+    else:
+        raise NotImplemented(f"mode = {mode} is not implemented. Use 'All' or 'MatterPressure'.")
+    
+    #Now interpolate and add it to the new dict
+    new_dict = {}
+    for k in Pars_a.keys():
+        p_a, p_b, p_c = Pars_a[k], Pars_b[k], Pars_c[k]
+
+        #Some pars are interpolated in log
+        if k in log_keys: 
+            p_a, p_b, p_c = np.log10(p_a), np.log10(p_b), np.log10(p_c)
+
+        #Simple linear interpolation
+        table = interpolate.interp1d(Tagn_calib, [p_a, p_b, p_c], bounds_error = False, fill_value = 'extrapolate', kind = 'linear')
+        p_out = float(table(Tagn))
+
+        if k in log_keys:
+            p_out = np.power(10, p_out)
+
+        new_dict[k] = p_out
+
+
+    return new_dict
+
+
+
+
+    

@@ -1,36 +1,16 @@
-
 import numpy as np
 import pyccl as ccl
 from scipy import interpolate, integrate
 
-from ..Profiles.Schneider19 import model_params, SchneiderProfiles, Gas, DarkMatterBaryon, TwoHalo
+from .Base import BaseBFGProfiles, hyper_params
+from .Schneider19 import Gas, DarkMatterBaryon, TwoHalo
+from ..utils.constants import (G, Msun_to_Kg, Mpc_to_m, Pth_to_Pe, m_p, m_to_cm, kb_cgs, sigma_T_cgs, c_cgs, m_e_cgs)
+from ..utils.Tabulate import _set_parameter, _get_parameter
+from .Schneider19 import model_params as S19_mp
+from .Arico20     import model_params as A20_mp
+from .Mead20      import model_params as M20_mp
 
-
-#Define relevant physical constants
-Msun_to_Kg = ccl.physical_constants.SOLAR_MASS
-Mpc_to_m   = ccl.physical_constants.MPC_TO_METER
-G          = ccl.physical_constants.GNEWT / Mpc_to_m**3 * Msun_to_Kg
-m_to_cm    = 1e2
-kb_cgs     = ccl.physical_constants.KBOLTZ * 1e7 
-K_to_kev   = ccl.physical_constants.KBOLTZ / ccl.physical_constants.EV_IN_J * 1e-3
-
-#Just define some useful conversions/constants
-sigma_T = 6.652458e-29 / Mpc_to_m**2
-m_e     = 9.10938e-31 / Msun_to_Kg
-m_p     = 1.67262e-27 / Msun_to_Kg
-c       = 2.99792458e8 / Mpc_to_m
-
-#CGS units of everything, to use in thermalSZ
-sigma_T_cgs = 6.652458e-29 * m_to_cm**2 #m^2 -> cm^2
-m_e_cgs     = 9.10938e-31 * 1e3 #Kg -> g
-m_p_cgs     = 1.67262e-27 * 1e3 #Kg -> g
-c_cgs       = 2.99792458e8 * m_to_cm #m/s -> cm/s
-
-
-#Thermodynamic/abundance quantities
-Y         = 0.24 #Helium mass ratio
-Pth_to_Pe = (4 - 2*Y)/(8 - 5*Y) #Factor to convert gas temp. to electron temp
-
+model_params = list({*S19_mp, *A20_mp, *M20_mp})
 
 #Technically P(r -> infty) is zero, but we  may need finite
 #value for numerical reasons (interpolator). This is a
@@ -42,71 +22,50 @@ __all__ = ['Pressure', 'NonThermalFrac', 'NonThermalFracGreen20',
            'Temperature', 'ThermalSZ', 'ElectronPressure', 'GasNumberDensity']
 
 
-class BaseThermodynamicProfile(SchneiderProfiles):
+class BaseThermodynamicProfile(BaseBFGProfiles):
 
-    def __init__(self, mass_def = ccl.halos.massdef.MassDef200c,
-                 c_M_relation = None, 
-                 use_fftlog_projection = False, 
-                 padding_lo_proj = 0.1, padding_hi_proj = 10, n_per_decade_proj = 10,
-                 r_min_int = 1e-6, r_max_int = 1e3, r_steps = 500, xi_mm = None,
-                 **kwargs):
+    model_param_names = model_params
+
+    @property
+    def model_params(self):
+        """
+        Returns a dictionary containing all model parameters and their current values.
+
+        Returns
+        -------
+        params : dict
+            Dictionary of model parameters.
+        """
         
-        #Go through all input params, and assign Nones to ones that don't exist.
-        #If mass/redshift/conc-dependence, then set to 1 if don't exist
-        for m in self.model_param_names:
-            if m in kwargs.keys():
-                setattr(self, m, kwargs[m])
-            else:
-                setattr(self, m, None)
-
-
-        #Let user specify their own c_M_relation as desired
-        if c_M_relation is not None:
-            self.c_M_relation = c_M_relation(mass_def = mass_def)
+        if hasattr(self, 'prof4params'):
+            params = {k:v for k,v in vars(self.prof4params).items() if k in self.model_param_names}
         else:
-            self.c_M_relation = None
-                    
-        #Some params for handling the realspace projection
-        self.padding_lo_proj   = padding_lo_proj
-        self.padding_hi_proj   = padding_hi_proj
-        self.n_per_decade_proj = n_per_decade_proj 
+            params = {k:v for k,v in vars(self).items() if k in self.model_param_names}
+                  
+        return params
+    
 
-        #Some params that control numerical integration
-        self.r_min_int = r_min_int
-        self.r_max_int = r_max_int
-        self.r_steps   = r_steps
-        
-        #Import all other parameters from the base CCL Profile class
-        ccl.halos.profiles.HaloProfile.__init__(self, mass_def = mass_def)
+    @property
+    def hyper_params(self):
+        """
+        Returns a dictionary containing all hyper parameters oof the calculation and their current values.
 
-        #Function that returns correlation func at different radii
-        self.xi_mm = xi_mm
-
-        #Sets the cutoff scale of all profiles, in comoving Mpc. Prevents divergence in FFTLog
-        #Also set cutoff of projection integral. Should be the box side length
-        self.cutoff      = kwargs['cutoff'] if 'cutoff' in kwargs.keys() else 1e3 #1Gpc is a safe default choice
-        self.proj_cutoff = kwargs['proj_cutoff'] if 'proj_cutoff' in kwargs.keys() else self.cutoff
+        Returns
+        -------
+        params : dict
+            Dictionary of hyper parameters.
+        """
         
-        
-        #This allows user to force usage of the default FFTlog projection, if needed.
-        #Otherwise, we use the realspace integration, since that allows for specification
-        #of a hard boundary on radius
-        if not use_fftlog_projection:
-            self._projected = self._projected_realspace
+        if hasattr(self, 'prof4params'):
+            params = {k:v for k,v in vars(self.prof4params).items() if k in self.hyper_param_names}
         else:
-            text = ("You must set the same cutoff for 3D profile and projection profile if you want to use fftlog projection. "
-                    f"You have cutoff = {self.cutoff} and proj_cutoff = {self.proj_cutoff}")
-            assert self.cutoff == self.proj_cutoff, text
-
-
-        #Constant that helps with the fourier transform convolution integral.
-        #This value minimized the ringing due to the transforms
-        self.update_precision_fftlog(plaw_fourier = -2)
-
-        #Need this to prevent projected profile from artificially cutting off
-        self.update_precision_fftlog(padding_lo_fftlog = 1e-2, padding_hi_fftlog = 1e2,
-                                     padding_lo_extra  = 1e-4, padding_hi_extra  = 1e4)
+            params = {k:v for k,v in vars(self).items() if k in self.hyper_param_names}
         
+        params['c_M_relation']          = self._c_M_relation #Swap this one specifically
+        params['use_fftlog_projection'] = self._use_fftlog_projection #This one isn't saved normally so do it here
+
+        return params
+    
 
 class Pressure(BaseThermodynamicProfile):
     """
@@ -170,6 +129,8 @@ class Pressure(BaseThermodynamicProfile):
         scale factor, and mass definition.
     """
     
+    model_param_names = model_params
+    
     def __init__(self, gas = None, darkmatterbaryon = None, **kwargs):
         
         self.Gas = gas
@@ -182,9 +143,11 @@ class Pressure(BaseThermodynamicProfile):
         #Now make sure the cutoff is sufficiently high
         #We don't want small cutoff of 1-halo term when computing the TRUE pressure profile.
         #The cutoff is reapplied to the derives pressure profiles in _real()
-        self.Gas.set_parameter('cutoff', 1000)
-        self.DarkMatterBaryon.set_parameter('cutoff', 1000)
+        _set_parameter(self.Gas,              'cutoff', 1000)
+        _set_parameter(self.DarkMatterBaryon, 'cutoff', 1000)
             
+        self.prof4params = self.Gas
+        
         super().__init__(**kwargs)
         
     
@@ -256,13 +219,8 @@ class Pressure(BaseThermodynamicProfile):
         R = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
 
         r_integral = np.geomspace(self.r_min_int, self.r_max_int, self.r_steps)
-        rho_total  = self.DarkMatterBaryon.real(cosmo, r_integral, M, a)
-        rho_gas    = self.Gas.real(cosmo, r_integral, M, a)
-
-        #The real() routine squeezes out dimension if len(M) = 1
-        #Add it back so the integration below works out
-        if M_use.size == 1: 
-            rho_total = rho_total[None, :]
+        rho_total  = self.DarkMatterBaryon.real(cosmo, r_integral, M_use, a)
+        rho_gas    = self.Gas.real(cosmo, r_integral, M_use, a)
         
         #Integrate total density profile to get the cumulative mass distribution
         dlnr    = np.log(r_integral[1]) - np.log(r_integral[0])
@@ -546,6 +504,8 @@ class GasNumberDensity(BaseThermodynamicProfile):
         #Then convert from 1/Mpc^3 to 1/cm^3
         #The projected profile will just be in units of Mpc/cm^3
         self.factor = 1 / (self.mean_molecular_weight * m_p) / (Mpc_to_m * m_to_cm)**3
+
+        self.prof4params = self.Gas
     
     #Need to explicitly call real and projected routines here.
     #We call "_real" since if we define "real" over "_real" then CCL will complain
@@ -606,6 +566,13 @@ class Temperature(BaseThermodynamicProfile):
         if self.GasNumberDensity is None: self.GasNumberDensity = GasNumberDensity(**kwargs)
             
         super().__init__(**kwargs)
+
+        if hasattr(self.Pressure, 'prof4params'):
+            self.prof4params = self.Pressure.prof4params
+        elif hasattr(self.GasNumberDensity, 'prof4params'):
+            self.prof4params = self.GasNumberDensity.prof4params
+        else:
+            self.prof4params = self
         
     
     def _real(self, cosmo, r, M, a):
@@ -732,18 +699,23 @@ class ThermalSZ(BaseThermodynamicProfile):
         cosmology, radii, mass, scale factor, and mass definition.
     
     real(cosmo, r, M, a)
-        This is not to be used, as SZ is a projected quantity. However, the method
-        still returns a sentinel value of -99, needed for consistency in other parts
-         of the pipeline (eg. Tabulation, see `TabulatedProfile`).
+        This computes the real pressure profile scaled by the same constant as the
+        projected one. Generally not to be used unless you know what units you
+        want.
     """
     
     
     def __init__(self, pressure = None, **kwargs):
         
-        self.pressure = pressure
-        if self.pressure is None: self.pressure = Pressure(**kwargs)
+        self.Pressure = pressure
+        if self.Pressure is None: self.Pressure = Pressure(**kwargs)
 
         super().__init__(**kwargs)
+
+        if hasattr(self.Pressure, 'prof4params'):
+            self.prof4params = self.Pressure.prof4params
+        else:
+            self.prof4params = self
         
     
     def Pgas_to_Pe(self, cosmo, r, M, a):
@@ -757,8 +729,8 @@ class ThermalSZ(BaseThermodynamicProfile):
         return Pth_to_Pe
     
     
-    def projected(self, cosmo, r, M, a):        
-
+    def _real(self, cosmo, r, M, a):
+        
         r_use = np.atleast_1d(r)
         M_use = np.atleast_1d(M)
 
@@ -766,7 +738,7 @@ class ThermalSZ(BaseThermodynamicProfile):
         R     = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
 
         #Now a series of units changes to the projected profile.
-        prof  = self.pressure.projected(cosmo, r_use, M_use, a) #generate profile
+        prof  = self.Pressure.real(cosmo, r_use, M_use, a) #generate profile
         prof  = prof * (Mpc_to_m * 1e2) #Line-of-sight integral is done in Mpc, we want cm
         prof  = prof * sigma_T_cgs/(m_e_cgs*c_cgs**2) #Convert to SZ (dimensionless units)
         prof  = prof * self.Pgas_to_Pe(cosmo, r_use, M_use, a) #Then convert from gas pressure to electron pressure
@@ -776,27 +748,6 @@ class ThermalSZ(BaseThermodynamicProfile):
         if np.ndim(M) == 0: prof = np.squeeze(prof, axis=0)
         
         return prof
-    
-    
-    def real(self, cosmo, r, M, a):
-        
-        #Don't raise ValueError because then we can't pass this object in a TabulatedProfile class
-        #Instead just output sentinel value of -99
-
-        r_use = np.atleast_1d(r)
-        M_use = np.atleast_1d(M)
-        shape = (M_use.size, r_use.size)
-        prof  = np.ones(shape) * -99
-        
-        return prof
-    
-
-    #Have dummy methods because CCL asserts that these must exist.
-    #Hacky because I want to keep SchneiderProfiles as base class
-    #in order to get __init__ to be simple, but then we have to follow
-    #the CCL HaloProfile base class API. 
-    def _real(self): return np.nan
-    def _projected(self): return np.nan
     
     
     
@@ -815,6 +766,13 @@ class XrayLuminosity(BaseThermodynamicProfile):
         if self.GasNumberDensity is None: self.GasNumberDensity = GasNumberDensity(**kwargs)
         
         super().__init__()
+
+        if hasattr(self.Temperature, 'prof4params'):
+            self.prof4params = self.Temperature.prof4params
+        elif hasattr(self.GasNumberDensity, 'prof4params'):
+            self.prof4params = self.GasNumberDensity.prof4params
+        else:
+            self.prof4params = self
         
     
     def _real(self, cosmo, r, M, a):
