@@ -4,6 +4,7 @@ import warnings
 
 from scipy import interpolate, integrate
 from . import Schneider19 as S19
+from .Base import BaseBFGProfiles, hyper_params
 
 __all__ = ['model_params', 'SchneiderProfiles', 
            'DarkMatter', 'TwoHalo', 'Stars', 'SatelliteStars', 
@@ -21,40 +22,25 @@ model_params = ['cdelta', 'epsilon0', 'epsilon1', 'alpha_excl', 'q', 'p', #DM pr
                 'M_theta_c', 'M_gamma', 'M_delta', 'M_alpha', #Mass dep norm
                 'nu_theta_c', 'nu_M_c',  'nu_gamma', 'nu_delta', 'nu_alpha', #Redshift  dep
                 'zeta_theta_c', 'zeta_M_c', 'zeta_gamma', 'zeta_delta',  'zeta_alpha', #Concentration dep
-                'c_iga', 'nu_c_iga', #proportionality constant for inner gas fraction
+                'c_iga', 'nu_c_iga', 'r_min_iga', #Amplitudes and inner radii for inner gas fraction
                 
                 'Nstar', 'Mstar', 'eta', 'eta_delta', 'tau', 'tau_delta', 'epsilon_cga', #Star params
                 
                 'alpha_nt', 'nu_nt', 'gamma_nt', 'mean_molecular_weight' #Non-thermal pressure and gas density
                ]
 
-class Schneider25Profiles(S19.SchneiderProfiles):
+
+class Schneider25Profiles(BaseBFGProfiles):
+    __doc__ = S19.SchneiderProfiles.__doc__
 
     #Define the new param names
     model_param_names = model_params
+    hyper_param_names = hyper_params
 
     #Use a smaller r_max, since most profiles are truncated at R200c now.
     def __init__(self, r_max_int = 10, **kwargs):
         
         super().__init__(**kwargs, r_max_int = r_max_int)
-        
-        #Go through all input params, and assign Nones to ones that don't exist.
-        #If mass/redshift/conc-dependence, then set to 1 if don't exist
-        for m in self.model_param_names:
-            if m in kwargs.keys():
-                setattr(self, m, kwargs[m])
-            elif ('mu_' in m) or ('nu_' in m) or ('zeta_' in m): #Set mass/red/conc dependence
-                setattr(self, m, 0)
-            elif ('M_' in m): #Set mass normalization
-                setattr(self, m, 1e14)
-            else:
-                setattr(self, m, None)
-
-
-        #Sets the cutoff scale of all profiles, in comoving Mpc. Prevents divergence in FFTLog
-        #Also set cutoff of projection integral. Should be the box side length
-        self.cutoff      = kwargs['cutoff'] if 'cutoff' in kwargs.keys() else 1e3 #1Gpc is a safe default choice
-        self.proj_cutoff = kwargs['proj_cutoff'] if 'proj_cutoff' in kwargs.keys() else self.cutoff
 
 
     def _get_gas_params(self, M, z):
@@ -104,9 +90,6 @@ class Schneider25Profiles(S19.SchneiderProfiles):
         alpha    = alpha[:, None]
         
         return beta, theta_c , delta, gamma, alpha
-
-
-class Schneider25Fractions:
     
     def _get_star_frac(self, M_use, a, cosmo):
         
@@ -154,14 +137,21 @@ class Schneider25Fractions:
         f_star = np.clip(f_star, 1e-10, f_bar)
         f_cga  = np.clip(f_cga,  1e-10, f_star)
         
-        f_star = f_star[:, None]
-        f_cga  = f_cga[:, None]
-        
         f_sga  = np.clip(f_star - f_cga, 1e-10, None) 
         
         return f_star, f_cga, f_sga
     
     
+    def get_f_star(self, M_use, a, cosmo):
+        return self._get_star_frac(M_use, a, cosmo)[0]
+    
+    def get_f_star_cen(self, M_use, a, cosmo):
+        return self._get_star_frac(M_use, a, cosmo)[1]
+    
+    def get_f_star_sat(self, M_use, a, cosmo):
+        return self._get_star_frac(M_use, a, cosmo)[2] 
+    
+
     def _get_gas_frac(self, M_use, a, cosmo):
 
         """
@@ -195,7 +185,9 @@ class Schneider25Fractions:
         """
 
         
-        f_star, f_cga, f_sga = self._get_star_frac(M_use, a, cosmo)
+        f_star = self.get_f_star(M_use, a, cosmo)
+        f_cga  = self.get_f_star_cen(M_use, a, cosmo)
+
         f_bar  = cosmo.cosmo.params.Omega_b/cosmo.cosmo.params.Omega_m
         f_iga  = f_cga * self.c_iga * np.power(a, -self.nu_c_iga) #-ve sign since we do a^nu instead of (1 + z)^nu
         f_iga  = np.clip(f_iga, 1e-10, f_bar - f_star)
@@ -203,6 +195,10 @@ class Schneider25Fractions:
         
         return f_hga, f_iga
         
+
+    def get_f_gas(self, M, a, cosmo):
+        f = self._get_gas_frac(self, M, a, cosmo)
+        return f[0] + f[1]
         
         
 class DarkMatter(Schneider25Profiles):
@@ -397,7 +393,7 @@ class TwoHalo(Schneider25Profiles):
         return prof
 
 
-class Stars(Schneider25Profiles, Schneider25Fractions):
+class Stars(Schneider25Profiles):
     """
     Class representing the two-halo term density profile based on linear theory.
 
@@ -471,7 +467,7 @@ class Stars(Schneider25Profiles, Schneider25Fractions):
 
         R   = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
 
-        f_cga  = self._get_star_frac(M_use, a, cosmo)[1]
+        f_cga  = self.get_f_star_cen(M_use, a, cosmo)[:, None]
         R_cga  = self.epsilon_cga * R[:, None]
 
         r_integral = np.geomspace(self.r_min_int, self.r_max_int, self.r_steps)
@@ -498,12 +494,12 @@ class Stars(Schneider25Profiles, Schneider25Fractions):
         return prof
 
 
-class HotGas(Schneider25Profiles, Schneider25Fractions):
+class HotGas(Schneider25Profiles):
 
     """
     Class representing the hot gas density profile in galaxy halos using a generalized NFW form.
 
-    This class extends both `Schneider25Profiles` and `Schneider25Fractions` and implements the 
+    This class extends both `Schneider25Profiles` and implements the 
     real-space hot gas density profile following the GNFW parameterization from 
     Nagai, Kravtsov & Vikhlinin (2007). The profile accounts for feedback-driven redistribution 
     of gas using mass- and redshift-dependent core and ejection radii.
@@ -594,7 +590,7 @@ class HotGas(Schneider25Profiles, Schneider25Fractions):
         arg   = np.where(arg > 30, np.inf, arg) #This is to prevent an overflow in the exponential
         kfac  = 1/( 1 + np.exp(2*arg) ) #Extra exponential cutoff
         prof  = 1/(1 + np.power(u, alpha))**(beta/alpha) / (1 + v**gamma)**(delta/gamma) * kfac
-        prof *= f_hga*M_tot/Normalization
+        prof *= f_hga[:, None]*M_tot/Normalization
         
 
         #Handle dimensions so input dimensions are mirrored in the output
@@ -604,12 +600,12 @@ class HotGas(Schneider25Profiles, Schneider25Fractions):
         return prof
     
 
-class InnerGas(Schneider25Profiles, Schneider25Fractions):
+class InnerGas(Schneider25Profiles):
 
     """
     Class representing the inner gas density profile in halos.
 
-    This class extends both `Schneider25Profiles` and `Schneider25Fractions` to implement 
+    This class extends both `Schneider25Profiles` to implement 
     a real-space profile for the centrally concentrated inner gas component. The profile 
     is designed to capture steep gas distributions that dominate at small radii.
 
@@ -653,7 +649,13 @@ class InnerGas(Schneider25Profiles, Schneider25Fractions):
         #Integrate over wider region in radii to get normalization of gas profile
         r_integral = np.geomspace(self.r_min_int, self.r_max_int, self.r_steps)
         
-        prof_integral = np.power(r_integral, -2) * np.exp(-r_integral/R[:, None])
+        #This profile is formally UV divergent. The enclosed mass goes to
+        #infinity if you integrate down to 0. If you set a finite minimum radius
+        #then the profile depends critically on this minimum radius. We set this
+        #as a free parameter, but its value is generally 5kpc. This is the
+        #choice made in Schneider+2025 (private comm.)
+        prof_integral = np.power(r_integral, -3) * np.exp(-r_integral/R[:, None])
+        prof_integral = np.where(r_integral < self.r_min_iga, 0, prof_integral)
         Normalization = np.trapz(4 * np.pi * r_integral**2 * prof_integral, r_integral, axis = -1)[:, None]
 
         DM    = DarkMatter(**self.model_params); setattr(DM, 'cutoff', 1e3) #Set large cutoff just for normalization calculation
@@ -665,7 +667,8 @@ class InnerGas(Schneider25Profiles, Schneider25Fractions):
         arg   = np.where(arg > 30, np.inf, arg) #This is to prevent an overflow in the exponential
         kfac  = 1/( 1 + np.exp(2*arg) ) #Extra exponential cutoff
         prof  = np.power(r_use, -2) * np.exp(-r_use/R[:, None]) * kfac
-        prof *= f_iga*M_tot/Normalization
+        prof *= f_iga[:, None]*M_tot/Normalization
+        prof  = np.where(r_use < self.r_min_iga, 0, prof) #Need to set physical minimum radii
         
         #Handle dimensions so input dimensions are mirrored in the output
         if np.ndim(r) == 0: prof = np.squeeze(prof, axis=-1)
@@ -674,7 +677,7 @@ class InnerGas(Schneider25Profiles, Schneider25Fractions):
         return prof
 
 
-class Gas(Schneider25Profiles, Schneider25Fractions):
+class Gas(Schneider25Profiles):
     """
     Convenience class for combining gas components in halos.
 
@@ -696,12 +699,12 @@ class Gas(Schneider25Profiles, Schneider25Fractions):
     def __setstate__(self, state): self.__dict__.update(state)
 
 
-class CollisionlessMatter(Schneider25Profiles, Schneider25Fractions):
+class CollisionlessMatter(Schneider25Profiles):
 
     """
     Class representing the collisionless matter density profile after adiabatic relaxation.
 
-    This class extends `Schneider25Profiles` and `Schneider25Fractions` to compute the final 
+    This class extends `Schneider25Profiles` to compute the final 
     density profile of collisionless matter (dark matter + stars) after accounting for 
     the effects of baryonic components such as hot and inner gas. The computation is 
     performed using a (non-iterative) relaxation method based on the formalism in Schneider et al. (2025).
@@ -832,11 +835,11 @@ class CollisionlessMatter(Schneider25Profiles, Schneider25Fractions):
 
         R = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
 
-        f_star, f_cga, f_sga = self._get_star_frac(M_use, a, cosmo)
-        f_hga,  f_iga        = self._get_gas_frac(M_use, a, cosmo)
-        Q0, Q1, Q2           = self._get_Qis(M_use, a, cosmo)
+        f_cga, f_sga  = self.get_f_star_cen(M_use, a, cosmo), self.get_f_star_sat(M_use, a, cosmo)
+        f_hga, f_iga  = self._get_gas_frac(M_use, a, cosmo)
+        Q0, Q1, Q2    = self._get_Qis(M_use, a, cosmo)
 
-        f_clm      = 1 - cosmo.cosmo.params.Omega_b/cosmo.cosmo.params.Omega_m + f_sga
+        f_clm      = 1 - cosmo.cosmo.params.Omega_b/cosmo.cosmo.params.Omega_m + f_sga[:, None]
         nu         = 1.686/ccl.sigmaM(cosmo, M_use, a)[:, None]
         eps        = self.epsilon0 + self.epsilon1 * nu
         rstep      = eps / self.epsilon0
@@ -866,9 +869,9 @@ class CollisionlessMatter(Schneider25Profiles, Schneider25Fractions):
             with np.errstate(over = 'ignore'):
                  
                 xi0  = Q0 / (1 + np.power(r_integral/rstep, self.nstep))
-                xi1  = Q1 * f_cga * (M_cga[m_i] / M_i[m_i] - 1)
-                xi2  = Q1 * f_iga * (M_iga[m_i] / M_i[m_i] - 1)
-                xi3  = Q2 * f_hga * (M_hga[m_i] / M_i[m_i] - 1)
+                xi1  = Q1 * f_cga[m_i] * (M_cga[m_i] / M_i[m_i] - 1)
+                xi2  = Q1 * f_iga[m_i] * (M_iga[m_i] / M_i[m_i] - 1)
+                xi3  = Q2 * f_hga[m_i] * (M_hga[m_i] / M_i[m_i] - 1)
                 relaxation_fraction = xi0 + xi1 + xi2 + xi3 + 1
 
                 #Schneider+25 defines relaxation fraction as r_i/r_f so the bottom should indeed be multiplied,
@@ -895,7 +898,7 @@ class CollisionlessMatter(Schneider25Profiles, Schneider25Fractions):
         return prof
     
 
-class SatelliteStars(CollisionlessMatter, Schneider25Fractions):
+class SatelliteStars(CollisionlessMatter):
 
     """
     Class representing the matter density profile of stars in satellites.
@@ -909,7 +912,7 @@ class SatelliteStars(CollisionlessMatter, Schneider25Fractions):
 
         M_use = np.atleast_1d(M)
 
-        f_sga  = self._get_star_frac(M_use, a, cosmo)[2]
+        f_sga  = self.get_f_star_sat(M_use, a, cosmo)[:, None]
         f_clm  = 1 - cosmo.cosmo.params.Omega_b/cosmo.cosmo.params.Omega_m + f_sga
         
         if np.ndim(M) == 0: 
@@ -999,7 +1002,7 @@ class DarkMatterOnly(Schneider25Profiles):
         return prof
 
 
-class DarkMatterBaryon(Schneider25Profiles, Schneider25Fractions):
+class DarkMatterBaryon(Schneider25Profiles):
 
     """
     Class representing a combined dark matter and baryonic matter profile.
@@ -1090,6 +1093,7 @@ class DarkMatterBaryon(Schneider25Profiles, Schneider25Fractions):
             
         super().__init__(**kwargs, r_min_int = r_min_int, r_max_int = r_max_int, r_steps = r_steps)
         
+    
     def _real(self, cosmo, r, M, a):
 
         r_use = np.atleast_1d(r)
