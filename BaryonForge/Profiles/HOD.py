@@ -206,6 +206,10 @@ class HODGalaxiesPandey25(HODTransformerPandey25, ccl.halos.profiles.hod.HaloPro
 		if len(Norm) > 1:
 			Norm = Norm[:, None]
 
+		#Handle case where frac == 0, so we don't want Norm = 0 and 1/Norm = NaN
+		#in this case. So instead, just force 1/Norm = 0.
+		Norm = np.where(Norm == 0, np.inf, Norm)			
+
 		return self.SatelliteStars.fourier(cosmo, k, M, a) / Norm
 	
 
