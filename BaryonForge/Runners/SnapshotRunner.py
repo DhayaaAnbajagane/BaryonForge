@@ -273,3 +273,119 @@ class BaryonifySnapshot(DefaultRunnerSnapshot):
             new_cat[i]  = np.where(new_cat[i] < 0, new_cat[i] + L, new_cat[i])
 
         return new_cat
+
+
+class PaintSnapshot(DefaultRunnerSnapshot):
+    """
+    A class to apply baryonification to a particle snapshot using a halo catalog.
+
+    The `BaryonifySnapshot` class inherits from `DefaultRunnerSnapshot` and is designed to process a particle
+    snapshot by applying baryonification techniques to adjust particle positions. It uses a halo catalog to
+    determine the necessary adjustments based on halo properties, cosmological parameters, and a specified model.
+
+    Methods
+    -------
+    process()
+        Processes the particle snapshot by applying baryonification and returns the modified particle catalog.
+    """
+
+    def process(self):
+        """
+        Applies baryonification to the particle snapshot using the halo catalog.
+
+        This method iterates over each halo in the `HaloNDCatalog`, calculating the necessary displacements
+        for particles within a certain radius of each halo. The displacements are computed based on the halo's
+        mass, position, and scale factor. The resulting offsets are applied to the particle positions, and the
+        modified particle catalog is returned.
+
+        Returns
+        -------
+        new_cat : ndarray
+            A structured array representing the modified particle catalog after baryonification.
+
+        Notes
+        -----
+        - This method supports both 2D and 3D particle snapshots.
+        - The KDTree is used for efficient querying of particles within the radius of influence of each halo.
+        - Periodic boundary conditions are enforced to ensure particles remain within the simulation box.
+        - The method assumes that the input catalog provides particle coordinates as 'x', 'y', and optionally 'z'.
+        """
+
+        cosmo = ccl.Cosmology(Omega_c = self.cosmo['Omega_m'] - self.cosmo['Omega_b'],
+                              Omega_b = self.cosmo['Omega_b'], h = self.cosmo['h'],
+                              sigma8  = self.cosmo['sigma8'],  n_s = self.cosmo['n_s'],
+                              matter_power_spectrum = 'linear')
+        cosmo.compute_sigma()
+
+        L = self.ParticleSnapshot.L
+        is2D        = self.ParticleSnapshot.is2D
+        tot_offsets = np.zeros([len(self.ParticleSnapshot.cat), 2 if is2D else 3])
+
+        keys = vars(self.model).get('p_keys', []) #Check if model has property keys
+
+        if len(keys) > 0:
+            txt = (f"You asked to use {keys} properties in Baryonification. You must pass a ParamTabulatedProfile "
+                   f"pr BaryonificationClass as the model. You have passed {type(self.model)} instead. "
+                   f"If you did pass in a BaryonificationClass make sure you passed in addition params using "
+                   f"the other_params option.")
+            assert isinstance(self.model, (ParamTabulatedProfile, BaryonificationClass)), txt
+        
+        for j in tqdm(range(self.HaloNDCatalog.cat.size), desc = 'Baryonifying matter', disable = not self.verbose):
+
+            M_j = self.HaloNDCatalog.cat['M'][j]
+            x_j = self.HaloNDCatalog.cat['x'][j]
+            y_j = self.HaloNDCatalog.cat['y'][j]
+            z_j = self.HaloNDCatalog.cat['z'][j] #THIS IS A CARTESIAN COORDINATE, NOT REDSHIFT
+            o_j = {key : self.HaloNDCatalog.cat[key][j] for key in keys} #Other properties
+            
+            a_j = 1/(1 + self.HaloNDCatalog.redshift)
+            R_j = self.mass_def.get_radius(cosmo, M_j, a_j) #in physical Mpc
+            R_q = self.epsilon_max * R_j/a_j #The radius for querying points, in comoving coords
+            R_q = np.clip(R_q, 0, L/2) #Can't query distances more than half box-size.
+            
+            if is2D:
+                
+                inds = self.tree.query_ball_point([x_j, y_j], R_q)
+                dx   = self.ParticleSnapshot.cat['x'][inds] - x_j
+                dy   = self.ParticleSnapshot.cat['y'][inds] - y_j
+                d    = self.compute_distance(dx, dy)
+
+                x_hat = self.enforce_periodicity(dx)/d
+                y_hat = self.enforce_periodicity(dy)/d
+
+                #Compute the displacement needed
+                offset = self.model.displacement(d, M_j, a_j, **o_j)
+                offset = np.where(np.isfinite(offset), offset, 0)
+                tot_offsets[inds] += np.vstack([offset*x_hat, offset*y_hat]).T
+                
+            
+            else:
+                inds = self.tree.query_ball_point([x_j, y_j, z_j], R_q)
+                dx   = self.ParticleSnapshot.cat['x'][inds] - x_j
+                dy   = self.ParticleSnapshot.cat['y'][inds] - y_j
+                dz   = self.ParticleSnapshot.cat['z'][inds] - z_j
+                d    = self.compute_distance(dx, dy, dz)
+
+                x_hat = self.enforce_periodicity(dx)/d
+                y_hat = self.enforce_periodicity(dy)/d
+                z_hat = self.enforce_periodicity(dz)/d
+
+                #Compute the displacement needed
+                offset = self.model.displacement(d, M_j, a_j, **o_j)
+                offset = np.where(np.isfinite(offset), offset, 0)
+                tot_offsets[inds] += np.vstack([offset*x_hat, offset*y_hat, offset*z_hat]).T
+                
+            
+        new_cat = self.ParticleSnapshot.cat.copy()
+        
+        new_cat['x'] += tot_offsets[:, 0]
+        new_cat['y'] += tot_offsets[:, 1]
+        
+        if not is2D: new_cat['z'] += tot_offsets[:, 2]
+            
+        for i in ['x', 'y'] + ([] if self.ParticleSnapshot.is2D else ['z']):
+            
+            new_cat[i]  = np.where(new_cat[i] > L, new_cat[i] - L, new_cat[i])
+            new_cat[i]  = np.where(new_cat[i] < 0, new_cat[i] + L, new_cat[i])
+
+        return new_cat

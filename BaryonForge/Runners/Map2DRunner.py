@@ -881,6 +881,8 @@ class PaintProfilesAnisGrid(PaintProfilesGrid):
             dV = np.power(res, 3)
             rho_halos = np.average(Mtot_map)
 
+        rho_halos = np.sum(self.HaloNDCatalog.cat['M']) / (dV * self.GriddedMap.data.size)
+        
         #Now add the background contribution (we so far only have the halo contribution)
         #Force the background to be positive, incase the pasted density is larger than the box size.
         rho_m     = cosmo.rho_x(1/(self.HaloNDCatalog.redshift + 1), species = 'matter', is_comoving = True)
