@@ -22,11 +22,16 @@ model_params = ['cdelta', 'epsilon', 'a', 'n', #DM profle params
                 'M_theta_ej',  'M_theta_co', 'M_gamma', 'M_delta', #Mass dep norm
                 'nu_theta_ej', 'nu_theta_co', 'nu_M_c',  'nu_gamma', 'nu_delta', #Redshift  dep
                 'zeta_theta_ej', 'zeta_theta_co', 'zeta_M_c', 'zeta_gamma', 'zeta_delta', #Concentration dep
+
+                'theta_ej_min', 'theta_co_min', 'M_c_min', 'gamma_min', 'delta_min', #Min possible value of params
+                'theta_ej_max', 'theta_co_max', 'M_c_max', 'gamma_max', 'delta_max', #Max possible value of params
                 
                 'A', 'M1', 'eta', 'eta_delta', 'tau', 'tau_delta', 'epsilon_h', #Star params
                 
                 'alpha_nt', 'nu_nt', 'gamma_nt', 'mean_molecular_weight' #Non-thermal pressure and gas density
                ]
+
+DEFAULTS     = {'mu_' : 0, 'nu_' : 0, 'zeta_' : 0, 'M_' : 1e14, '_min' : -np.inf, '_max' : np.inf}
 
 class SchneiderProfiles(BaseBFGProfiles):
     """
@@ -75,6 +80,7 @@ class SchneiderProfiles(BaseBFGProfiles):
     #Define the params used in this model
     model_param_names = model_params
     hyper_param_names = hyper_params
+    defaults_params   = DEFAULTS
     
     def _get_gas_params(self, M, z):
         """
@@ -106,6 +112,7 @@ class SchneiderProfiles(BaseBFGProfiles):
         cdelta   = 1 if self.cdelta is None else self.cdelta
         
         M_c      = self.M_c * (1 + z)**self.nu_M_c * cdelta**self.zeta_M_c
+        M_c      = np.clip(M_c, self.M_c_min, self.M_c_max)
         beta     = 3*(M/M_c)**self.mu_beta / (1 + (M/M_c)**self.mu_beta)
         
         #Use M_c as the mass-normalization for simplicity sake
@@ -114,6 +121,11 @@ class SchneiderProfiles(BaseBFGProfiles):
         delta    = self.delta    * (M/self.M_delta)**self.mu_delta       * (1 + z)**self.nu_delta    * cdelta**self.zeta_delta
         gamma    = self.gamma    * (M/self.M_gamma)**self.mu_gamma       * (1 + z)**self.nu_gamma    * cdelta**self.zeta_gamma
         
+        theta_ej = np.clip(theta_ej, self.theta_ej_min, self.theta_ej_max)
+        theta_co = np.clip(theta_co, self.theta_co_min, self.theta_co_max)
+        delta    = np.clip(delta,    self.delta_min,    self.delta_max)
+        gamma    = np.clip(gamma,    self.gamma_min,    self.gamma_max)
+
         beta     = beta[:, None]
         theta_ej = theta_ej[:, None]
         theta_co = theta_co[:, None]

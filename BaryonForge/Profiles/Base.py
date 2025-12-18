@@ -11,6 +11,10 @@ hyper_params = ['mass_def', 'c_M_relation', 'use_fftlog_projection',
                 'padding_hi_proj', 'padding_hi_proj', 'n_per_decade_proj',
                 'r_min_int', 'r_max_int', 'r_steps', 'xi_mm']
 
+#The order matters, we search for the first, then the second etc.
+#If a parameter matches two keys, it will only be assigned using the 1st match
+DEFAULTS     = {'mu_' : 0, 'nu_' : 0, 'zeta_' : 0, 'M_' : 1e14}
+
 class BaseBFGProfiles(ccl.halos.profiles.HaloProfile):
     """
     Base class for defining halo density profiles for any BaryonForge model.
@@ -57,6 +61,7 @@ class BaseBFGProfiles(ccl.halos.profiles.HaloProfile):
     #Define the params used in this model
     model_param_names = []
     hyper_param_names = []
+    defaults_params   = DEFAULTS
 
     def __init__(self, mass_def = ccl.halos.massdef.MassDef200c, 
                  c_M_relation = None, use_fftlog_projection = False, 
@@ -68,12 +73,17 @@ class BaseBFGProfiles(ccl.halos.profiles.HaloProfile):
         #Go through all input params, and assign Nones to ones that don't exist.
         #If mass/redshift/conc-dependence, then set to 1 if don't exist
         for m in self.model_param_names:
+
             if m in kwargs.keys():
                 setattr(self, m, kwargs[m])
-            elif ('mu_' in m) or ('nu_' in m) or ('zeta_' in m): #Set mass/red/conc dependence
-                setattr(self, m, 0)
-            elif ('M_' in m): #Set mass normalization
-                setattr(self, m, 1e14)
+            
+            elif any([k in m for k in self.defaults_params.keys()]):
+
+                for k in self.defaults_params.keys():
+                    if k in m:
+                        setattr(self, m, self.defaults_params[k])
+                        break
+            
             else:
                 setattr(self, m, None)
 

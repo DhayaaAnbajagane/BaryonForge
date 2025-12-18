@@ -25,8 +25,14 @@ class HODTransformerPandey25(Base.BaseBFGProfiles):
 
 	model_param_names = model_params
 
-	def __init__(self, Profile, halo_m_to_mtot, **kwargs):
+	def __init__(self, Profile, halo_m_to_mtot, 
+			  	 Mstar_min_int = 1e4, Mstar_max_int = 1e16, Mstar_steps = 101,
+			  	 **kwargs):
 		
+		self.Mstar_min_int = Mstar_min_int
+		self.Mstar_max_int = Mstar_max_int
+		self.Mstar_steps   = Mstar_steps
+
 		Base.BaseBFGProfiles.__init__(self, Profile = Profile, halo_m_to_mtot = halo_m_to_mtot, **kwargs)
 
 		#Make sure profile's stellar fractions derive from the
@@ -58,7 +64,7 @@ class HODTransformerPandey25(Base.BaseBFGProfiles):
 		Returns stellar mass given halo mass using the (numerically) inverted inverse stellar-to-halo mass relation.
 		"""
 
-		Mstar = np.geomspace(1e4, 1e24, 101)
+		Mstar = np.geomspace(self.Mstar_min_int, self.Mstar_max_int, self.Mstar_steps)
 		Mhalo = self.Mhalo_Mstar(Mstar, a, cosmo)
 
 		Mout  = np.power(10, np.interp(np.log10(M), np.log10(Mhalo), np.log10(Mstar)))
