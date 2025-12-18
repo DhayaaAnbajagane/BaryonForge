@@ -833,7 +833,7 @@ class PaintProfilesGrid(DefaultRunnerGrid):
 class PaintProfilesAnisGrid(PaintProfilesGrid):
 
     def __init__(self, HaloNDCatalog, GriddedMap, epsilon_max, model, Tracer_model, Mtot_model, 
-                 background_val, global_tracer_fraction, 
+                 background_val, global_tracer_fraction, background_filter = None,
                  mass_def = ccl.halos.massdef.MassDef(200, 'critical'), 
                  include_pixel_size = True, use_ellipticity = False, verbose = True):
         
@@ -841,6 +841,7 @@ class PaintProfilesAnisGrid(PaintProfilesGrid):
         self.Mtot_model     = Mtot_model
         self.background_val = background_val
         self.global_tracer_fraction = global_tracer_fraction
+        self.background_filter      = background_filter
         super().__init__(HaloNDCatalog, GriddedMap, epsilon_max, model, use_ellipticity, mass_def, include_pixel_size, verbose)
     
     
