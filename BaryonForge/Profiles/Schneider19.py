@@ -24,6 +24,10 @@ model_params = ['cdelta', 'epsilon', 'a', 'n', #DM profle params
                 'zeta_theta_ej', 'zeta_theta_co', 'zeta_M_c', 'zeta_gamma', 'zeta_delta', #Concentration dep
                 
                 'A', 'M1', 'eta', 'eta_delta', 'tau', 'tau_delta', 'epsilon_h', #Star params
+                'mu_epsilon_h', #Mass dep
+                'M_epsilon_h', #Mass dep norm
+                'nu_A', 'nu_M1', 'nu_eta', 'nu_eta_delta', 'nu_tau', 'nu_tau_delta', 'nu_epsilon_h', #Redshift dep
+                'zeta_A', 'zeta_M1', 'zeta_eta', 'zeta_eta_delta', 'zeta_tau', 'zeta_tau_delta', 'zeta_epsilon_h', #Concentration dep
                 
                 'alpha_nt', 'nu_nt', 'gamma_nt', 'mean_molecular_weight' #Non-thermal pressure and gas density
                ]
@@ -125,12 +129,21 @@ class SchneiderProfiles(BaseBFGProfiles):
     
     def _get_star_frac(self, M_use, a, cosmo):
         
-        eta_cga = self.eta + self.eta_delta
-        tau_cga = self.tau + self.tau_delta
+        cdelta     = 1 if self.cdelta is None else self.cdelta
+        z          = 1/a - 1
+        A          = self.A         * (1 + z)**self.nu_A         * cdelta**self.zeta_A
+        eta        = self.eta       * (1 + z)**self.nu_eta       * cdelta**self.zeta_eta
+        tau        = self.tau       * (1 + z)**self.nu_tau       * cdelta**self.zeta_tau
+        eta_delta  = self.eta_delta * (1 + z)**self.nu_eta_delta * cdelta**self.zeta_eta_delta
+        tau_delta  = self.tau_delta * (1 + z)**self.nu_tau_delta * cdelta**self.zeta_tau_delta
+        M1         = self.M1        * (1 + z)**self.nu_M1        * cdelta**self.zeta_M1
+
+        eta_cga = eta + eta_delta
+        tau_cga = tau + tau_delta
         
         f_bar  = cosmo.cosmo.params.Omega_b/cosmo.cosmo.params.Omega_m
-        f_star = 2 * self.A * ((M_use/self.M1)**self.tau + (M_use/self.M1)**self.eta)**-1
-        f_cga  = 2 * self.A * ((M_use/self.M1)**tau_cga  + (M_use/self.M1)**eta_cga)**-1
+        f_star = 2 * A * ((M_use/M1)**tau      + (M_use/M1)**eta    )**-1
+        f_cga  = 2 * A * ((M_use/M1)**tau_cga  + (M_use/M1)**eta_cga)**-1
         
         #Star frac cannot be larger than baryon fraction. If it is 0 then the code fails
         #when taking logs of profiles. So give it a super small value instead.
@@ -141,6 +154,7 @@ class SchneiderProfiles(BaseBFGProfiles):
         f_sga  = np.clip(f_star - f_cga, 1e-10, None) 
         
         return f_star, f_cga, f_sga
+    
 
     def get_f_star(self, M_use, a, cosmo):
         return self._get_star_frac(M_use, a, cosmo)[0]
@@ -430,8 +444,11 @@ class Stars(SchneiderProfiles):
 
         R   = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
 
+        cdelta = 1 if self.cdelta is None else self.cdelta
+        eps_h  = self.epsilon_h * (M/self.M_epsilon_h)**self.mu_epsilon_h * (1 + z)**self.nu_epsilon_h * cdelta**self.zeta_epsilon_h
+        
         f_cga  = self.get_f_star_cen(M_use, a, cosmo)[:, None]
-        R_h    = self.epsilon_h * R[:, None]
+        R_h    = eps_h * R[:, None]
 
         r_integral = np.geomspace(self.r_min_int, self.r_max_int, self.r_steps)
         DM    = DarkMatter(**self.model_params, **self.hyper_params); setattr(DM, 'cutoff', 1e3) #Set large cutoff just for normalization calculation
