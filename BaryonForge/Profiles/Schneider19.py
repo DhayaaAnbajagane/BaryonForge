@@ -476,10 +476,10 @@ class Stars(SchneiderProfiles):
         R   = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
 
         cdelta = 1 if self.cdelta is None else self.cdelta
-        eps_h  = self.epsilon_h * (M/self.M_epsilon_h)**self.mu_epsilon_h * (1 + z)**self.nu_epsilon_h * cdelta**self.zeta_epsilon_h
+        eps_h  = self.epsilon_h * (M_use/self.M_epsilon_h)**self.mu_epsilon_h * (1 + z)**self.nu_epsilon_h * cdelta**self.zeta_epsilon_h
         
         f_cga  = self.get_f_star_cen(M_use, a, cosmo)[:, None]
-        R_h    = eps_h * R[:, None]
+        R_h    = (eps_h * R)[:, None]
 
         r_integral = np.geomspace(self.r_min_int, self.r_max_int, self.r_steps)
         DM    = DarkMatter(**self.model_params, **self.hyper_params); setattr(DM, 'cutoff', 1e3) #Set large cutoff just for normalization calculation
