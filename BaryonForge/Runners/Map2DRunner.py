@@ -1007,7 +1007,21 @@ class PaintProfilesAnisGrid(PaintProfilesGrid):
         #The Mtot_map here already has the contribution from dV * drho_m added to it.
         Mfrac    = np.divide(dV * drho_m, Mtot_map, out = np.zeros_like(Mtot_map), where = Mtot_map > 0)
         Mfrac   *= orig_map_flattened
-        new_map += self.background_val * self.global_tracer_fraction * Mfrac
+        
+        if self.background_filter is not None:
+            
+            Map_in     = self.GriddedMap.copy()
+            Map_in.map = Mfrac.reshape(orig_map.shape)
+
+            if self.GriddedMap.is2D:
+                bkg_map = self.background_filter.process2D(cosmo, Map_in).flatten()
+            else:
+                bkg_map = self.background_filter.process3D(cosmo, Map_in).flatten()
+        
+        else:
+            bkg_map = Mfrac * self.global_tracer_fraction * self.background_val
+
+        new_map  = new_map + bkg_map 
         new_map  = new_map.reshape(orig_map.shape)
 
         #Add a factor of the map pixel area/volume if requested by the user.
@@ -1016,4 +1030,4 @@ class PaintProfilesAnisGrid(PaintProfilesGrid):
             new_map *= np.power(self.GriddedMap.res, 2 if self.GriddedMap.is2D else 3)
 
         
-        return new_map    
+        return new_map

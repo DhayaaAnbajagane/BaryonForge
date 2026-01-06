@@ -8,7 +8,7 @@ __all__ = ['BaseBFGProfiles', 'hyper_params']
 
 
 hyper_params = ['mass_def', 'c_M_relation', 'use_fftlog_projection', 
-                'padding_hi_proj', 'padding_hi_proj', 'n_per_decade_proj',
+                'padding_lo_proj', 'padding_hi_proj', 'n_per_decade_proj',
                 'r_min_int', 'r_max_int', 'r_steps', 'xi_mm']
 
 class BaseBFGProfiles(ccl.halos.profiles.HaloProfile):
