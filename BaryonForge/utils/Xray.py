@@ -100,12 +100,12 @@ class EmissivityTable:
         assert np.all(a >= 0), "Query a values must be strictly non-negative."
 
         if self.pad_low_T:
-            assert np.all((T <= self.T_range[1])), f"T is greater than maximum tabulated value {self.T_range[0]}."
+            mask = (T <= self.T_range[1]); assert np.all(mask), f"Some T values ({T[mask]}) are greater than maximum tabulated value {self.T_range[1]}."
         else:
-            assert np.all((T >= self.T_range[0]) & (T <= self.T_range[1])), f"T outside tabulated range {self.T_range}."
+            mask = (T >= self.T_range[0]) & (T <= self.T_range[1]); assert np.all(mask), f"Some T values ({T[mask]}) outside tabulated range {self.T_range}."
 
-        assert np.all((Z >= self.Z_range[0]) & (Z <= self.Z_range[1])), f"Z outside tabulated range {self.Z_range}."
-        assert np.all((a >= self.a_range[0]) & (a <= self.a_range[1])), f"a outside tabulated range {self.a_range}."
+        mask = (Z >= self.Z_range[0]) & (Z <= self.Z_range[1]); assert np.all(mask), f"Some Z values ({Z[mask]}) outside tabulated range {self.Z_range}."
+        mask = (a >= self.a_range[0]) & (a <= self.a_range[1]); assert np.all(mask), f"Some a values ({a[mask]}) outside tabulated range {self.a_range}."
         
     
 
