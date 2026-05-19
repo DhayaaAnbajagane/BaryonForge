@@ -460,8 +460,9 @@ class BaryonifyGrid(DefaultRunnerGrid):
 
         
         cosmo = ccl.Cosmology(Omega_c = self.cosmo['Omega_m'] - self.cosmo['Omega_b'],
-                              Omega_b = self.cosmo['Omega_b'], h = self.cosmo['h'],
+                              Omega_b = self.cosmo['Omega_b'], h   = self.cosmo['h'],
                               sigma8  = self.cosmo['sigma8'],  n_s = self.cosmo['n_s'],
+                              w0      = self.cosmo['w0'],      wa  = self.cosmo['wa'],
                               matter_power_spectrum = 'linear')
         cosmo.compute_sigma()
 
@@ -703,8 +704,9 @@ class PaintProfilesGrid(DefaultRunnerGrid):
         """
 
         cosmo = ccl.Cosmology(Omega_c = self.cosmo['Omega_m'] - self.cosmo['Omega_b'],
-                              Omega_b = self.cosmo['Omega_b'], h = self.cosmo['h'],
+                              Omega_b = self.cosmo['Omega_b'], h   = self.cosmo['h'],
                               sigma8  = self.cosmo['sigma8'],  n_s = self.cosmo['n_s'],
+                              w0      = self.cosmo['w0'],      wa  = self.cosmo['wa'],
                               matter_power_spectrum = 'linear')
         cosmo.compute_sigma()
 
@@ -849,8 +851,9 @@ class PaintProfilesAnisGrid(PaintProfilesGrid):
         assert self.GriddedMap.is2D == True, "Can only paint tSZ on 2D maps. You have passed a 3D Map"
 
         cosmo = ccl.Cosmology(Omega_c = self.cosmo['Omega_m'] - self.cosmo['Omega_b'],
-                              Omega_b = self.cosmo['Omega_b'], h = self.cosmo['h'],
+                              Omega_b = self.cosmo['Omega_b'], h   = self.cosmo['h'],
                               sigma8  = self.cosmo['sigma8'],  n_s = self.cosmo['n_s'],
+                              w0      = self.cosmo['w0'],      wa  = self.cosmo['wa'],
                               matter_power_spectrum = 'linear')
         cosmo.compute_sigma()
 
