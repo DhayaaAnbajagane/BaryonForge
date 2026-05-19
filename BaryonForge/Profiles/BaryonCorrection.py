@@ -408,7 +408,7 @@ class BaryonificationClass(object):
                 displ[i] = table(p_in)
             
             inside   = (r < self.epsilon_max*R)
-            displ[i] = np.where(inside, displ, 0) #Set large-scale displacements to 0
+            displ[i] = np.where(inside, displ[i], 0) #Set large-scale displacements to 0
             
         #Handle dimensions so input dimensions are mirrored in the output
         if np.ndim(r) == 0:
