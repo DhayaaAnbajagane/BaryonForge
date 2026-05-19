@@ -23,4 +23,6 @@ c_cgs       = 2.99792458e8 * m_to_cm #m/s -> cm/s
 
 #Thermodynamic/abundance quantities
 Y         = 0.24 #Helium mass ratio
+X         = 1 - Y
 Pth_to_Pe = (4 - 2*Y)/(8 - 5*Y) #Factor to convert gas temp. to electron temp
+np_to_ne  = 1 + Y/(2*X)

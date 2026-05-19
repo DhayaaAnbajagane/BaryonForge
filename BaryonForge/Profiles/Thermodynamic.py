@@ -4,8 +4,9 @@ from scipy import interpolate, integrate
 
 from .Base import BaseBFGProfiles, hyper_params
 from .Schneider19 import Gas, DarkMatterBaryon, TwoHalo
-from ..utils.constants import (G, Msun_to_Kg, Mpc_to_m, Pth_to_Pe, m_p, m_to_cm, kb_cgs, sigma_T_cgs, c_cgs, m_e_cgs)
+from ..utils.constants import (G, Msun_to_Kg, Mpc_to_m, Pth_to_Pe, m_p, m_to_cm, kb_cgs, sigma_T_cgs, c_cgs, m_e_cgs, X)
 from ..utils.Tabulate import _set_parameter, _get_parameter
+from ..utils.Xray import EmissivityTable
 from .Schneider19 import model_params as S19_mp
 from .Arico20     import model_params as A20_mp
 from .Mead20      import model_params as M20_mp
@@ -19,7 +20,8 @@ Pressure_at_infinity = 1e-200
 
 
 __all__ = ['Pressure', 'NonThermalFrac', 'NonThermalFracGreen20',
-           'Temperature', 'ThermalSZ', 'ElectronPressure', 'GasNumberDensity']
+           'Temperature', 'ThermalSZ', 'ElectronPressure', 'GasNumberDensity', 
+           'Emissivity', 'Metallicity', 'XrayCounts', 'XraySkyCounts']
 
 
 class BaseThermodynamicProfile(BaseBFGProfiles):
@@ -498,6 +500,8 @@ class GasNumberDensity(BaseThermodynamicProfile):
         
         super().__init__(**kwargs)
         
+        assert 'mean_molecular_weight' in kwargs, "Please provide a mean_molecular_weight input"
+
         self.mean_molecular_weight = kwargs['mean_molecular_weight']
 
         #Convert from Msun --> n_proton
@@ -557,9 +561,9 @@ class Temperature(BaseThermodynamicProfile):
         - \( k_B \) is the Boltzmann constant (in eV).
     """
     
-    def __init__(self, pressure = None, gasnumberdensity = None, **kwargs):
+    def __init__(self, thermalpressure = None, gasnumberdensity = None, **kwargs):
         
-        self.Pressure = pressure
+        self.Pressure = thermalpressure
         self.GasNumberDensity = gasnumberdensity
         
         if self.Pressure is None: self.Pressure = Pressure(**kwargs) * (1 - NonThermalFrac(**kwargs))
@@ -743,37 +747,158 @@ class ThermalSZ(BaseThermodynamicProfile):
         prof  = prof * sigma_T_cgs/(m_e_cgs*c_cgs**2) #Convert to SZ (dimensionless units)
         prof  = prof * self.Pgas_to_Pe(cosmo, r_use, M_use, a) #Then convert from gas pressure to electron pressure
         
-        #Handle dimensions so input dimensions are mirrored in the output
-        if np.ndim(r) == 0: prof = np.squeeze(prof, axis=-1)
-        if np.ndim(M) == 0: prof = np.squeeze(prof, axis=0)
-        
         return prof
-    
-    
-    
-class XrayLuminosity(BaseThermodynamicProfile):
-    
-    
-    def __init__(self, temperature = None, gasnumberdensity = None, **kwargs):
 
-        raise NotImplementedError("Dhayaa: I have not yet worked on this profile properly. "
-                                  "So don't use this yet! It's missing cooling factor calibrations.")
+    def _projected(self, cosmo, r, M, a):
+        
+        #This is the 1/(1 + z) that shows up in the tracer kernel
+        return super()._projected(cosmo, r, M, a) * a
+    
 
-        self.Temperature      = temperature
-        self.GasNumberDensity = gasnumberdensity
-        
-        if self.Temperature is None: self.Temperature = Temperature(**kwargs)
-        if self.GasNumberDensity is None: self.GasNumberDensity = GasNumberDensity(**kwargs)
-        
-        super().__init__()
+class Metallicity(BaseThermodynamicProfile):
+    """
+    Class representing a radial metallicity profile for halo gas.
 
-        if hasattr(self.Temperature, 'prof4params'):
-            self.prof4params = self.Temperature.prof4params
-        elif hasattr(self.GasNumberDensity, 'prof4params'):
-            self.prof4params = self.GasNumberDensity.prof4params
-        else:
-            self.prof4params = self
+    This class implements a simple phenomenological metallicity model with an outer
+    metallicity floor and a central enhancement. The metallicity profile transitions
+    smoothly from a core-dominated value at small radii to an outer value at large
+    radii, with optional mass, redshift, and concentration dependence for each
+    component.
+
+    The profile is evaluated in real space as a function of comoving radius and halo
+    mass. The characteristic scale of the metallicity core is set relative to the halo
+    radius through ``theta_Z_core``.
+
+    See `BaseThermodynamicProfile` for more docstring details.
+
+    Notes
+    -----
+    The metallicity profile is given by
+
+    .. math::
+
+        Z(r) = Z_{\\rm out} + \\frac{Z_{\\rm core}}{1 + x^{\\gamma_{Z,\\rm core}}},
+
+    where
+
+    .. math::
+
+        x = \\frac{r}{\\theta_{Z,\\rm core} R},
+
+    and :math:`R` is the halo radius.
+
+    The profile parameters may vary with halo mass, redshift, and concentration as
+
+    .. math::
+
+        Z_{\\rm core}(M, z, c_\\Delta)
+        = Z_{\\rm core}
+        \\left(\\frac{M}{M_{Z,\\rm core}}\\right)^{\\mu_{Z,\\rm core}}
+        (1+z)^{\\nu_{Z,\\rm core}}
+        c_\\Delta^{\\zeta_{Z,\\rm core}},
+
+    .. math::
+
+        Z_{\\rm out}(M, z, c_\\Delta)
+        = Z_{\\rm out}
+        \\left(\\frac{M}{M_{Z,\\rm out}}\\right)^{\\mu_{Z,\\rm out}}
+        (1+z)^{\\nu_{Z,\\rm out}}
+        c_\\Delta^{\\zeta_{Z,\\rm out}},
+
+    .. math::
+
+        \\theta_{Z,\\rm core}(M, z, c_\\Delta)
+        = \\theta_{Z,\\rm core}
+        \\left(\\frac{M}{M_{\\theta Z,\\rm core}}\\right)^{\\mu_{\\theta Z,\\rm core}}
+        (1+z)^{\\nu_{\\theta Z,\\rm core}}
+        c_\\Delta^{\\zeta_{\\theta Z,\\rm core}}.
+
+    Here, :math:`c_\\Delta` is the halo concentration. If ``self.cdelta`` is ``None``,
+    this implementation defaults to :math:`c_\\Delta = 1`, effectively disabling any
+    concentration scaling.
+
+    Parameters
+    ----------
+    Z_out : float
+        Outer metallicity value approached at large radius.
+    Z_core : float
+        Amplitude of the central metallicity enhancement.
+    gamma_Z_core : float
+        Slope controlling how sharply the central metallicity enhancement transitions
+        to the outer metallicity.
+    theta_Z_core : float
+        Characteristic core size in units of halo radius.
+    mu_Z_out : float, optional
+        Power-law mass dependence of ``Z_out``. Default is 0.
+    mu_Z_core : float, optional
+        Power-law mass dependence of ``Z_core``. Default is 0.
+    mu_theta_Z_core : float, optional
+        Power-law mass dependence of ``theta_Z_core``. Default is 0.
+    nu_Z_out : float, optional
+        Power-law redshift dependence of ``Z_out`` through :math:`(1+z)`. Default is 0.
+    nu_Z_core : float, optional
+        Power-law redshift dependence of ``Z_core`` through :math:`(1+z)`. Default is 0.
+    nu_theta_Z_core : float, optional
+        Power-law redshift dependence of ``theta_Z_core`` through :math:`(1+z)`.
+        Default is 0.
+    M_Z_core : float, optional
+        Pivot mass for the scaling of ``Z_core``. Default is ``1e14``.
+    M_Z_out : float, optional
+        Pivot mass for the scaling of ``Z_out``. Default is ``1e14``.
+    M_theta_Z_core : float, optional
+        Pivot mass for the scaling of ``theta_Z_core``. Default is ``1e14``.
+    zeta_Z_core : float, optional
+        Power-law concentration dependence of ``Z_core``. Default is 0.
+    zeta_Z_out : float, optional
+        Power-law concentration dependence of ``Z_out``. Default is 0.
+    zeta_theta_Z_core : float, optional
+        Power-law concentration dependence of ``theta_Z_core``. Default is 0.
+    **kwargs
+        Additional keyword arguments passed to `BaseThermodynamicProfile`.
+    """
+    def __init__(self, Z_out, Z_core, gamma_Z_core, theta_Z_core,
+                 mu_Z_out = 0, mu_Z_core = 0, mu_theta_Z_core = 0,
+                 nu_Z_out = 0, nu_Z_core = 0, nu_theta_Z_core = 0,
+                 M_Z_core = 1e14, M_Z_out = 1e14, M_theta_Z_core = 1e14,
+                 zeta_Z_core = 0, zeta_Z_out = 0, zeta_theta_Z_core = 0,
+                 **kwargs):
         
+        super().__init__(**kwargs)
+        
+        self.Z_out              = Z_out
+        self.Z_core             = Z_core
+        self.theta_Z_core       = theta_Z_core
+        self.gamma_Z_core       = gamma_Z_core
+        self.mu_Z_out           = mu_Z_out
+        self.mu_Z_core          = mu_Z_core
+        self.mu_theta_Z_core    = mu_theta_Z_core
+        self.nu_Z_out           = nu_Z_out
+        self.nu_Z_core          = nu_Z_core
+        self.nu_theta_Z_core    = nu_theta_Z_core
+        self.M_Z_out            = M_Z_out
+        self.M_Z_core           = M_Z_core
+        self.M_theta_Z_core     = M_theta_Z_core
+        self.zeta_Z_out         = zeta_Z_out
+        self.zeta_Z_core        = zeta_Z_core
+        self.zeta_theta_Z_core  = zeta_theta_Z_core
+
+    def _get_Z_params(self, M, z):
+
+        cdelta   = 1 if self.cdelta is None else self.cdelta
+        
+        #Use M_c as the mass-normalization for simplicity sake
+        Z_core = self.Z_core * (M/self.M_Z_core)**self.mu_Z_core * (1 + z)**self.nu_Z_core * cdelta**self.zeta_Z_core
+        Z_out  = self.Z_out  * (M/self.M_Z_out)**self.mu_Z_out   * (1 + z)**self.nu_Z_out  * cdelta**self.zeta_Z_out 
+        
+        Z_out  = Z_out[:, None]
+        Z_core = Z_core[:, None]
+        
+        theta_Z_core  = (self.theta_Z_core * (M/self.M_theta_Z_core)**self.mu_theta_Z_core 
+                         * (1 + z)**self.nu_theta_Z_core  * cdelta**self.zeta_theta_Z_core)
+        theta_Z_core  = theta_Z_core[:, None]
+        
+        return Z_core, Z_out, theta_Z_core
+    
     
     def _real(self, cosmo, r, M, a):
         
@@ -785,13 +910,299 @@ class XrayLuminosity(BaseThermodynamicProfile):
 
         R = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
 
-        T   = self.Temperature.real(cosmo, r_use, M, a)
-        n   = self.GasNumberDensity.real(cosmo, r_use, M, a)
-        
-        prof = n**2*T
+        Z_core, Z_out, theta_Z_core = self._get_Z_params(M_use, z)
+
+        x = r_use/(theta_Z_core * R[:, None])
+        Z = Z_out + Z_core / (1 + x**self.gamma_Z_core)
+
+        prof  = Z #Rename just for consistency sake
         
         #Handle dimensions so input dimensions are mirrored in the output
         if np.ndim(r) == 0: prof = np.squeeze(prof, axis=-1)
         if np.ndim(M) == 0: prof = np.squeeze(prof, axis=0)
+
+        return prof
+    
+
+class Emissivity(BaseThermodynamicProfile):
+    """
+    Class representing the X-ray emissivity profile of halo gas.
+
+    This class computes the radial emissivity profile by combining a gas
+    temperature profile, a metallicity profile, and an external emissivity
+    lookup function or table. The emissivity is evaluated as a function of
+    the local gas temperature and metallicity at each radius.
+
+    The temperature and metallicity profiles can either be supplied directly
+    or automatically instantiated using the `Temperature` and `Metallicity`
+    classes with the provided keyword arguments.
+
+    See `BaseThermodynamicProfile` for more docstring details.
+
+    Notes
+    -----
+    The emissivity is computed by evaluating an external emissivity function
+    or table:
+
+    .. math::
+
+        \\epsilon(r) = \\Lambda(T(r), Z(r), a)
+
+    where:
+
+    - :math:`T(r)` is the gas temperature profile.
+    - :math:`Z(r)` is the gas metallicity profile.
+    - :math:`a` is the cosmological scale factor.
+    - :math:`\\Lambda` is the emissivity lookup function provided through
+      ``EmissivityTable``.
+
+    The emissivity table is expected to accept temperature, metallicity, and
+    scale factor as inputs and return the corresponding emissivity. This
+    output emissivity is intended to be in photon counts, though there is
+    no problem if the user supplies any quantity they want.
+
+    If the temperature profile defines the attribute ``prof4params`` (used
+    internally for parameter handling in some profile implementations), this
+    class forwards that attribute to ensure consistent parameter handling.
+
+    Parameters
+    ----------
+    EmissivityTable : callable
+        Function or lookup table returning emissivity as a function of
+        temperature, metallicity, and scale factor. It must have the form
+
+        ``EmissivityTable(T, Z, a)``
+
+        where ``T`` and ``Z`` are arrays matching the radial grid.
+    temperature : BaseThermodynamicProfile, optional
+        Temperature profile object used to compute :math:`T(r)`. If not
+        provided, a default `Temperature` profile is created using the
+        provided ``kwargs``.
+    metallicity : BaseThermodynamicProfile, optional
+        Metallicity profile object used to compute :math:`Z(r)`. If not
+        provided, a default `Metallicity` profile is created using the
+        provided ``kwargs``.
+    **kwargs
+        Additional keyword arguments passed to the internally constructed
+        `Temperature` and `Metallicity` profiles when they are not supplied.
+
+    """    
+    def __init__(self, EmissivityTable, temperature = None, metallicity = None, **kwargs):
+
+        self.Temperature     = temperature if temperature is not None else Temperature(**kwargs)
+        self.Metallicity     = metallicity if metallicity is not None else Metallicity(**kwargs)
+        self.EmissivityTable = EmissivityTable
+        
+        super().__init__()
+
+        if hasattr(self.Temperature, 'prof4params'):
+            self.prof4params = self.Temperature.prof4params
+        else:
+            self.prof4params = self
+        
+    
+    def _real(self, cosmo, r, M, a):
+        
+        r_use = np.atleast_1d(r)
+        M_use = np.atleast_1d(M)
+
+        z = 1/a - 1
+
+        R   = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
+
+        T   = self.Temperature.real(cosmo, r_use, M, a)
+        Z   = self.Metallicity.real(cosmo, r_use, M, a)
+        E   = self.EmissivityTable(T, Z, a)
+        
+        prof = E #Just renaming for simplicity
         
         return prof
+    
+
+class XrayCounts(BaseThermodynamicProfile):
+    """
+    Class representing the radial X-ray count-rate profile of halo gas.
+
+    This class computes the X-ray counts profile by combining an emissivity
+    profile with electron and hydrogen number density profiles. The resulting
+    profile is proportional to the local X-ray emission rate per unit volume,
+    assuming the standard dependence on the product of electron and hydrogen
+    number densities.
+
+    The emissivity profile must be supplied explicitly. If the electron or
+    hydrogen number density profiles are not provided, they are constructed
+    automatically using `GasNumberDensity`. By default, the hydrogen number
+    density is initialized with a mean molecular weight appropriate for hydrogen
+    of X = 0.76. The user can alter this by supplying their own profile.
+
+    See `BaseThermodynamicProfile` for more docstring details.
+
+    Notes
+    -----
+    The X-ray counts profile is computed as
+
+    .. math::
+
+        C(r) = n_e(r)\,n_{\\rm H}(r)\,\\Lambda(r),
+
+    where:
+
+    - :math:`n_e(r)` is the electron number density profile.
+    - :math:`n_{\\rm H}(r)` is the hydrogen number density profile.
+    - :math:`\\Lambda(r)` is the emissivity profile returned by ``self.Emissivity``.
+
+    In this implementation, the emissivity profile is produced by an
+    `Emissivity` object, which itself will depend on gas temperature,
+    metallicity, and scale factor.
+
+    Parameters
+    ----------
+    emissivity : BaseThermodynamicProfile
+        Emissivity profile object used to compute :math:`\\Lambda(r)`.
+    electronnumberdensity : BaseThermodynamicProfile, optional
+        Electron number density profile object used to compute :math:`n_e(r)`.
+        If not provided, a default `GasNumberDensity` profile is constructed
+        from ``kwargs``.
+    hydrogennumberdensity : BaseThermodynamicProfile, optional
+        Hydrogen number density profile object used to compute
+        :math:`n_{\\rm H}(r)`. If not provided, a default `GasNumberDensity`
+        profile is constructed from ``kwargs``, with
+        ``mean_molecular_weight = 1/X``.
+    **kwargs
+        Additional keyword arguments passed to internally constructed
+        `GasNumberDensity` profiles.
+
+    """
+
+    
+    def __init__(self, emissivity, electronnumberdensity = None, hydrogennumberdensity = None, **kwargs):
+
+        self.Emissivity            = emissivity
+        self.ElectronNumberDensity = electronnumberdensity
+        self.HydrogenNumberDensity = hydrogennumberdensity
+        
+        np_kwargs = {k:v for k,v in kwargs.items() if k != 'mean_molecular_weight'} #Drop this so we can replace it after (if user doesn't supply it)
+        if self.ElectronNumberDensity is None: self.ElectronNumberDensity = GasNumberDensity(**kwargs)
+        if self.HydrogenNumberDensity is None: self.HydrogenNumberDensity = GasNumberDensity(**np_kwargs, mean_molecular_weight = 1/X)
+        
+        super().__init__()
+
+        if hasattr(self.ElectronNumberDensity, 'prof4params'):
+            self.prof4params = self.ElectronNumberDensity.prof4params
+        elif hasattr(self.HydrogenNumberDensity, 'prof4params'):
+            self.prof4params = self.HydrogenNumberDensity.prof4params
+        else:
+            self.prof4params = self
+        
+    
+    def _real(self, cosmo, r, M, a):
+
+        r_use = np.atleast_1d(r)
+        M_use = np.atleast_1d(M)
+
+        z = 1/a - 1
+
+        R = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
+
+        ne  = self.ElectronNumberDensity.real(cosmo, r_use, M, a)
+        nH  = self.HydrogenNumberDensity.real(cosmo, r_use, M, a)
+        J   = self.Emissivity.real(cosmo, r_use, M, a)
+        
+        prof = ne * nH * J
+        
+        return prof
+
+
+class XraySkyCounts(BaseThermodynamicProfile):
+    """
+    Class representing the observable X-ray sky-counts profile of halo gas.
+
+    This class converts the intrinsic X-ray volume emissivity/count profile into
+    a profile more directly suited for observed X-ray surface brightness or sky
+    counts. It wraps an `XrayCounts` profile and applies the appropriate geometric
+    and cosmological conversion factors so that the resulting quantity corresponds
+    to an observed line-of-sight sky signal rather than a purely local volumetric
+    emission rate.
+
+    See `BaseThermodynamicProfile` for more docstring details.
+
+    Notes
+    -----
+    The underlying `XrayCounts` profile is first evaluated as a local volumetric
+    quantity proportional to
+
+    .. math::
+
+        C(r) = n_e(r)\,n_{\\rm H}(r)\,\\Lambda(r),
+
+    where :math:`n_e` is the electron number density, :math:`n_{\\rm H}` is the
+    hydrogen number density, and :math:`\\Lambda` is the emissivity profile.
+
+    This class then applies a sequence of conversion factors to obtain a profile
+    appropriate for observable sky counts:
+
+    .. math::
+
+        C_{\\rm sky}(r)
+        =
+        C(r)
+        \\times (\\mathrm{Mpc \\to cm})
+        \\times a^4
+        \\times \\frac{1}{4\\pi}.
+
+    These factors account for:
+
+    - **Line-of-sight unit conversion**: the projected integral is performed in
+      comoving Mpc, but observational X-ray quantities are typically expressed
+      using cgs length units, so the profile is multiplied by the conversion from
+      Mpc to cm.
+    - **Cosmological surface-brightness dimming**: the observed signal is reduced
+      by a factor of :math:`(1+z)^{-4} = a^4`.
+    - **Solid-angle conversion**: the factor :math:`1/(4\pi)` converts the
+      isotropically emitted volumetric signal into a per-steradian sky quantity.
+
+    The resulting profile is therefore more appropriate for comparison with
+    observed X-ray surface brightness or sky-count measurements than the raw
+    `XrayCounts` profile.
+
+    Parameters
+    ----------
+    xraycounts : BaseThermodynamicProfile, optional
+        Intrinsic X-ray counts profile to be converted into sky counts.
+    **kwargs
+        Additional keyword arguments passed to `BaseThermodynamicProfile` and,
+        when needed, to the internally constructed `XrayCounts` profile.
+    """
+
+    def __init__(self, xraycounts = None, **kwargs):
+        
+        self.XrayCounts = xraycounts
+
+        super().__init__(**kwargs)
+
+        if hasattr(self.XrayCounts, 'prof4params'):
+            self.prof4params = self.XrayCounts.prof4params
+        else:
+            self.prof4params = self
+    
+    
+    def _real(self, cosmo, r, M, a):
+        
+        r_use = np.atleast_1d(r)
+        M_use = np.atleast_1d(M)
+
+        z     = 1/a - 1
+        R     = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
+
+        #Now a series of units changes to the projected profile.
+        prof  = self.XrayCounts.real(cosmo, r_use, M_use, a) #generate profile
+        prof  = prof * (Mpc_to_m * m_to_cm) #Line-of-sight integral is done in Mpc, we want cm
+        prof  = prof * a**3 #Cosmic dimming causes a 1/(1 + z)^3 factor (we use counts, not energy, so one factor is missing)
+        prof  = prof * 1/(4*np.pi) #Converting 1/cm^3 into 1/steradians
+        
+        return prof
+    
+    def _projected(self, cosmo, r, M, a):
+        
+        #This is the 1/(1 + z) that shows up in the tracer kernel
+        return super()._projected(cosmo, r, M, a) * a
