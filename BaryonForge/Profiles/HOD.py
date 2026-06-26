@@ -1,6 +1,6 @@
 """
-Adapted from code written by pranjalrs,
-model from Shivam Pandey
+Adapted from code written by Pranjal R.S,
+with model from Shivam Pandey
 """
 
 import numpy as np
@@ -17,9 +17,10 @@ __all__ = ['model_params', 'HODTransformerPandey25']
 
 
 model_params = ['Profile', 'halo_m_to_mtot', 'Mstar_th', 'M1_fshmr', 'log10M1_a_fshmr', 
-				'Mstar0_fshmr', 'log10Mstar0_a_fshmr', 'beta_fshmr', 'beta_a_fshmr', 'delta_shmr',
-				'delta_a_shmr', 'gamma_fshmr', 'gamma_a_fshmr', 'siglogMstar_Ncen', 
-				'Bsat_Nsat', 'betasat_Nsat', 'Bcut_Nsat', 'betacut_Nsat', 'alphasat_Nsat']
+				'Mstar0_fshmr', 'log10Mstar0_a_fshmr', 'beta_fshmr', 'beta_a_fshmr', 'delta_fshmr',
+				'delta_a_fshmr', 'gamma_fshmr', 'gamma_a_fshmr', 'siglogMstar_Ncen', 
+				'Bsat_Nsat', 'betasat_Nsat', 'Bcut_Nsat', 'betacut_Nsat', 'alphasat_Nsat',
+				'fc_0', 'fc_p', 'a_pivot', 'ns_independent']
 
 class HODTransformerPandey25(Base.BaseBFGProfiles):
 
@@ -46,15 +47,15 @@ class HODTransformerPandey25(Base.BaseBFGProfiles):
 		"""
 		Returns halo mass given stellar mass using the inverse of the stellar-to-halo mass relation
 		"""
-		beta_SHMR  = self.beta_fshmr  + self.beta_a_fshmr  * (a-1)
-		delta_SHMR = self.delta_shmr  + self.delta_a_shmr  * (a-1)
-		gamma_SHMR = self.gamma_fshmr + self.gamma_a_fshmr * (a-1)
+		beta_SHMR   = self.beta_fshmr  + self.beta_a_fshmr  * (a-1)
+		delta_fSHMR = self.delta_fshmr + self.delta_a_fshmr  * (a-1)
+		gamma_SHMR  = self.gamma_fshmr + self.gamma_a_fshmr * (a-1)
 
-		M1         = self.M1_fshmr     * np.power(10, self.log10M1_a_fshmr     * (a - 1))
-		Mstar0     = self.Mstar0_fshmr * np.power(10, self.log10Mstar0_a_fshmr * (a - 1))
+		M1     = self.M1_fshmr     * np.power(10, self.log10M1_a_fshmr     * (a - 1))
+		Mstar0 = self.Mstar0_fshmr * np.power(10, self.log10Mstar0_a_fshmr * (a - 1))
 
 		x = Mstar/Mstar0
-		log10_inv_fSHMR = np.log10(M1) + beta_SHMR* np.log10(x) + (x)**delta_SHMR/(1 + x**-gamma_SHMR) - 0.5
+		log10_inv_fSHMR = np.log10(M1) + beta_SHMR* np.log10(x) + (x)**delta_fSHMR/(1 + x**-gamma_SHMR) - 0.5
 
 		return np.power(10, log10_inv_fSHMR)
 	
@@ -174,13 +175,28 @@ class HODGalaxiesPandey25(HODTransformerPandey25, ccl.halos.profiles.hod.HaloPro
 
 	model_param_names = model_params
 
-	def __init__(self, satellitestars, halo_m_to_mtot, **kwargs):
+	def __init__(self, satellitestars, halo_m_to_mtot, fc_0 = 1.0, fc_p = 0.0, a_pivot = 1.0, ns_independent = False, **kwargs):
+		
 		self.SatelliteStars = satellitestars
 		HODTransformerPandey25.__init__(self, Profile = None, halo_m_to_mtot = halo_m_to_mtot, **kwargs)
+
+		#HOD completeness parameters, following the CCL "HaloProfileHOD" implementation
+		self.fc_0 			= fc_0,
+		self.fc_p 			= fc_p
+		self.a_pivot 		= a_pivot
+		self.ns_independent = ns_independent
+
 
 	def update_parameters(self, **kwargs):
 		raise NotImplementedError("BFG profiles don't support in-place parameter updating. Please initialize a new class instance instead.")
 	
+
+	def _fc(self, a):
+		
+		#Observed fraction of centrals
+		return self.fc_0 + self.fc_p * (a - self.a_pivot)
+	
+
 	def _real(self, cosmo, r, M, a):
 
 		return self._fftlog_wrap(cosmo, r, M, a, fourier_out=False)
@@ -195,11 +211,17 @@ class HODGalaxiesPandey25(HODTransformerPandey25, ccl.halos.profiles.hod.HaloPro
 		"""
 		Ncen = self.get_N_cen(M, a, cosmo, self.Mstar_th)
 		Nsat = self.get_N_sat(M, a, cosmo, self.Mstar_th)
+		fc 	 = self._fc(a)
 		
 		if len(Ncen) > 1:
 			Ncen, Nsat = Ncen[:, None], Nsat[:, None]
 		
-		return Ncen + Nsat * self._usat_fourier(cosmo, k, M, a)
+		if self.ns_independent:
+			prof = Ncen * fc + Nsat * self._usat_fourier(cosmo, k, M, a)
+		else:
+			prof = Ncen * (fc + Nsat * self._usat_fourier(cosmo, k, M, a))
+
+		return prof
 
 
 	def _usat_fourier(self, cosmo, k, M, a):
@@ -223,14 +245,18 @@ class HODGalaxiesPandey25(HODTransformerPandey25, ccl.halos.profiles.hod.HaloPro
 		
 		Ncen = self.get_N_cen(M, a, cosmo, self.Mstar_th)
 		Nsat = self.get_N_sat(M, a, cosmo, self.Mstar_th)
+		fc 	 = self._fc(a)
 		
 		if len(Ncen) > 1:
 			Ncen, Nsat = Ncen[:, None], Nsat[:, None]
 
-		# NFW profile
+		#Modified NFW profile
 		uk = self._usat_fourier(cosmo, k, M, a)
 
-		prof = 2*Ncen*Nsat*uk + (Nsat*uk)**2
+		if self.ns_independent:
+			prof = 2*Ncen*Nsat*uk*fc + (Nsat*uk)**2
+		else:
+			prof = Ncen * (2*Nsat*uk*fc + (Nsat*uk)**2)
 
 		if np.ndim(k) == 0: prof = np.squeeze(prof, axis=-1)
 		if np.ndim(M) == 0: prof = np.squeeze(prof, axis=0)
@@ -256,6 +282,11 @@ class HODGalaxiesPandey25(HODTransformerPandey25, ccl.halos.profiles.hod.HaloPro
 		def integ(M):
 			Nc = self.get_N_cen(M, a, cosmo, self.Mstar_th)
 			Ns = self.get_N_sat(M, a, cosmo, self.Mstar_th)
-			return Nc + Ns
+			fc = self._fc(a)
+			
+			if self.ns_independent:
+				return Nc*fc + Ns
+			else:
+				return Nc*(fc + Ns)
 		
 		return hmc.integrate_over_massfunc(integ, cosmo, a)
