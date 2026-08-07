@@ -379,7 +379,8 @@ class TwoHalo(SchneiderProfiles):
         else:
             xi_mm   = self.xi_mm(r_use, a)
 
-        delta_c = 1.686/ccl.growth_factor(cosmo, a)
+        #Bias via Eqn 12 in https://arxiv.org/pdf/astro-ph/9901122
+        delta_c = 1.686
         nu_M    = delta_c / ccl.sigmaM(cosmo, M_use, a)
         bias_M  = 1 + (self.q*nu_M**2 - 1)/delta_c + 2*self.p/delta_c/(1 + (self.q*nu_M**2)**self.p)
 

@@ -1,6 +1,7 @@
 import numpy as np
 import pyccl as ccl
 from scipy import interpolate, integrate
+import warnings
 
 from .Base import BaseBFGProfiles, hyper_params
 from .Schneider19 import Gas, DarkMatterBaryon, TwoHalo
@@ -8,10 +9,12 @@ from ..utils.constants import (G, Msun_to_Kg, Mpc_to_m, Pth_to_Pe, m_p, m_to_cm,
 from ..utils.Tabulate import _set_parameter, _get_parameter
 from ..utils.Xray import EmissivityTable
 from .Schneider19 import model_params as S19_mp
+from .Schneider25 import model_params as S25_mp
 from .Arico20     import model_params as A20_mp
 from .Mead20      import model_params as M20_mp
+from . import Schneider19 as S19, Schneider25 as S25, Arico20 as A20, Mead20 as M20
 
-model_params = list({*S19_mp, *A20_mp, *M20_mp})
+model_params = list({*S19_mp, *S25_mp, *A20_mp, *M20_mp})
 
 #Technically P(r -> infty) is zero, but we  may need finite
 #value for numerical reasons (interpolator). This is a
@@ -134,7 +137,19 @@ class Pressure(BaseThermodynamicProfile):
     model_param_names = model_params
     
     def __init__(self, gas = None, darkmatterbaryon = None, **kwargs):
-        
+
+        if isinstance(gas, S25.Gas):
+            warnings.warn(
+                "You passed in the `Gas` class from the Schneider25 model. However, that class " \
+                "contains cold gas via the Inner Gas profile, which does not contribute to thermal pressure. " \
+                "Please pass in the HotGas profile instead.")
+
+        if isinstance(gas, A20.BoundGas):
+            warnings.warn(
+                "You passed in the `BoundGas` class from the Arico20 model. However, that class " \
+                "contains truncations at large radii that lead to undesirable features in the pressure profile. " \
+                "Please pass in the BoundGasUntruncated profile instead.")
+
         self.Gas = gas
         self.DarkMatterBaryon = darkmatterbaryon
         
