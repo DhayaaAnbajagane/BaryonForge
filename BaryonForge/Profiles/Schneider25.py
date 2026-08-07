@@ -199,6 +199,16 @@ class Schneider25Profiles(BaseBFGProfiles):
     def get_f_gas(self, M, a, cosmo):
         f = self._get_gas_frac(self, M, a, cosmo)
         return f[0] + f[1]
+
+
+    def _get_dm_eps(self, M_use, a, cosmo):
+
+        nu  = 1.686/ccl.sigmaM(cosmo, M_use, a)
+        eps = self.epsilon0 - self.epsilon1 * nu #The R200c version of Eqn 6 in https://arxiv.org/pdf/1401.1216. 
+                                                    #Eqn 2.8 in https://arxiv.org/pdf/2507.07892 has the wrong sign
+        eps = np.clip(eps, 1e-3, None) #Guard against r_t == 0.
+
+        return eps
         
         
 class DarkMatter(Schneider25Profiles):
@@ -270,8 +280,7 @@ class DarkMatter(Schneider25Profiles):
         c   = np.where(np.isfinite(c), c, 1) #Set default to r_s = R200c if c200c broken (normally for low mass obj in some cosmologies)
         R   = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
         r_s = R/c
-        nu  = 1.686/ccl.sigmaM(cosmo, M_use, a)
-        eps = self.epsilon0 + self.epsilon1 * nu
+        eps = self._get_dm_eps(M_use, a, cosmo)
         r_t = R*eps
         
         r_s, r_t = r_s[:, None], r_t[:, None]
@@ -372,7 +381,8 @@ class TwoHalo(Schneider25Profiles):
         else:
             xi_mm   = self.xi_mm(r_use, a)
 
-        delta_c = 1.686/ccl.growth_factor(cosmo, a)
+        #Bias via Eqn 12 in https://arxiv.org/pdf/astro-ph/9901122
+        delta_c = 1.686
         nu_M    = delta_c / ccl.sigmaM(cosmo, M_use, a)
         bias_M  = 1 + (self.q*nu_M**2 - 1)/delta_c + 2*self.p/delta_c/(1 + (self.q*nu_M**2)**self.p)
         f_excl  = 1 - np.exp(-self.alpha_excl * np.clip(r_use / R[:, None], 0, 30)) #Clip to avoid overflow
@@ -562,8 +572,7 @@ class HotGas(Schneider25Profiles):
         #Get gas params
         beta, theta_c, delta, gamma, alpha = self._get_gas_params(M_use, z)
         R_c = theta_c*R[:, None]
-        nu  = 1.686/ccl.sigmaM(cosmo, M_use, a)[:, None]
-        eps = self.epsilon0 + self.epsilon1 * nu
+        eps = self._get_dm_eps(M_use, a, cosmo)[:, None]
         R_t = eps * R[:, None]
         
         u = r_use/R_c
@@ -641,7 +650,7 @@ class InnerGas(Schneider25Profiles):
         M_use = np.atleast_1d(M)
 
         z = 1/a - 1
-
+        h = cosmo['h']
         R = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
 
         f_hga, f_iga  = self._get_gas_frac(M_use, a, cosmo)
@@ -654,8 +663,13 @@ class InnerGas(Schneider25Profiles):
         #then the profile depends critically on this minimum radius. We set this
         #as a free parameter, but its value is generally 5kpc. This is the
         #choice made in Schneider+2025 (private comm.)
+        #
+        #Below this scale, I need to set the profile to be h^3. This is an odd choice
+        #to me but is the chosen definition of Schneider+25, so I mimic it here
+        #in the interest of reproducability of the original results.
         prof_integral = np.power(r_integral, -3) * np.exp(-r_integral/R[:, None])
-        prof_integral = np.where(r_integral < self.r_min_iga, 0, prof_integral)
+        weight        = 0.5 * (1 + np.tanh(np.log10(r_integral/self.r_min_iga)/0.02))
+        prof_integral = (1 - weight)*h**3 + weight*prof_integral
         Normalization = np.trapz(4 * np.pi * r_integral**2 * prof_integral, r_integral, axis = -1)[:, None]
 
         DM    = DarkMatter(**self.model_params); setattr(DM, 'cutoff', 1e3) #Set large cutoff just for normalization calculation
@@ -666,9 +680,10 @@ class InnerGas(Schneider25Profiles):
         arg   = (r_use[None, :] - self.cutoff)
         arg   = np.where(arg > 30, np.inf, arg) #This is to prevent an overflow in the exponential
         kfac  = 1/( 1 + np.exp(2*arg) ) #Extra exponential cutoff
-        prof  = np.power(r_use, -2) * np.exp(-r_use/R[:, None]) * kfac
+        prof  = np.power(r_use, -3) * np.exp(-r_use/R[:, None]) * kfac
+        wgt   = 0.5 * (1 + np.tanh(np.log10(r_use/self.r_min_iga)/0.02))
+        prof  = (1 - wgt)*h**3 + wgt*prof
         prof *= f_iga[:, None]*M_tot/Normalization
-        prof  = np.where(r_use < self.r_min_iga, 0, prof) #Need to set physical minimum radii
         
         #Handle dimensions so input dimensions are mirrored in the output
         if np.ndim(r) == 0: prof = np.squeeze(prof, axis=-1)
@@ -806,9 +821,9 @@ class CollisionlessMatter(Schneider25Profiles):
     def _get_Qis(self, M, a, cosmo):
 
         z  = 1/a - 1
-        Q0 = self.q0 * np.power(1 + z, self.nu_q0)
-        Q1 = self.q1 * np.power(1 + z, self.nu_q1)
-        Q2 = self.q2 * np.power(1 + z, self.nu_q2)
+        Q0 = self.q0 + self.nu_q0 * z
+        Q1 = self.q1 + self.nu_q1 * z
+        Q2 = self.q2 + self.nu_q2 * z
 
         return Q0, Q1, Q2
     
@@ -840,9 +855,8 @@ class CollisionlessMatter(Schneider25Profiles):
         Q0, Q1, Q2    = self._get_Qis(M_use, a, cosmo)
 
         f_clm      = 1 - cosmo.cosmo.params.Omega_b/cosmo.cosmo.params.Omega_m + f_sga[:, None]
-        nu         = 1.686/ccl.sigmaM(cosmo, M_use, a)[:, None]
-        eps        = self.epsilon0 + self.epsilon1 * nu
-        rstep      = eps / self.epsilon0
+        eps        = self._get_dm_eps(M_use, a, cosmo)
+        rstep      = eps / self.epsilon0 * R
         
         rho_i      = self.DarkMatter.real(cosmo, r_integral, M_use, a)
         rho_cga    = self.Stars.real(cosmo, r_integral, M_use, a)
@@ -867,16 +881,17 @@ class CollisionlessMatter(Schneider25Profiles):
         for m_i in range(M_i.shape[0]):
             
             with np.errstate(over = 'ignore'):
-                 
-                xi0  = Q0 / (1 + np.power(r_integral/rstep, self.nstep))
-                xi1  = Q1 * f_cga[m_i] * (M_cga[m_i] / M_i[m_i] - 1)
-                xi2  = Q1 * f_iga[m_i] * (M_iga[m_i] / M_i[m_i] - 1)
-                xi3  = Q2 * f_hga[m_i] * (M_hga[m_i] / M_i[m_i] - 1)
+
+                #The masses (M_cga, M_iga) already contain the factor of f_cga, so we shouldn't remultiply
+                xi0  = Q0 / (1 + np.power(r_integral/rstep[m_i], self.nstep))
+                xi1  = Q1 * (M_cga[m_i] / M_i[m_i] - f_cga[m_i])
+                xi2  = Q1 * (M_iga[m_i] / M_i[m_i] - f_iga[m_i])
+                xi3  = Q2 * (M_hga[m_i] / M_i[m_i] - f_hga[m_i])
                 relaxation_fraction = xi0 + xi1 + xi2 + xi3 + 1
 
                 #Schneider+25 defines relaxation fraction as r_i/r_f so the bottom should indeed be multiplied,
                 #and not divided like we do in Schneider+19, where the definition was r_f/r_i.
-                ln_M_clm[m_i] = np.log(f_clm[m_i]) + ln_M_NFW[m_i](np.log(r_integral * relaxation_fraction[m_i]))
+                ln_M_clm[m_i] = np.log(f_clm[m_i]) + ln_M_NFW[m_i](np.log(r_integral * relaxation_fraction))
 
         ln_M_clm = interpolate.CubicSpline(np.log(r_integral), ln_M_clm, axis = -1, extrapolate = False)
         log_der  = ln_M_clm.derivative(nu = 1)(np.log(r_use))
