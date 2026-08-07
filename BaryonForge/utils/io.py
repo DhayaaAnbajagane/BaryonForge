@@ -1,6 +1,6 @@
 import numpy as np
 import healpy as hp
-import warnings
+import warnings, copy
 
 __all__ = ['HaloLightConeCatalog', 'HaloNDCatalog', 'LightconeShell', 
            'GriddedMap', 'ParticleSnapshot']
@@ -512,6 +512,8 @@ class GriddedMap(object):
         """
 
         return self.cosmo
+
+    def copy(self): return copy.deepcopy(self)
 
 
 class ParticleSnapshot(object):

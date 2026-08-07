@@ -29,8 +29,10 @@ model_params = ['cdelta', 'epsilon', 'a', 'n', #DM profle params
                 'nu_A', 'nu_M1', 'nu_eta', 'nu_eta_delta', 'nu_tau', 'nu_tau_delta', 'nu_epsilon_h', #Redshift dep
                 'zeta_A', 'zeta_M1', 'zeta_eta', 'zeta_eta_delta', 'zeta_tau', 'zeta_tau_delta', 'zeta_epsilon_h', #Concentration dep
                 
+                
                 'alpha_nt', 'nu_nt', 'gamma_nt', 'mean_molecular_weight' #Non-thermal pressure and gas density
                ]
+
 
 class SchneiderProfiles(BaseBFGProfiles):
     """

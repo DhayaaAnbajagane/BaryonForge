@@ -835,7 +835,7 @@ class PaintProfilesGrid(DefaultRunnerGrid):
 class PaintProfilesAnisGrid(PaintProfilesGrid):
 
     def __init__(self, HaloNDCatalog, GriddedMap, epsilon_max, model, Tracer_model, Mtot_model, 
-                 background_val, global_tracer_fraction, 
+                 background_val, global_tracer_fraction, background_filter = None,
                  mass_def = ccl.halos.massdef.MassDef(200, 'critical'), 
                  include_pixel_size = True, use_ellipticity = False, verbose = True):
         
@@ -843,6 +843,7 @@ class PaintProfilesAnisGrid(PaintProfilesGrid):
         self.Mtot_model     = Mtot_model
         self.background_val = background_val
         self.global_tracer_fraction = global_tracer_fraction
+        self.background_filter      = background_filter
         super().__init__(HaloNDCatalog, GriddedMap, epsilon_max, model, use_ellipticity, mass_def, include_pixel_size, verbose)
     
     
@@ -884,6 +885,8 @@ class PaintProfilesAnisGrid(PaintProfilesGrid):
             dV = np.power(res, 3)
             rho_halos = np.average(Mtot_map)
 
+        rho_halos = np.sum(self.HaloNDCatalog.cat['M']) / (dV * self.GriddedMap.data.size)
+        
         #Now add the background contribution (we so far only have the halo contribution)
         #Force the background to be positive, incase the pasted density is larger than the box size.
         rho_m     = cosmo.rho_x(1/(self.HaloNDCatalog.redshift + 1), species = 'matter', is_comoving = True)
@@ -1007,7 +1010,21 @@ class PaintProfilesAnisGrid(PaintProfilesGrid):
         #The Mtot_map here already has the contribution from dV * drho_m added to it.
         Mfrac    = np.divide(dV * drho_m, Mtot_map, out = np.zeros_like(Mtot_map), where = Mtot_map > 0)
         Mfrac   *= orig_map_flattened
-        new_map += self.background_val * self.global_tracer_fraction * Mfrac
+        
+        if self.background_filter is not None:
+            
+            Map_in     = self.GriddedMap.copy()
+            Map_in.map = Mfrac.reshape(orig_map.shape)
+
+            if self.GriddedMap.is2D:
+                bkg_map = self.background_filter.process2D(cosmo, Map_in).flatten()
+            else:
+                bkg_map = self.background_filter.process3D(cosmo, Map_in).flatten()
+        
+        else:
+            bkg_map = Mfrac * self.global_tracer_fraction * self.background_val
+
+        new_map  = new_map + bkg_map 
         new_map  = new_map.reshape(orig_map.shape)
 
         #Add a factor of the map pixel area/volume if requested by the user.
@@ -1016,4 +1033,4 @@ class PaintProfilesAnisGrid(PaintProfilesGrid):
             new_map *= np.power(self.GriddedMap.res, 2 if self.GriddedMap.is2D else 3)
 
         
-        return new_map    
+        return new_map

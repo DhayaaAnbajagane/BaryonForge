@@ -116,6 +116,7 @@ class Identity(BaseBFGProfiles):
     
     _projected = _real
     _fourier   = _real
+    _projected_realspace = _real
 
     def __str_prf__(self): return "Identity"
     def __str_par__(self): return  f"()"
@@ -155,6 +156,7 @@ class Zeros(BaseBFGProfiles):
     
     _projected = _real
     _fourier   = _real
+    _projected_realspace = _real
 
     def __str_prf__(self): return "Zeros"
     def __str_par__(self): return  f"()"
