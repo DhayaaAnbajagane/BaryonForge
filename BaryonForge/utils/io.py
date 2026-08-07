@@ -77,6 +77,11 @@ class HaloLightConeCatalog(object):
         self.cat   = cat
 
         keys = cosmo.keys()
+
+        if 'wa' not in keys:
+            cosmo['wa'] = 0.0
+            warnings.warn("Value of wa not provided. Assuming LCDM value of wa = 0")
+
         if not (('Omega_m' in keys) & ('sigma8' in keys) & ('h' in keys) &
                 ('Omega_b' in keys) & ('n_s' in keys) & ('w0' in keys)):
 
@@ -219,6 +224,11 @@ class HaloNDCatalog(object):
         self.redshift = redshift
 
         keys = cosmo.keys()
+
+        if 'wa' not in keys:
+            cosmo['wa'] = 0.0
+            warnings.warn("Value of wa not provided. Assuming LCDM value of wa = 0")
+
         if not (('Omega_m' in keys) & ('sigma8' in keys) & ('h' in keys) &
                 ('Omega_b' in keys) & ('n_s' in keys) & ('w0' in keys)):
 
@@ -355,6 +365,11 @@ class LightconeShell(object):
 
         
         keys = cosmo.keys()
+
+        if 'wa' not in keys:
+            cosmo['wa'] = 0.0
+            warnings.warn("Value of wa not provided. Assuming LCDM value of wa = 0")
+
         if not (('Omega_m' in keys) & ('sigma8' in keys) & ('h' in keys) &
                 ('Omega_b' in keys) & ('n_s' in keys) & ('w0' in keys)):
 
@@ -470,6 +485,11 @@ class GriddedMap(object):
         self.inds = np.arange(self.grid[0].size).reshape(self.grid[0].shape)
 
         keys = cosmo.keys()
+
+        if 'wa' not in keys:
+            cosmo['wa'] = 0.0
+            warnings.warn("Value of wa not provided. Assuming LCDM value of wa = 0")
+
         if not (('Omega_m' in keys) & ('sigma8' in keys) & ('h' in keys) &
                 ('Omega_b' in keys) & ('n_s' in keys) & ('w0' in keys)):
 
@@ -603,6 +623,11 @@ class ParticleSnapshot(object):
         self.is2D = True if z is None else False
 
         keys = cosmo.keys()
+
+        if 'wa' not in keys:
+            cosmo['wa'] = 0.0
+            warnings.warn("Value of wa not provided. Assuming LCDM value of wa = 0")
+
         if not (('Omega_m' in keys) & ('sigma8' in keys) & ('h' in keys) &
                 ('Omega_b' in keys) & ('n_s' in keys) & ('w0' in keys)):
 

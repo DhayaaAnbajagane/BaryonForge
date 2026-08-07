@@ -280,7 +280,7 @@ class BaryonifyShell(DefaultRunner):
         cosmo = ccl.Cosmology(Omega_c = self.cosmo['Omega_m'] - self.cosmo['Omega_b'],
                               Omega_b = self.cosmo['Omega_b'], h   = self.cosmo['h'],
                               sigma8  = self.cosmo['sigma8'],  n_s = self.cosmo['n_s'],
-                              w0      = self.cosmo['w0'],
+                              w0      = self.cosmo['w0'],      wa  = self.cosmo['wa'],
                               matter_power_spectrum = 'linear')
         cosmo.compute_sigma()
 
@@ -416,7 +416,7 @@ class PaintProfilesShell(DefaultRunner):
         cosmo = ccl.Cosmology(Omega_c = self.cosmo['Omega_m'] - self.cosmo['Omega_b'],
                               Omega_b = self.cosmo['Omega_b'], h   = self.cosmo['h'],
                               sigma8  = self.cosmo['sigma8'],  n_s = self.cosmo['n_s'],
-                              w0      = self.cosmo['w0'],
+                              w0      = self.cosmo['w0'],      wa  = self.cosmo['wa'],
                               matter_power_spectrum = 'linear')
         cosmo.compute_sigma()
 
@@ -539,7 +539,7 @@ class PaintProfilesAnisShell(DefaultRunner):
         cosmo = ccl.Cosmology(Omega_c = self.cosmo['Omega_m'] - self.cosmo['Omega_b'],
                               Omega_b = self.cosmo['Omega_b'], h   = self.cosmo['h'],
                               sigma8  = self.cosmo['sigma8'],  n_s = self.cosmo['n_s'],
-                              w0      = self.cosmo['w0'],
+                              w0      = self.cosmo['w0'],      wa  = self.cosmo['wa'],
                               matter_power_spectrum = 'linear')
         cosmo.compute_sigma()
 

@@ -2,7 +2,7 @@ import BaryonForge as bfg
 import numpy as np, healpy as hp
 import pyccl as ccl
 
-from defaults import bpar_S19, bpar_A20, ccl_dict, h
+from defaults import bpar_S19, bpar_S25, bpar_A20, ccl_dict, h
 cosmo = ccl.Cosmology(**ccl_dict)
 cosmo.compute_growth()
 
@@ -20,6 +20,29 @@ def test_schneider19():
         bfg.Profiles.Schneider19.DarkMatterOnly(**bpar_S19).real(cosmo, R, M, a)
         bfg.Profiles.Schneider19.DarkMatterOnly(**bpar_S19).projected(cosmo, R, M, a)
         bfg.Profiles.Schneider19.DarkMatterOnly(**bpar_S19).fourier(cosmo, k, M, a)
+    
+
+    X = bfg.Profiles.Schneider19.DarkMatter(**bpar_S19).real(cosmo, R, M[0], a);        assert len(X.shape) == 1
+    X = bfg.Profiles.Schneider19.DarkMatter(**bpar_S19).real(cosmo, R[0], M[0], a);     assert len(X.shape) == 0
+    X = bfg.Profiles.Schneider19.DarkMatterOnly(**bpar_S19).real(cosmo, R, M[0], a);    assert len(X.shape) == 1
+    X = bfg.Profiles.Schneider19.DarkMatterOnly(**bpar_S19).real(cosmo, R[0], M[0], a); assert len(X.shape) == 0
+
+
+def test_schneider25():
+
+    for a in [0.1, 0.5, 1]:
+        bfg.Profiles.Schneider25.DarkMatter(**bpar_S25).real(cosmo, R, M, a)
+        bfg.Profiles.Schneider25.DarkMatter(**bpar_S25).projected(cosmo, R, M, a)
+        bfg.Profiles.Schneider25.DarkMatter(**bpar_S25).fourier(cosmo, k, M, a)
+
+        bfg.Profiles.Schneider25.DarkMatterOnly(**bpar_S25).real(cosmo, R, M, a)
+        bfg.Profiles.Schneider25.DarkMatterOnly(**bpar_S25).projected(cosmo, R, M, a)
+        bfg.Profiles.Schneider25.DarkMatterOnly(**bpar_S25).fourier(cosmo, k, M, a)
+
+    X = bfg.Profiles.Schneider25.DarkMatter(**bpar_S25).real(cosmo, R, M[0], a);        assert len(X.shape) == 1
+    X = bfg.Profiles.Schneider25.DarkMatter(**bpar_S25).real(cosmo, R[0], M[0], a);     assert len(X.shape) == 0
+    X = bfg.Profiles.Schneider25.DarkMatterOnly(**bpar_S25).real(cosmo, R, M[0], a);    assert len(X.shape) == 1
+    X = bfg.Profiles.Schneider25.DarkMatterOnly(**bpar_S25).real(cosmo, R[0], M[0], a); assert len(X.shape) == 0
 
 
 def test_arico20():

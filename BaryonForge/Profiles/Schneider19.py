@@ -131,6 +131,37 @@ class SchneiderProfiles(BaseBFGProfiles):
     
     def _get_star_frac(self, M_use, a, cosmo):
         
+        """
+        Compute the fractional mass components of stars, central gals (cga), and satellite gals (sga) 
+        for a given set of halo masses and scale factor.
+
+        Parameters
+        ----------
+        M_use : ndarray
+            Array of halo masses for which to compute the baryonic fractions.
+        a : float
+            Scale factor at which the computation is performed (unused in this function but
+            may be relevant for future extensions).
+        cosmo : object
+            Cosmology object containing cosmological parameters, specifically Omega_b and Omega_m.
+
+        Returns
+        -------
+        f_star : ndarray
+            Stellar mass fraction for each halo, clipped to be between 1e-10 and the cosmic 
+            baryon fraction.
+        f_cga : ndarray
+            Central galaxy star fraction, clipped to be between 1e-10 and the stellar fraction.
+        f_sga : ndarray
+            Satellite galaxy star mass fraction, defined as `f_star - f_cga`, and clipped to be at 
+            least 1e-10 to avoid issues in log calculations.
+
+        Notes
+        -----
+        The function ensures numerical stability by enforcing lower bounds of 1e-10 on all 
+        returned fractions and upper bounds that respect physical limits on baryon content.
+        """
+        
         cdelta     = 1 if self.cdelta is None else self.cdelta
         z          = 1/a - 1
         A          = self.A         * (1 + z)**self.nu_A         * cdelta**self.zeta_A
@@ -350,7 +381,8 @@ class TwoHalo(SchneiderProfiles):
         else:
             xi_mm   = self.xi_mm(r_use, a)
 
-        delta_c = 1.686/ccl.growth_factor(cosmo, a)
+        #Bias via Eqn 12 in https://arxiv.org/pdf/astro-ph/9901122
+        delta_c = 1.686
         nu_M    = delta_c / ccl.sigmaM(cosmo, M_use, a)
         bias_M  = 1 + (self.q*nu_M**2 - 1)/delta_c + 2*self.p/delta_c/(1 + (self.q*nu_M**2)**self.p)
 
@@ -446,8 +478,11 @@ class Stars(SchneiderProfiles):
 
         R   = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
 
+        cdelta = 1 if self.cdelta is None else self.cdelta
+        eps_h  = self.epsilon_h * (M_use/self.M_epsilon_h)**self.mu_epsilon_h * (1 + z)**self.nu_epsilon_h * cdelta**self.zeta_epsilon_h
+        
         f_cga  = self.get_f_star_cen(M_use, a, cosmo)[:, None]
-        R_h    = self.epsilon_h * R[:, None]
+        R_h    = (eps_h * R)[:, None]
 
         r_integral = np.geomspace(self.r_min_int, self.r_max_int, self.r_steps)
         DM    = DarkMatter(**self.model_params, **self.hyper_params); setattr(DM, 'cutoff', 1e3) #Set large cutoff just for normalization calculation
