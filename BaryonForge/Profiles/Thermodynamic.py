@@ -690,7 +690,10 @@ class ThermalSZ(BaseThermodynamicProfile):
     ----------
     pressure : Pressure, optional
         An instance of the `Pressure` class defining the thermal gas pressure profile. 
-        If not provided, a default `Pressure` object is created using `kwargs`.
+        If not provided, a default `Pressure` object is created using `kwargs`. The
+        pressure must be provided in comoving volume units, i.e. it scales as a^3 and not
+        a^4
+        
     **kwargs
         Additional keyword arguments passed to initialize the `Pressure` profile and other 
         parameters from `SchneiderProfiles`.
@@ -757,17 +760,22 @@ class ThermalSZ(BaseThermodynamicProfile):
         R     = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
 
         #Now a series of units changes to the projected profile.
-        prof  = self.Pressure.real(cosmo, r_use, M_use, a) #generate profile
-        prof  = prof * (Mpc_to_m * 1e2) #Line-of-sight integral is done in Mpc, we want cm
-        prof  = prof * sigma_T_cgs/(m_e_cgs*c_cgs**2) #Convert to SZ (dimensionless units)
+        prof  = self.Pressure.real(cosmo, r_use, M_use, a)     #generate profile in comoving volume units (Temp. part is in physical)
+        prof  = prof * (Mpc_to_m * 1e2)                        #Line-of-sight integral is done in Mpc, we want cm
+        prof  = prof * (sigma_T_cgs/a**2)/(m_e_cgs*c_cgs**2)   #Convert to SZ. Coeffs converted to comoving. One facor of 1/cMpc remains
         prof  = prof * self.Pgas_to_Pe(cosmo, r_use, M_use, a) #Then convert from gas pressure to electron pressure
         
         return prof
+    
 
     def _projected(self, cosmo, r, M, a):
         
-        #This is the 1/(1 + z) that shows up in the tracer kernel
-        return super()._projected(cosmo, r, M, a) * a
+        #No extra 1/(1 + z) factor here because the
+        #profile in prof._real has the right units already.
+        #That is, it has one factor of 1/cMpc which cancels during
+        #the projection integral
+        return super()._projected(cosmo, r, M, a)
+
     
 
 class Metallicity(BaseThermodynamicProfile):
@@ -1211,13 +1219,13 @@ class XraySkyCounts(BaseThermodynamicProfile):
 
         #Now a series of units changes to the projected profile.
         prof  = self.XrayCounts.real(cosmo, r_use, M_use, a) #generate profile
-        prof  = prof * (Mpc_to_m * m_to_cm) #Line-of-sight integral is done in Mpc, we want cm
-        prof  = prof * a**3 #Cosmic dimming causes a 1/(1 + z)^3 factor (we use counts, not energy, so one factor is missing)
-        prof  = prof * 1/(4*np.pi) #Converting 1/cm^3 into 1/steradians
+        prof  = prof * (Mpc_to_m * m_to_cm)                  #Line-of-sight integral is done in Mpc, we want cm
+        prof  = prof * a**3                                  #Cosmic dimming causes a 1/(1 + z)^3 factor (we use counts, not energy, 
+                                                             #so one factor is missing)
+        prof  = prof * 1/(4*np.pi)                           #Converting 1/cm^3 into 1/steradians
         
         return prof
     
     def _projected(self, cosmo, r, M, a):
         
-        #This is the 1/(1 + z) that shows up in the tracer kernel
-        return super()._projected(cosmo, r, M, a) * a
+        return super()._projected(cosmo, r, M, a)

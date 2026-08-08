@@ -147,8 +147,9 @@ class Pressure(ccl.halos.profiles.HaloProfile):
         RHO_CRIT = ccl.physical_constants.RHO_CRITICAL*h**2 * ccl.background.h_over_h0(cosmo, a)**2 
         RHO_CRIT = RHO_CRIT * a**3
 
-        # The self-similar expectation for Pressure
-        # Need R*a to convert comoving Mpc to physical
+        #The self-similar expectation for Pressure
+        #Need R*a to convert comoving Mpc to physical. This way
+        #the final profile scales as a^3, not a^4 as needed.
         P_delta = Delta*RHO_CRIT * Omega_b/Omega_m * G * (M_use)/(2*R*a)
         alpha, gamma = 1, -0.3
 
