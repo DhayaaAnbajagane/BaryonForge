@@ -232,7 +232,7 @@ class ComovingToPhysical(BaseBFGProfiles):
     """
     Converts a given profile from comoving to physical units by applying 
     a user-specified scale factor (`a`) correction. The projected profile is rescaled
-    by one less power of `a`.
+    by one less power of `a` since one factor cancels in the projection integral.
 
     Parameters
     ----------
