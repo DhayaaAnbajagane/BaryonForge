@@ -73,6 +73,58 @@ class Kernel2D(BaseKernel):
         return np.sqrt(P11_proj/P22_proj)
 
 
+class KernelHarmonic(BaseKernel):
+
+    def __init__(self, profile1, profile2, HaloModelCalculator, z_min, z_max, Nz = 10):
+        
+        self.z_min              = z_min
+        self.z_max              = z_max
+        self.Nz                 = Nz
+
+        assert self.z_max > self.z_min, "z_max must be larger than z_min"
+
+        BaseKernel.__init__(self, profile1, profile2, HaloModelCalculator)
+
+
+    def _power3D(self, cosmo, k, a):
+
+        P11 = ccl.halos.pk_2pt.halomod_power_spectrum(cosmo, self.HMCalc, k, a, self.profile1, get_1h = False, get_2h = True)
+        P22 = ccl.halos.pk_2pt.halomod_power_spectrum(cosmo, self.HMCalc, k, a, self.profile2, get_1h = False, get_2h = True)
+
+        return P11, P22
+
+    def process(self, cosmo, ell, a = None):
+
+        ell     = np.atleast_1d(ell)
+        z_edges = np.linspace(self.z_min, self.z_max, self.Nz + 1)
+        z       = 0.5 * (z_edges[1:] + z_edges[:-1])
+        dz      = z_edges[1] - z_edges[0]
+        a       = 1/(1 + z)
+
+        chi       = ccl.comoving_radial_distance(cosmo, a)
+        chi_edges = ccl.comoving_radial_distance(cosmo, 1/(1 + z_edges))
+        dchi_dz   = np.diff(chi_edges) / dz
+
+        #Normalized top-hat density kernel over z_min < z < z_max.
+        #Its overall normalization cancels in the transfer-function ratio.
+        nz  = np.ones_like(z) / (self.z_max - self.z_min)
+        C11 = np.zeros(ell.size)
+        C22 = np.zeros(ell.size)
+
+        for i in range(z.size):
+
+            k = (ell + 0.5) / chi[i]
+
+            P11, P22 = self._power3D(cosmo, k, a[i])
+            weight = nz[i]**2 / (chi[i]**2 * dchi_dz[i])
+            C11   += weight * P11 * dz
+            C22   += weight * P22 * dz
+
+        kernel = np.sqrt(np.divide(C11, C22, out = np.ones_like(C11), where = C22 > 0))
+
+        return kernel
+
+
 
 class BaseFilter:
 
@@ -114,15 +166,17 @@ class BaseFilter:
 
     def processHarmonic(self, cosmo, Map, Nk_interp = 100):
 
-        res = Map.res
-        Min = Map.data
-        a   = 1/(1 + Map.redshift)
+        Min   = Map.data
+        nside = hp.get_nside(Min)
+        lmax  = 3*nside - 1
 
-        klin   = np.fft.fftfreq(Min.shape[0], res / (2*np.pi))
-        k      = np.sqrt(klin[:, None]**2 + klin[None, :]**2).flatten()
-        kinter = np.geomspace(np.min(k[k > 0]), np.max(k), Nk_interp)
-        kernel = self.Filter.interpolated(cosmo, k, a, kinter)
+        ell        = np.arange(1, lmax + 1)
+        ellinter   = np.geomspace(1, lmax, min(Nk_interp, lmax))
+        kernel     = np.ones(lmax + 1)
+        kernel[1:] = self.Filter.interpolated(cosmo, ell, None, ellinter)
 
-        MapK   = np.fft.ifftn(np.fft.fftn(Min) * kernel).real
+        alm  = hp.map2alm(Min, lmax = lmax)
+        alm  = hp.almxfl(alm, kernel)
+        MapK = hp.alm2map(alm, nside, lmax = lmax)
 
         return MapK

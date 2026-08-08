@@ -5,13 +5,14 @@ import healpy as hp
 from numba import njit
 import warnings
 
-from scipy import interpolate
+from scipy import interpolate, integrate
 from tqdm import tqdm
 from ..utils import ParamTabulatedProfile
 from ..utils.Tabulate import _get_parameter
 from ..Profiles.BaryonCorrection import BaryonificationClass
 
-__all__ = ['DefaultRunner', 'BaryonifyShell', 'PaintProfilesShell', 'PaintProfilesAnisShell',
+__all__ = ['DefaultRunner', 'BaryonifyShell',
+           'PaintProfilesShell', 'PaintProfilesAnisShell',
            'regrid_pixels_hpix']
 
 @njit
@@ -372,7 +373,6 @@ class BaryonifyShell(DefaultRunner):
         
         return new_map
     
-
 class PaintProfilesShell(DefaultRunner):
 
     """
@@ -557,18 +557,20 @@ class PaintProfilesAnisShell(DefaultRunner):
 
         if len(keys) > 0:
             txt = (f"You asked to use {keys} properties in Baryonification. You must pass a ParamTabulatedProfile "
-                   f"pr BaryonificationClass as the model. You have passed {type(self.model)} instead. "
+                   f"or BaryonificationClass as the model. You have passed {type(self.model)} instead. "
                    f"If you did pass in a BaryonificationClass make sure you passed in addition params using "
                    f"the other_params option.")
             assert isinstance(self.model, (ParamTabulatedProfile, BaryonificationClass)), txt
 
         #First we need to generate a model for the total mass distribution, according to the mass model
         Mtot_map = PaintProfilesShell(HaloLightConeCatalog = self.HaloLightConeCatalog, 
-                                      LightconeShell = self.LightconeShell, 
-                                      epsilon_max = self.epsilon_max, model = self.Mtot_model, 
-                                      use_ellipticity = self.use_ellipticity, 
-                                      include_pixel_size = True,
-                                      mass_def = self.mass_def, verbose = self.verbose).process()
+                                      LightconeShell       = self.LightconeShell, 
+                                      epsilon_max          = self.epsilon_max, 
+                                      model                = self.Mtot_model, 
+                                      use_ellipticity      = self.use_ellipticity, 
+                                      include_pixel_size   = True,
+                                      mass_def             = self.mass_def, 
+                                      verbose              = self.verbose).process()
         
         dL = (2 * _get_parameter(self.Mtot_model, 'proj_cutoff')) #Factor of 2 since proj_cutoff == Lproj/2
         dD = D_a(self.LightconeShell.redshift)
@@ -576,7 +578,7 @@ class PaintProfilesAnisShell(DefaultRunner):
         rho_halos = np.sum(Mtot_map) / (dV * Mtot_map.size)
 
         #Now add the background contribution (we so far only have the halo contribution)
-        #Force the background to be positive, incase the pasted density is larger than the box size.
+        #Force the background to be positive, in case the pasted density is larger than the box size.
         rho_m     = cosmo.rho_x(1/(self.LightconeShell.redshift + 1), species = 'matter', is_comoving = False)
         drho_m    = np.clip(rho_m - rho_halos, 0, None)
         Mtot_map += dV * drho_m
