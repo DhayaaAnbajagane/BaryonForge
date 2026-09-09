@@ -181,7 +181,7 @@ class HODGalaxiesPandey25(HODTransformerPandey25, ccl.halos.profiles.hod.HaloPro
 		HODTransformerPandey25.__init__(self, Profile = None, halo_m_to_mtot = halo_m_to_mtot, **kwargs)
 
 		#HOD completeness parameters, following the CCL "HaloProfileHOD" implementation
-		self.fc_0 			= fc_0,
+		self.fc_0 			= fc_0
 		self.fc_p 			= fc_p
 		self.a_pivot 		= a_pivot
 		self.ns_independent = ns_independent
