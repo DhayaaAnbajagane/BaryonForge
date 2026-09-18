@@ -245,7 +245,7 @@ class AricoProfiles(Base.BaseBFGProfiles):
     
 
     def get_f_gas(self, M, a, cosmo):
-        f = self._get_gas_frac(self, M, a, cosmo)
+        f = self._get_gas_frac(M, a, cosmo)
         return f[0] + f[1] + f[2]
     
 
@@ -707,8 +707,8 @@ class Gas(AricoProfiles):
     
     #Need to explicitly set these two methods (to enable pickling)
     #since otherwise the getattr call above leads to infinite recursions.
-    def __getstate__(self): self.__dict__.copy()    
-    def __setstate__(self, state): self.__dict__.update(state)
+    def __getstate__(self): return self.__dict__.copy()    
+    def __setstate__(self, state): return self.__dict__.update(state)
 
 
 class ModifiedDarkMatter(AricoProfiles):

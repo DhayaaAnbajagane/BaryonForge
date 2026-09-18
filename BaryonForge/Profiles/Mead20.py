@@ -1194,7 +1194,7 @@ def Tagn2pars(Tagn, mode = 'All'):
     elif mode == 'MatterPressure':
         Pars_a, Pars_b, Pars_c = Params_TAGN_7p6_MPr, Params_TAGN_7p8_MPr, Params_TAGN_8p0_MPr
     else:
-        raise NotImplemented(f"mode = {mode} is not implemented. Use 'All' or 'MatterPressure'.")
+        raise NotImplementedError(f"mode = {mode} is not implemented. Use 'All' or 'MatterPressure'.")
     
     #Now interpolate and add it to the new dict
     new_dict = {}
