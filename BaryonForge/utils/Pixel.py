@@ -113,8 +113,8 @@ class ConvolvedProfile(BaseBFGProfiles):
 
     #Need to explicitly set these two methods (to enable pickling)
     #since otherwise the getattr call above leads to infinite recursions.
-    def __getstate__(self): self.__dict__.copy()    
-    def __setstate__(self, state): self.__dict__.update(state)
+    def __getstate__(self): return self.__dict__.copy()    
+    def __setstate__(self, state): return self.__dict__.update(state)
 
     def set_parameter(self, key, value): _set_parameter(self, key, value)
     
