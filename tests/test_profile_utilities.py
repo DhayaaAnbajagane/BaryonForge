@@ -1,4 +1,12 @@
-"""Fast unit tests for profile wrappers and interpolation utilities."""
+"""Fast unit tests for profile wrappers and interpolation utilities.
+
+Test index:
+    test_unit_pixel_window_leaves_profile_unchanged: checks no-pixel convolution.
+    test_no_pixel_window_is_public_and_returns_ones: checks identity pixel window.
+    test_pixel_windows_have_correct_zero_mode_and_shapes: checks pixel window outputs.
+    test_comoving_to_physical_applies_expected_scale_factor_powers: checks scale-factor conversion.
+    test_tabulated_profile_uses_a_tiny_analytic_grid: checks tiny analytic tabulation.
+"""
 
 import numpy as np
 import pyccl as ccl

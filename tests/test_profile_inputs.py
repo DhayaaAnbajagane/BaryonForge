@@ -3,6 +3,14 @@
 These tests intentionally use small input grids.  They are smoke tests for the
 public profile API rather than numerical-accuracy tests, and are therefore
 suited to running for every supported Python version in GitHub Actions.
+
+Test index:
+    test_real_accepts_mass_input_types: checks scalar, list, array masses.
+    test_real_accepts_radius_input_types: checks scalar, list, array radii.
+    test_real_accepts_scale_factor_values: checks representative scale factors.
+    test_profile_methods_accept_list_inputs: checks list inputs across methods.
+    test_profile_composition_is_pointwise_in_real_space: checks pointwise arithmetic.
+    test_nested_composition_runs_for_all_profile_methods: checks nested composition shapes.
 """
 
 from collections.abc import Callable
