@@ -33,10 +33,10 @@ def test_baryonification():
 
     Cat  = bfg.HaloLightConeCatalog(ra, dec, M, z, bfg.utils.build_cosmodict(cosmo))
 
-    bpar_S19['proj_cutoff'] = 50/2
+    profile_params = {**bpar_S19, 'proj_cutoff': 50/2}
     
-    DMB  = bfg.Profiles.Schneider19.DarkMatterBaryon(**bpar_S19)
-    DMO  = bfg.Profiles.Schneider19.DarkMatterOnly(**bpar_S19)
+    DMB  = bfg.Profiles.Schneider19.DarkMatterBaryon(**profile_params)
+    DMO  = bfg.Profiles.Schneider19.DarkMatterOnly(**profile_params)
     
     for nside in [256, 512, 1024]:
         
