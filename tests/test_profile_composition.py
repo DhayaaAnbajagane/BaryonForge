@@ -4,6 +4,7 @@ Test index:
     test_profile2profile: checks two-halo subtraction equivalence.
     test_arithmetic_composes_different_model_profiles: checks cross-model arithmetic.
     test_all_input_profiles_compose_with_identity: checks arithmetic for all profiles.
+    test_fftlog_fallback_profiles_compose: checks FFTLog composition fallback.
 """
 
 import numpy as np
@@ -12,7 +13,7 @@ import pytest
 import BaryonForge as bfg
 
 from defaults import bpar_A20, bpar_S19, bpar_S25, ccl_dict
-from test_profile_inputs import CONSTRUCTION_ONLY, PROFILE_CASES
+from profile_cases import PROFILE_CASES
 
 FAST_SETTINGS = {
     "r_steps": 64,
@@ -119,7 +120,7 @@ def test_arithmetic_composes_different_model_profiles(operation, case):
 )
 def test_all_input_profiles_compose_with_identity(cosmo, case):
     """Check all input profiles against an analytic identity profile."""
-    name, factory = case
+    _, factory = case
     profile = factory()
     identity = bfg.Profiles.misc.Identity()
     masses = np.array([1.0e14])
@@ -131,16 +132,47 @@ def test_all_input_profiles_compose_with_identity(cosmo, case):
         "divide": (lambda a, b: a / b, np.divide),
     }
 
-    profile_result = None
+    profile._real = _deterministic_real
+    profile_result = profile.real(cosmo, radii, masses, 0.8)
     identity_result = identity.real(cosmo, radii, masses, 0.8)
     for compose, expected_operation in operations.values():
         composed = compose(identity, profile)
-        if name in CONSTRUCTION_ONLY:
-            continue
-        if profile_result is None:
-            profile_result = profile.real(cosmo, radii, masses, 0.8)
         result = composed.real(cosmo, radii, masses, 0.8)
         expected = expected_operation(identity_result, profile_result)
-        np.testing.assert_allclose(
-            result, expected, equal_nan=True, err_msg=name
-        )
+        np.testing.assert_allclose(result, expected)
+
+
+def _deterministic_real(cosmo, r, M, a):
+    """Return cheap, shape-preserving values for composition tests."""
+    radii = np.atleast_1d(r)
+    masses = np.atleast_1d(M)
+    result = masses[:, None] / 1.0e14 + radii[None, :] + a
+    if np.ndim(r) == 0:
+        result = np.squeeze(result, axis=-1)
+    if np.ndim(M) == 0:
+        result = np.squeeze(result, axis=0)
+    return result
+
+
+def test_fftlog_fallback_profiles_compose(cosmo, monkeypatch):
+    """Check arithmetic uses a profile's FFTLog real-space fallback."""
+    _, factory = next(
+        case for case in PROFILE_CASES
+        if case[0] == "mead20_pressure_add_diffuse"
+    )
+    profile = factory()
+    monkeypatch.setattr(profile, "_fftlog_wrap", _deterministic_fftlog)
+
+    masses = np.array([1.0e14])
+    radii = np.array([0.2, 1.0])
+    result = (bfg.Profiles.misc.Identity() + profile).real(
+        cosmo, radii, masses, 0.8
+    )
+    expected = 1 + _deterministic_real(cosmo, radii, masses, 0.8)
+    np.testing.assert_allclose(result, expected)
+
+
+def _deterministic_fftlog(cosmo, r, M, a, fourier_out=False):
+    """Provide the public real-space fallback used by CCL profiles."""
+    assert not fourier_out
+    return _deterministic_real(cosmo, r, M, a)
