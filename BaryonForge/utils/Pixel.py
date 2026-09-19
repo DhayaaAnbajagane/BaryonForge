@@ -4,7 +4,7 @@ from scipy import interpolate, special
 from .Tabulate import _set_parameter
 from ..Profiles.Base import BaseBFGProfiles
 
-__all__ = ['ConvolvedProfile', 'GridPixelApprox', 'HealPixel']
+__all__ = ['ConvolvedProfile', 'GridPixelApprox', 'HealPixel', 'NoPix']
 
 #Define a shorthand to use everywhere
 fftlog = ccl.pyutils._fftlog_transform
@@ -615,6 +615,9 @@ class NoPix(object):
       or modification of the input profile due to a pixel window function.
     """
     
+    isHarmonic = False
+    size = 0
+
     def __init__(self):
         pass
         

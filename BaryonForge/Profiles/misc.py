@@ -101,6 +101,8 @@ class Identity(BaseBFGProfiles):
     def __init__(self, mass_def = ccl.halos.massdef.MassDef200c, **kwargs):
 
         super().__init__(mass_def = mass_def, **kwargs)
+        self._projected = self._real
+        self._fourier = self._real
 
     def _real(self, cosmo, r, M, a):
 
@@ -140,6 +142,8 @@ class Zeros(BaseBFGProfiles):
     def __init__(self, mass_def = ccl.halos.massdef.MassDef200c, **kwargs):
 
         super().__init__(mass_def = mass_def, **kwargs)
+        self._projected = self._real
+        self._fourier = self._real
 
     def _real(self, cosmo, r, M, a):
 

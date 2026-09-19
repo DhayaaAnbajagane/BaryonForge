@@ -793,8 +793,8 @@ class ModifiedDarkMatter(AricoProfiles):
         rp    = np.geomspace(self.r_min_int, self.r_max_int, self.r_steps)
         pGro  = np.array([self.GravityOnly.real(cosmo, r, m, a) for r, m in zip(R, M_use)])[:, None]
         pBG   = np.array([self.Gas.real(cosmo, r, m, a) for r, m in zip(R, M_use)])[:, None]
-        LHS   = rp * np.power(rp + r_s, 2) * (pGro - pBG) * (np.log(1 + rp/r_s) - 1/(1 + r_s/rp)) + (pGro - pBG)/3 * (R**3 - rp**3)
-        RHS   = fDM * M_use[None, :] / (4*np.pi)
+        LHS   = rp * np.power(rp + r_s, 2) * (pGro - pBG) * (np.log(1 + rp/r_s) - 1/(1 + r_s/rp)) + (pGro - pBG)/3 * (R[:, None]**3 - rp**3)
+        RHS   = fDM * M_use[:, None] / (4*np.pi)
         rp    = np.exp([safe_Pchip_minimize((LHS - RHS)[m_i], np.log(rp)) for m_i in range(LHS.shape[0])])[:, None]
         
         #Get the normalization based on equation A8 of https://arxiv.org/pdf/1911.08471
@@ -808,7 +808,7 @@ class ModifiedDarkMatter(AricoProfiles):
         arg   = np.where(arg > 30, np.inf, arg) #This is to prevent an overflow in the exponential
         kfac  = 1/( 1 + np.exp(2*arg) ) #Extra exponential cutoff
         prof  = prof * kfac
-        prof  = np.where(r_use[None, :] <= R, prof, 0)
+        prof  = np.where(r_use[None, :] <= R[:, None], prof, 0)
 
         #Handle dimensions so input dimensions are mirrored in the output
         if np.ndim(r) == 0: prof = np.squeeze(prof, axis=-1)
@@ -1385,7 +1385,7 @@ class BoundGasDeprecated(AricoProfiles):
         z = 1/a - 1
         R = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
 
-        f_cg  = self.get_f_star_cen(M_use, a, cosmo)[:, None]
+        f_cg  = self.get_f_star_cen(M_use, a, cosmo)
         f_bar = cosmo.cosmo.params.Omega_b/cosmo.cosmo.params.Omega_m
         f_bg  = (f_bar - f_cg) / (1 + np.power(self.M_c/M_use, self.beta))
         f_bg  = f_bg[:, None]
@@ -1398,12 +1398,15 @@ class BoundGasDeprecated(AricoProfiles):
             assert self.cdelta is not None, "Either provide cdelta or a c_M_relation input"
             c_M_relation = ccl.halos.concentration.ConcentrationConstant(self.cdelta, mass_def = self.mass_def)
             
-        c    = c_M_relation.get_concentration(cosmo, M_use, a)
+        c    = c_M_relation(cosmo, M_use, a)
         c    = np.where(np.isfinite(c), c, 1) #Set default to r_s = R200c if c200c broken (normally for low mass obj in some cosmologies)
         r_s  = (R/c)[:, None]
         eps  = self.epsilon_hydro
         e5   = c[:, None] / eps
-        Geff = (1 + 3*c/eps) * np.log(1 + c/eps) / ((1 + c/eps)*np.log(1 + c/eps) - c/eps)
+        Geff = (
+            (1 + 3*c/eps) * np.log(1 + c/eps)
+            / ((1 + c/eps)*np.log(1 + c/eps) - c/eps)
+        )[:, None]
         y1   = np.power(np.log(1 + e5)/e5, Geff) * (e5*(1 + e5)**2) #Set y1 based on continuity
         
         #Integrate over wider region in radii to get normalization of gas profile
@@ -1413,8 +1416,10 @@ class BoundGasDeprecated(AricoProfiles):
 
         u_integral = np.power(np.log(1 + x_integral)/x_integral, Geff)
         v_integral = y1 * np.power(1 + x_integral, -2)/x_integral
-        y_integral = np.where(r_integral < R/eps, u_integral, v_integral)
-        y_integral = np.where(r_integral > R, 0, y_integral)
+        y_integral = np.where(
+            r_integral[None, :] < (R/eps)[:, None], u_integral, v_integral
+        )
+        y_integral = np.where(r_integral[None, :] > R[:, None], 0, y_integral)
         Norm       = np.trapz(4 * np.pi * r_integral**2 * y_integral, r_integral, axis = -1)[:, None]
 
         del r_integral, x_integral, u_integral, v_integral, y_integral
@@ -1424,9 +1429,9 @@ class BoundGasDeprecated(AricoProfiles):
         u = np.power(np.log(1 + x)/x, Geff)
         v = y1 * np.power(1 + x, -2)/x
         
-        prof  = np.where(r_use < R/eps, u, v)
-        prof  = np.where(r_use > R, 0, prof)
-        prof  = f_bg * M_use * prof / Norm
+        prof  = np.where(r_use[None, :] < (R/eps)[:, None], u, v)
+        prof  = np.where(r_use[None, :] > R[:, None], 0, prof)
+        prof  = f_bg * M_use[:, None] * prof / Norm
 
         arg   = (r_use[None, :] - self.cutoff)
         arg   = np.where(arg > 30, np.inf, arg) #This is to prevent an overflow in the exponential
