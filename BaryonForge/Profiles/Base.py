@@ -236,13 +236,13 @@ class BaseBFGProfiles(ccl.halos.profiles.HaloProfile):
                           "Defaulting the integral upper limit to 10,000 (comoving) Mpc.")
             
         r_proj = np.geomspace(int_min, r_max, int_N)
-        prof   = self._real(cosmo, r_integral, M, a)
+        prof = np.asarray(self._real(cosmo, r_integral, M, a))
 
-        #The prof object is already "squeezed" in some way.
-        #Code below removes that squeezing so rest of code can handle
-        #passing multiple radii and masses.
-        if np.ndim(r) == 0: prof = prof[:, None]
-        if np.ndim(M) == 0: prof = prof[None, :]
+        # ``r_integral`` is always one-dimensional, irrespective of whether
+        # the requested projected radius was scalar.  The only dimension
+        # squeezed by ``_real`` here is therefore the mass dimension.
+        if np.ndim(M) == 0:
+            prof = prof[None, :]
 
         proj_prof = np.zeros([M_use.size, r_use.size])
 
