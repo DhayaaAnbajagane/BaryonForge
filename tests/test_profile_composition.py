@@ -3,6 +3,7 @@
 Test index:
     test_profile2profile: checks two-halo subtraction equivalence.
     test_arithmetic_composes_different_model_profiles: checks cross-model arithmetic.
+    test_all_input_profiles_compose_with_identity: checks arithmetic for all profiles.
 """
 
 import numpy as np
@@ -11,6 +12,7 @@ import pytest
 import BaryonForge as bfg
 
 from defaults import bpar_A20, bpar_S19, bpar_S25, ccl_dict
+from test_profile_inputs import CONSTRUCTION_ONLY, PROFILE_CASES
 
 FAST_SETTINGS = {
     "r_steps": 64,
@@ -53,6 +55,13 @@ def _profile_pairs():
 
 
 PROFILE_PAIRS = _profile_pairs()
+
+
+@pytest.fixture(scope="module")
+def cosmo():
+    cosmology = ccl.Cosmology(**ccl_dict)
+    cosmology.compute_growth()
+    return cosmology
 
 
 def test_profile2profile():
@@ -103,3 +112,35 @@ def test_arithmetic_composes_different_model_profiles(operation, case):
         right.real(cosmology, radii, masses, 0.8),
     )
     np.testing.assert_allclose(result, expected)
+
+
+@pytest.mark.parametrize(
+    "case", PROFILE_CASES, ids=[case[0] for case in PROFILE_CASES]
+)
+def test_all_input_profiles_compose_with_identity(cosmo, case):
+    """Check all input profiles against an analytic identity profile."""
+    name, factory = case
+    profile = factory()
+    identity = bfg.Profiles.misc.Identity()
+    masses = np.array([1.0e14])
+    radii = np.array([0.2, 1.0])
+    operations = {
+        "add": (lambda a, b: a + b, np.add),
+        "subtract": (lambda a, b: a - b, np.subtract),
+        "multiply": (lambda a, b: a * b, np.multiply),
+        "divide": (lambda a, b: a / b, np.divide),
+    }
+
+    profile_result = None
+    identity_result = identity.real(cosmo, radii, masses, 0.8)
+    for compose, expected_operation in operations.values():
+        composed = compose(identity, profile)
+        if name in CONSTRUCTION_ONLY:
+            continue
+        if profile_result is None:
+            profile_result = profile.real(cosmo, radii, masses, 0.8)
+        result = composed.real(cosmo, radii, masses, 0.8)
+        expected = expected_operation(identity_result, profile_result)
+        np.testing.assert_allclose(
+            result, expected, equal_nan=True, err_msg=name
+        )
