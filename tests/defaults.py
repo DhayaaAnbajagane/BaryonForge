@@ -17,7 +17,11 @@ bpar_S25 = dict(epsilon0 = 4, epsilon1 = 0.5, alpha_excl = 0.4, p = 0.3, q = 0.7
                 tau = -1.376, tau_delta = 0, Mstar = 3e11, Nstar = 0.03, eta = 0.1, eta_delta = 0.22, epsilon_cga = 0.03,
                 alpha_nt = 0.1, nu_nt = 0.5, gamma_nt = 0.8, mean_molecular_weight = 0.6125)
 
-bpar_A20 = dict(alpha_g = 2, epsilon_h = 0.015, M1_0 = 2.2e11/h, 
+bpar_HyDif = dict(M_c = 10**13.32, mu = 0.5, theta_c = 0.1, gamma = 2.5,
+                   beta_h = 2.7, delta_h = 7, theta_h = 3.5,
+                   theta_d = 3.5, delta_d = 8, M_d = 1e15, mu_d = 1.0)
+
+bpar_A20 = dict(alpha_g = 2, epsilon_h = 0.015, M1_0 = 2.2e11/h,
                 alpha_fsat = 1, M1_fsat = 1, delta_fsat = 1, gamma_fsat = 1, eps_fsat = 1,
                 M_c = 1.2e14/h, eta = 0.6, mu = 0.31, beta = 0.6, epsilon_hydro = np.sqrt(5),
                 M_inn = 3.3e13/h, M_r = 1e16, beta_r = 2, theta_inn = 0.1, theta_out = 3,
