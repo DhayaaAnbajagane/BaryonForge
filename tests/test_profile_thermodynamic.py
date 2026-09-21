@@ -14,12 +14,13 @@ import pytest
 import BaryonForge as bfg
 
 from BaryonForge.Profiles import Arico20 as A20
+from BaryonForge.Profiles import HyDif
 from BaryonForge.Profiles import Mead20 as M20
 from BaryonForge.Profiles import Schneider19 as S19
 from BaryonForge.Profiles import Schneider25 as S25
 from BaryonForge.Profiles import Thermodynamic as thermo
 
-from defaults import bpar_A20, bpar_S19, bpar_S25
+from defaults import bpar_A20, bpar_HyDif, bpar_S19, bpar_S25
 
 
 FAST_SETTINGS = {
@@ -71,6 +72,27 @@ def _schneider25():
     return pressure, temperature, dmb
 
 
+def _hydif():
+    parameters = _fast({**bpar_S19, "mean_molecular_weight": 0.59})
+    # HyDif's Gas plugs into Schneider19's own DarkMatterBaryon (Stars, CollisionlessMatter,
+    # DarkMatter unchanged), matching the pattern used in examples/22_Plot_Profiles_HyDif.ipynb.
+    dm = S19.DarkMatter(**parameters)
+    gas = HyDif.Gas(DM=dm, **_fast(bpar_HyDif))
+    dmb = S19.DarkMatterBaryon(
+        gas=gas, twohalo=bfg.Profiles.misc.Zeros(), **parameters
+    )
+    pressure = thermo.Pressure(
+        gas=gas, darkmatterbaryon=dmb, **parameters
+    )
+    density = thermo.GasNumberDensity(gas=gas, **parameters)
+    temperature = thermo.Temperature(
+        thermalpressure=pressure,
+        gasnumberdensity=density,
+        **parameters,
+    )
+    return pressure, temperature, dmb
+
+
 def _arico20():
     parameters = _fast(bpar_A20)
     bound_gas = A20.BoundGasUntruncated(**parameters)
@@ -107,6 +129,7 @@ def _mead20():
 THERMO_CASES = (
     ("schneider19", _schneider19),
     ("schneider25", _schneider25),
+    ("hydif", _hydif),
     ("arico20", _arico20),
     ("mead20", _mead20),
 )
