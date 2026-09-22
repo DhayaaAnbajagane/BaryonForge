@@ -12,7 +12,7 @@ import pytest
 
 import BaryonForge as bfg
 
-from defaults import bpar_A20, bpar_S19, bpar_S25, ccl_dict
+from defaults import bpar_A20, bpar_HyDif, bpar_S19, bpar_S25, ccl_dict
 
 
 MASS_GRID = np.array([1.0e13, 1.0e14])
@@ -116,6 +116,27 @@ PROFILE_CASES: tuple[tuple[str, Callable[[], object]], ...] = (
         "mead20_gas",
         lambda: bfg.Profiles.Mead20.Gas(
             **_fast(bfg.Profiles.Mead20.Params_TAGN_7p6_All)
+        ),
+    ),
+    (
+        "hydif_gas",
+        lambda: bfg.Profiles.HyDif.Gas(
+            darkmatter=bfg.Profiles.Schneider19.DarkMatter(**_fast(bpar_S19)),
+            **_fast(bpar_HyDif),
+        ),
+    ),
+    (
+        "hydif_hydrostatic_gas",
+        lambda: bfg.Profiles.HyDif.HydrostaticGas(
+            darkmatter=bfg.Profiles.Schneider19.DarkMatter(**_fast(bpar_S19)),
+            **_fast(bpar_HyDif),
+        ),
+    ),
+    (
+        "hydif_diffuse_gas",
+        lambda: bfg.Profiles.HyDif.DiffuseGas(
+            darkmatter=bfg.Profiles.Schneider19.DarkMatter(**_fast(bpar_S19)),
+            **_fast(bpar_HyDif),
         ),
     ),
     # Stellar profiles

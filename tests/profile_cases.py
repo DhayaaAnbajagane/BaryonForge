@@ -6,7 +6,7 @@ import numpy as np
 
 import BaryonForge as bfg
 
-from defaults import bpar_A20, bpar_S19, bpar_S25
+from defaults import bpar_A20, bpar_HyDif, bpar_S19, bpar_S25
 
 
 MASSES = np.array([1.0e13, 1.0e14])
@@ -173,6 +173,21 @@ def _m20(name):
     raise KeyError(name)
 
 
+def _hydif(name):
+    dm_parameters = _fast(bpar_S19)
+    dm = bfg.Profiles.Schneider19.DarkMatter(**dm_parameters)
+
+    parameters = {**_fast(bpar_HyDif), "darkmatter": dm}
+    module = bfg.Profiles.HyDif
+    if name == "hydrostatic_gas":
+        return module.HydrostaticGas(**parameters)
+    if name == "diffuse_gas":
+        return module.DiffuseGas(**parameters)
+    if name == "gas":
+        return module.Gas(**parameters)
+    raise KeyError(name)
+
+
 def _thermodynamic(name):
     parameters = _fast({**bpar_S19, "mean_molecular_weight": 0.59})
     gas = bfg.Profiles.Schneider19.Gas(**parameters)
@@ -275,6 +290,9 @@ PROFILE_CASES: tuple[tuple[str, Callable[[], object]], ...] = tuple(
         "dark_matter_baryon_with_lss", "temperature", "pressure",
         "pressure_add_diffuse",
     )
+) + tuple(
+    (f"hydif_{name}", lambda name=name: _hydif(name))
+    for name in ("hydrostatic_gas", "diffuse_gas", "gas")
 ) + tuple(
     (f"thermodynamic_{name}", lambda name=name: _thermodynamic(name))
     for name in (
