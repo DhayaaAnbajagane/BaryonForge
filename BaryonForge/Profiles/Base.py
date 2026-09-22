@@ -15,10 +15,37 @@ class BaseBFGProfiles(ccl.halos.profiles.HaloProfile):
     """
     Base class for defining halo density profiles for any BaryonForge model.
 
-    This class extends the `ccl.halos.profiles.HaloProfile` class and provides 
-    additional functionality for handling different halo density profiles. It allows 
-    for custom real-space projection methods, control over parameter initialization, 
+    This class extends the `ccl.halos.profiles.HaloProfile` class and provides
+    additional functionality for handling different halo density profiles. It allows
+    for custom real-space projection methods, control over parameter initialization,
     and adjustments to the Fourier transform settings to minimize artifacts.
+
+    Units and redshift conventions
+    ------------------------------
+    Every profile in BaryonForge sits on a single, consistent "comoving ladder". If you
+    are adding a profile, or chasing a stray factor of `(1 + z)`, this is the contract:
+
+    1. **Radii are always comoving Mpc.** This is why profiles internally write
+       `R = self.mass_def.get_radius(cosmo, M, a)/a` -- CCL returns a physical radius.
+
+    2. **`_real` returns the quantity per comoving volume**, i.e. `X_phys * a^3`.
+       For densities that is the usual comoving density. For pressure it means
+       `P_phys * a^3`, not `a^4`: the temperature part of `P = n k T` stays physical and
+       only the density part is comoving. For X-ray counts it means
+       `epsilon_phys * a^3`. Note that quantities built as a *ratio* of two such profiles
+       (e.g. `Temperature = P/(n k_B)`) come out physical automatically, because the
+       `a^3` cancels.
+
+    3. **`projected()` integrates over comoving Mpc**, so it returns
+       `\\int X_phys a^3 dx_com`. A class that performs its own projection must therefore
+       *not* pre-apply any factor of `a` to convert the line element -- the conversion
+       belongs in step 4.
+
+    4. **To get a physical observable, wrap the profile in `ComovingToPhysical`** with
+       `factor = -3`. That applies `a^-3` to `real` and `a^-2` to `projected`; the one
+       missing power of `a` is exactly the comoving-to-physical line element. This
+       applies to density profiles, pressure profiles, and to the observable classes
+       `ThermalSZ` and `XraySkyCounts`.
 
     Parameters
     ----------

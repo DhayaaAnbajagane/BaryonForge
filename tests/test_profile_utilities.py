@@ -164,8 +164,10 @@ def test_tabulated_profile_uses_a_tiny_analytic_grid():
         model.real(cosmo, radius, mass, scale_factor),
         rtol=1.0e-12,
     )
+    #The tabulator stores the model's own projected profile, with no extra factor of
+    #"a". Converting to physical units is the caller's job, via ComovingToPhysical.
     np.testing.assert_allclose(
         tabulated.projected(cosmo, radius, mass, scale_factor),
-        model.projected(cosmo, radius, mass, scale_factor) * scale_factor,
+        model.projected(cosmo, radius, mass, scale_factor),
         rtol=1.0e-12,
     )

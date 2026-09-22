@@ -480,10 +480,15 @@ class GasNumberDensity(BaseThermodynamicProfile):
     """
     Class for computing the gas number density profile in halos.
 
-    This class extends `SchneiderProfiles` to compute the gas number density profile 
-    within halos. The number density is derived from the gas density profile by dividing 
-    by the mean molecular weight and the mass of the proton, and then converting to 
-    proper CGS units.
+    This class extends `SchneiderProfiles` to compute the gas number density profile
+    within halos. The number density is derived from the gas density profile by dividing
+    by the mean molecular weight and the mass of the proton, and then converting to
+    CGS units.
+
+    Like every other profile in the package, the result is a *comoving* number density,
+    i.e. `n_phys * a^3` expressed in cm^-3, and `projected()` integrates it over comoving
+    Mpc. Wrap in `ComovingToPhysical(..., factor = -3)` if you need the physical number
+    density. See `BaseBFGProfiles` for the full convention.
 
     Inherits from
     -------------
@@ -517,7 +522,8 @@ class GasNumberDensity(BaseThermodynamicProfile):
     where:
         - \( \\mu \) is the mean molecular weight of the gas.
         - \( m_p \) is the mass of the proton.
-        - The result is converted to the proper units (number per cubic centimeter).
+        - The result is converted to number per cubic centimeter, with the volume
+          measured in comoving units.
     """
     
     def __init__(self, gas = None, **kwargs):
@@ -701,19 +707,20 @@ class ThermalSZ(BaseThermodynamicProfile):
     Parameters
     ----------
     pressure : Pressure, optional
-        An instance of the `Pressure` class defining the thermal gas pressure profile. 
-        If not provided, a default `Pressure` object is created using `kwargs`. The
-        pressure must be scaled by `ComovingToPhysical` with factor = -3 so it has the
-        right physical units.
-        
+        An instance of the `Pressure` class defining the thermal gas pressure profile.
+        If not provided, a default `Pressure` object is created using `kwargs`. Pass the
+        pressure in the usual BaryonForge comoving-volume convention (i.e. `P_phys * a^3`,
+        which is what every `Pressure` class in the package returns). Do *not* pre-scale
+        the input pressure with `ComovingToPhysical`; see the usage note below.
+
     **kwargs
-        Additional keyword arguments passed to initialize the `Pressure` profile and other 
+        Additional keyword arguments passed to initialize the `Pressure` profile and other
         parameters from `SchneiderProfiles`.
 
     Notes
     -----
-    The `ThermalSZ` class computes the tSZ effect by calculating the projected electron 
-    pressure profile along the line of sight. 
+    The `ThermalSZ` class computes the tSZ effect by calculating the projected electron
+    pressure profile along the line of sight.
 
     - The tSZ effect is computed by projecting the electron pressure along the line of sight:
 
@@ -721,8 +728,23 @@ class ThermalSZ(BaseThermodynamicProfile):
 
         y(r) = \\frac{\\sigma_T}{m_e c^2} \\int P_{\\text{e}}(r') \\, dr'
 
-    where \( P_{\\text{e}}(r') \) is the electron pressure profile.
-    
+    where \( P_{\\text{e}}(r') \) is the electron pressure profile, and the integral is
+    over *physical* length.
+
+    - **Required usage.** This class stays on the comoving ladder described in
+      `BaseBFGProfiles`: `real()` is a per-comoving-volume quantity and `projected()`
+      integrates over comoving Mpc. To obtain an actual (dimensionless) Compton-y you
+      must wrap the `ThermalSZ` object itself in `ComovingToPhysical` with `factor = -3`,
+
+      >>> PRS = Pressure(gas = Gas, darkmatterbaryon = DMB)  # P_phys * a^3
+      >>> PRS = ThermalSZ(PRS)                               # still comoving
+      >>> PRS = ComovingToPhysical(PRS, factor = -3)         # .projected() -> y
+
+      Calling `ThermalSZ(...).projected()` on its own returns `y * a^2`, not `y`. Note
+      that it is the `ThermalSZ` object that gets wrapped, not the input pressure --
+      wrapping the input instead applies `a^-3` where the projection needs `a^-2`, and
+      leaves the result too large by a factor of `(1 + z)`.
+
     Methods
     -------
     Pgas_to_Pe(cosmo, r, M, a)
@@ -772,23 +794,25 @@ class ThermalSZ(BaseThermodynamicProfile):
         R     = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
 
         #Now a series of units changes to the projected profile.
-        prof  = self.Pressure.real(cosmo, r_use, M_use, a)     #generate profile in comoving volume units (Temp. part is in physical)
+        #Pass M (not M_use) so a scalar mass stays scalar in the output, the same way
+        #Emissivity and XrayCounts do it. Otherwise _projected_realspace adds a second
+        #mass axis on top of the one the inner profile kept.
+        prof  = self.Pressure.real(cosmo, r_use, M, a)         #generate profile in comoving volume units (Temp. part is in physical)
         prof  = prof * (Mpc_to_m * 1e2)                        #Line-of-sight integral is done in Mpc, we want cm
         prof  = prof * sigma_T_cgs/(m_e_cgs*c_cgs**2)          #Convert to SZ.
-        prof  = prof * self.Pgas_to_Pe(cosmo, r_use, M_use, a) #Then convert from gas pressure to electron pressure
-        
+        prof  = prof * self.Pgas_to_Pe(cosmo, r_use, M, a)     #Then convert from gas pressure to electron pressure
+
         return prof
-    
 
-    def _projected(self, cosmo, r, M, a):
-        
-        #No extra 1/(1 + z) factor here because the
-        #profile in prof._real has the right units already.
-        #That is, it has one factor of 1/cMpc which cancels during
-        #the projection integral
-        return super()._projected(cosmo, r, M, a)
+    #NOTE: there is deliberately no _projected() override here. The default
+    #real-space projection already does the right thing: it integrates _real over
+    #comoving Mpc, leaving the result on the comoving ladder. The remaining scale
+    #factors are supplied by wrapping this object in ComovingToPhysical(factor = -3),
+    #as described in the class docstring. An override would also be dead code in the
+    #default configuration, since BaseBFGProfiles.__init__ assigns the *instance*
+    #attribute self._projected = self._projected_realspace, which shadows any
+    #class-level _projected defined here.
 
-    
 
 class Metallicity(BaseThermodynamicProfile):
     """
@@ -1019,16 +1043,18 @@ class Emissivity(BaseThermodynamicProfile):
         provided ``kwargs``.
     **kwargs
         Additional keyword arguments passed to the internally constructed
-        `Temperature` and `Metallicity` profiles when they are not supplied.
+        `Temperature` and `Metallicity` profiles when they are not supplied,
+        and to `BaseThermodynamicProfile` (``mass_def``, ``cutoff``, integration
+        settings, etc.).
 
-    """    
+    """
     def __init__(self, EmissivityTable, temperature = None, metallicity = None, **kwargs):
 
         self.Temperature     = temperature if temperature is not None else Temperature(**kwargs)
         self.Metallicity     = metallicity if metallicity is not None else Metallicity(**kwargs)
         self.EmissivityTable = EmissivityTable
-        
-        super().__init__()
+
+        super().__init__(**kwargs)
 
         if hasattr(self.Temperature, 'prof4params'):
             self.prof4params = self.Temperature.prof4params
@@ -1105,11 +1131,12 @@ class XrayCounts(BaseThermodynamicProfile):
         ``mean_molecular_weight = 1/X``.
     **kwargs
         Additional keyword arguments passed to internally constructed
-        `GasNumberDensity` profiles.
+        `GasNumberDensity` profiles, and to `BaseThermodynamicProfile`
+        (``mass_def``, ``cutoff``, integration settings, etc.).
 
     """
 
-    
+
     def __init__(self, emissivity, electronnumberdensity = None, hydrogennumberdensity = None, **kwargs):
 
         self.Emissivity            = emissivity
@@ -1119,8 +1146,8 @@ class XrayCounts(BaseThermodynamicProfile):
         np_kwargs = {k:v for k,v in kwargs.items() if k != 'mean_molecular_weight'} #Drop this so we can replace it after (if user doesn't supply it)
         if self.ElectronNumberDensity is None: self.ElectronNumberDensity = GasNumberDensity(**kwargs)
         if self.HydrogenNumberDensity is None: self.HydrogenNumberDensity = GasNumberDensity(**np_kwargs, mean_molecular_weight = 1/X)
-        
-        super().__init__()
+
+        super().__init__(**kwargs)
 
         if hasattr(self.ElectronNumberDensity, 'prof4params'):
             self.prof4params = self.ElectronNumberDensity.prof4params
@@ -1173,6 +1200,12 @@ class XraySkyCounts(BaseThermodynamicProfile):
     where :math:`n_e` is the electron number density, :math:`n_{\\rm H}` is the
     hydrogen number density, and :math:`\\Lambda` is the emissivity profile.
 
+    Note that :math:`\\Lambda` must be supplied per *comoving* volume, i.e. as
+    :math:`\\Lambda_{\\rm phys} a^{-3}` (see `EmissivityTable`). Together with the two
+    number densities, which are themselves comoving (:math:`n_{\\rm phys} a^3` each),
+    this puts :math:`C(r) = \\epsilon_{\\rm phys}(r)\\, a^3` on the standard BaryonForge
+    comoving ladder described in `BaseBFGProfiles`.
+
     This class then applies a sequence of conversion factors to obtain a profile
     appropriate for observable sky counts:
 
@@ -1182,7 +1215,7 @@ class XraySkyCounts(BaseThermodynamicProfile):
         =
         C(r)
         \\times (\\mathrm{Mpc \\to cm})
-        \\times a^4
+        \\times a^3
         \\times \\frac{1}{4\\pi}.
 
     These factors account for:
@@ -1191,26 +1224,36 @@ class XraySkyCounts(BaseThermodynamicProfile):
       comoving Mpc, but observational X-ray quantities are typically expressed
       using cgs length units, so the profile is multiplied by the conversion from
       Mpc to cm.
-    - **Cosmological surface-brightness dimming**: the observed signal is reduced
-      by a factor of :math:`(1+z)^{-4} = a^4`.
+    - **Cosmological surface-brightness dimming**: the observed signal is reduced by
+      :math:`(1+z)^{-3} = a^3`. This is one power fewer than the familiar
+      :math:`(1+z)^{-4}` bolometric dimming because we track photon counts rather than
+      energy. The remaining band/K-correction is not applied here: it already lives in
+      the scale-factor axis of the `EmissivityTable`.
     - **Solid-angle conversion**: the factor :math:`1/(4\pi)` converts the
       isotropically emitted volumetric signal into a per-steradian sky quantity.
 
-    The resulting profile is therefore more appropriate for comparison with
-    observed X-ray surface brightness or sky-count measurements than the raw
-    `XrayCounts` profile.
+    **Required usage.** Like `ThermalSZ`, this class stays on the comoving ladder, so
+    `projected()` integrates over comoving Mpc. To obtain observable sky counts, wrap
+    the `XraySkyCounts` object itself in `ComovingToPhysical` with ``factor = -3``,
+
+    >>> CTS = XraySkyCounts(xraycounts = CountRateProfile)
+    >>> CTS = ComovingToPhysical(CTS, factor = -3)   # .projected() -> counts / sr
 
     Parameters
     ----------
-    xraycounts : BaseThermodynamicProfile, optional
-        Intrinsic X-ray counts profile to be converted into sky counts.
+    xraycounts : BaseThermodynamicProfile
+        Intrinsic X-ray counts profile to be converted into sky counts. Required;
+        no default can be constructed, since `XrayCounts` itself needs an explicit
+        emissivity profile.
     **kwargs
-        Additional keyword arguments passed to `BaseThermodynamicProfile` and,
-        when needed, to the internally constructed `XrayCounts` profile.
+        Additional keyword arguments passed to `BaseThermodynamicProfile`.
     """
 
     def __init__(self, xraycounts = None, **kwargs):
-        
+
+        assert xraycounts is not None, ("You must provide an `xraycounts` profile. There is no sensible "
+                                        "default because `XrayCounts` requires an explicit `emissivity` input.")
+
         self.XrayCounts = xraycounts
 
         super().__init__(**kwargs)
@@ -1230,14 +1273,16 @@ class XraySkyCounts(BaseThermodynamicProfile):
         R     = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
 
         #Now a series of units changes to the projected profile.
-        prof  = self.XrayCounts.real(cosmo, r_use, M_use, a) #generate profile
+        #Pass M (not M_use) so a scalar mass stays scalar; see the note in ThermalSZ._real
+        prof  = self.XrayCounts.real(cosmo, r_use, M, a)     #generate profile
         prof  = prof * (Mpc_to_m * m_to_cm)                  #Line-of-sight integral is done in Mpc, we want cm
         prof  = prof * a**3                                  #Cosmic dimming causes a 1/(1 + z)^3 factor (we use counts, not energy, 
                                                              #so one factor is missing)
         prof  = prof * 1/(4*np.pi)                           #Converting 1/cm^3 into 1/steradians
-        
+
         return prof
-    
-    def _projected(self, cosmo, r, M, a):
-        
-        return super()._projected(cosmo, r, M, a)
+
+    #NOTE: no _projected() override here, for the same reason as in ThermalSZ. The
+    #default real-space projection integrates _real over comoving Mpc, and the
+    #remaining scale factors come from wrapping this object in
+    #ComovingToPhysical(factor = -3). See the class docstring.

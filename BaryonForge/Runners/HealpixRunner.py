@@ -136,8 +136,14 @@ class DefaultRunner(object):
     include_pixel_size : bool, optional
         Only used when painting, not baryonifying.
         If True, then the returned map is multiplied by the area/volume of the pixel.
-        Thus, painting with a density profile results in a Mass map. 
+        Thus, painting with a density profile results in a Mass map.
         Defaults to False.
+
+        Note that the pixel area is computed as `pixarea * D_A**2` with the *physical*
+        angular diameter distance, so this only gives the right answer for a profile
+        that has already been converted to physical units with
+        `ComovingToPhysical(..., factor = -3)`. Painting a raw comoving surface density
+        with this flag leaves the map a factor of `a**2` off.
 
     use_ellipticity : bool, optional
         Whether to use ellipticity in calculations. Defaults to False.
@@ -474,11 +480,13 @@ class PaintProfilesShell(DefaultRunner):
             
             #Add the pixel area back to the maps if requested by user.
             #This factor is needed to get, eg., mass maps when inputting density profiles
-            #Factor of D_j helps convert from radian^2 to physical Mpc^2
+            #Factor of D_j helps convert from radian^2 to physical Mpc^2.
+            #Since D_j is the *physical* ang. diam. distance, the profile must already be
+            #in physical units (ie. wrapped in ComovingToPhysical with factor = -3).
             if self.include_pixel_size: Paint = Paint * (pixarea * D_j**2)
-            
+
             #Add the profiles to the new healpix map
-            new_map[pixind] += Paint         
+            new_map[pixind] += Paint
 
         return new_map
     
@@ -624,8 +632,10 @@ class PaintProfilesAnisShell(DefaultRunner):
             
             #Add the pixel area back to the maps if requested by user.
             #This factor is needed to get, eg., mass maps when inputting density profiles
-            #Factor of D_j helps convert from radian^2 to physical Mpc^2
-            if self.include_pixel_size: Painting = Painting * (pixarea * D_j**2) 
+            #Factor of D_j helps convert from radian^2 to physical Mpc^2.
+            #Since D_j is the *physical* ang. diam. distance, the profile must already be
+            #in physical units (ie. wrapped in ComovingToPhysical with factor = -3).
+            if self.include_pixel_size: Painting = Painting * (pixarea * D_j**2)
 
             #Add the profiles to the new healpix map
             new_map[pixind] += Painting * Mfrac   

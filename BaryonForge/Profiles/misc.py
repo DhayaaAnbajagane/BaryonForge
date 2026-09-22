@@ -234,17 +234,24 @@ class TruncatedFourier(object):
 
 class ComovingToPhysical(BaseBFGProfiles):
     """
-    Converts a given profile from comoving to physical units by applying 
+    Converts a given profile from comoving to physical units by applying
     a user-specified scale factor (`a`) correction. The projected profile is rescaled
     by one less power of `a` since one factor cancels in the projection integral.
+
+    This is the step that takes a profile off the BaryonForge comoving ladder and turns
+    it into a physical observable; see the "Units and redshift conventions" section of
+    `BaseBFGProfiles` for the full contract.
 
     Parameters
     ----------
     profile : ccl.halo.HaloProfile object
         A CCL profile object (of any kind)
     factor : float
-        The power of the scale factor `a` applied to convert the profile 
-        from comoving to physical units. Should use -3 for density profiles AND for pressure profiles in BaryonForge. 
+        The power of the scale factor `a` applied to convert the profile
+        from comoving to physical units. Use -3 for anything on the standard BaryonForge
+        comoving ladder: density profiles, pressure profiles, and the observable classes
+        `ThermalSZ` and `XraySkyCounts`. For the observable classes, wrap the observable
+        object itself, never its input profile.
 
     Returns
     -------
