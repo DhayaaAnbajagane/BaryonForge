@@ -194,7 +194,7 @@ class BaseBFGProfiles(ccl.halos.profiles.HaloProfile):
         cosmo : object
             CCL cosmology object.
         r : array_like
-            Radii at which to evaluate the profile.
+            Comoving radii at which to evaluate the profile.
         M : array_like
             Halo mass or array of halo masses.
         a : float
@@ -221,7 +221,6 @@ class BaseBFGProfiles(ccl.halos.profiles.HaloProfile):
         #If proj_cutoff was passed, then use the largest of the two
         if self.proj_cutoff is not None: 
             int_max = np.max([self.proj_cutoff, int_max])
-
         r_integral  = np.geomspace(int_min, int_max, int_N)
         
         

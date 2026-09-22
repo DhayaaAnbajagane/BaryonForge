@@ -254,9 +254,8 @@ class TabulatedProfile(ccl.halos.profiles.HaloProfile):
             for j in range(z_range.size):                
                 a_j = 1/(1 + z_range[j])
 
-                #Extra factor of "a" accounts for projection in ccl being done in comoving, not physical units
                 interp3D[j, :, :] = self.model.real(self.cosmo, r, M_range, a_j)
-                interp2D[j, :, :] = self.model.projected(self.cosmo, r, M_range, a_j) * a_j
+                interp2D[j, :, :] = self.model.projected(self.cosmo, r, M_range, a_j)
                 pbar.update(1)
 
         input_grid_1 = (np.log(1 + z_range), np.log(M_range), np.log(r))

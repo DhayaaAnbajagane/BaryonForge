@@ -670,10 +670,9 @@ class Baryonification2D(BaryonificationClass):
         r_max = np.max([np.max(r), self.r_max_int])
         r_int = np.geomspace(r_min/1.2, r_max*1.2, self.N_int)
         
-        #The scale fac. is used in Sigma cause the projection in ccl is
-        #done in comoving coords not physical coords
+
         dlnr  = np.log(r_int[1]/r_int[0])
-        Sigma = model.projected(self.cosmo, r_int, M, a) * a 
+        Sigma = model.projected(self.cosmo, r_int, M, a) 
         Sigma = np.where(Sigma < 0, 0, Sigma) #Enforce non-zero densities
         
         if isinstance(M, (float, int) ): Sigma = Sigma[None, :]
