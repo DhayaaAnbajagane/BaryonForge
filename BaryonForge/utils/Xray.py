@@ -12,8 +12,11 @@ class EmissivityTable:
     T, Z, a: array_like
         Full list of sample-point coordinates. These must always be passed
         as point lists of equal length, even when the samples lie on a
-        regular Cartesian grid. We need temperature in physical keV, 
-        metallicity in Zsolar, and scale factor.
+        regular Cartesian grid. We need temperature in physical Kelvin,
+        metallicity in Zsolar, and scale factor. Kelvin (not keV) is what the
+        `Temperature` profiles return, and it is what `Emissivity` feeds into
+        this table; use `BaryonForge.utils.K_to_kev` to convert a keV-based
+        grid when you build the table.
     emissivity : array_like
         Emissivity values at the supplied points. Must have the same shape
         as T, Z after flattening. Volumes in CCL/Baryonforge are always

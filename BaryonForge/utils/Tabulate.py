@@ -570,9 +570,8 @@ class ParamTabulatedProfile(object):
                     #Build a custom index into the array
                     index = tuple([j, slice(None), slice(None)] + list(c))
                     
-                    #Extra factor of "a" accounts for projection in ccl being done in comoving, not physical units
                     interp3D[index] = self.model.real(self.cosmo, r, M_range, a_j)
-                    interp2D[index] = self.model.projected(self.cosmo, r, M_range, a_j) * a_j
+                    interp2D[index] = self.model.projected(self.cosmo, r, M_range, a_j)
                     pbar.update(1)
                     
 
