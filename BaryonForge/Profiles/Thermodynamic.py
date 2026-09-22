@@ -413,9 +413,21 @@ class NonThermalFracGreen20(BaseThermodynamicProfile):
         
         #They define the model with R200m, so gotta use that redefinition here.
         mdef  = ccl.halos.massdef.MassDef(200, 'matter')
-        cnvrt = ccl.halos.mass_translator(mass_in = self.mass_def, mass_out = mdef, concentration = self.mass_def.concentration)
+        if self.c_M_relation is not None:
+            concentration = self.c_M_relation
+        elif self.cdelta is not None:
+            concentration = ccl.halos.concentration.ConcentrationConstant(
+                self.cdelta, mass_def=self.mass_def
+            )
+        else:
+            concentration = ccl.halos.concentration.ConcentrationDiemer15(
+                mass_def=self.mass_def
+            )
+        cnvrt = ccl.halos.mass_translator(
+            mass_in=self.mass_def, mass_out=mdef, concentration=concentration
+        )
         M200m = cnvrt(cosmo, M_use, a)
-        R200m = mdef.get_radius(cosmo, M_use, a)/a #in comoving distance
+        R200m = mdef.get_radius(cosmo, M200m, a)/a #in comoving distance
 
         x = r_use/R200m[:, None]
 

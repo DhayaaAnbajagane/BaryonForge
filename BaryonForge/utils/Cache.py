@@ -6,6 +6,23 @@ from ..Profiles.Base import BaseBFGProfiles
 
 __all__ = ['SimpleArrayCache', 'CachedProfile']
 
+
+class _CachedFunction:
+    """Pickleable callable used by :class:`SimpleArrayCache`."""
+
+    def __init__(self, cache, func):
+        self.cache = cache
+        self.func = func
+
+    def __call__(self, *args):
+        if self.cache.contains(*args):
+            return self.cache.get(*args)
+
+        value = self.func(*args)
+        self.cache.set(value, *args)
+        return value
+
+
 class SimpleArrayCache:
     """
     A lightweight LRU-style cache designed for functions whose inputs include
@@ -85,6 +102,10 @@ class SimpleArrayCache:
             return self._store[k]
         return None
 
+    def contains(self, *args):
+        """Return whether an entry exists, including entries valued ``None``."""
+        return self._key(*args) in self._store
+
     def set(self, value, *args):
         k = self._key(*args)
         self._store[k] = value
@@ -94,19 +115,7 @@ class SimpleArrayCache:
 
 
     def __call__(self, func):
-
-        def cached_func(*args):
-            cached = self.get(*args)
-            
-            if cached is not None:
-                return cached
-            
-            val = func(*args)
-            self.set(val, *args)
-
-            return val
-        
-        return cached_func
+        return _CachedFunction(self, func)
         
 
 class CachedProfile(BaseBFGProfiles):
@@ -143,7 +152,15 @@ class CachedProfile(BaseBFGProfiles):
 
     def __getattr__(self, key):
 
-        safe_keys = self.methods + ['Profile', 'maxsize']
+        # During unpickling, attributes may be requested before ``methods``
+        # has been restored.  Read it through object.__getattribute__ so the
+        # delegation path cannot recurse indefinitely.
+        try:
+            methods = object.__getattribute__(self, 'methods')
+        except AttributeError:
+            raise AttributeError(key) from None
+
+        safe_keys = methods + ['Profile', 'maxsize']
 
         if key in safe_keys:
             return object.__getattribute__(self, key)

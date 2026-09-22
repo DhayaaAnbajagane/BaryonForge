@@ -6,6 +6,14 @@ from scipy import interpolate
 
 __all__ = ['generate_operator_method', 'destory_Pk', 'build_cosmodict', 'safe_Pchip_minimize', 'combine_fftpars']
 
+
+def _evaluate_real(profile, cosmo, r, M, a):
+    """Evaluate a profile through its real-space implementation."""
+    real_method = getattr(profile, '_real', None)
+    if real_method is not None:
+        return real_method(cosmo, r, M, a)
+    return profile._fftlog_wrap(cosmo, r, M, a, fourier_out = False)
+
 def generate_operator_method(op, reflect = False):
     """
     Defines a method for generating simple arithmetic operations for the Profile classes.
@@ -67,10 +75,10 @@ def generate_operator_method(op, reflect = False):
 
             def __tmp_real__(cosmo, r, M, a):
 
-                A = self._real(cosmo, r, M, a)
+                A = _evaluate_real(self, cosmo, r, M, a)
 
                 if isinstance(other, ccl.halos.profiles.HaloProfile):
-                    B = other._real(cosmo, r, M, a)
+                    B = _evaluate_real(other, cosmo, r, M, a)
                 else:
                     B = other
 

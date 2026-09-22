@@ -4,7 +4,7 @@ from scipy import interpolate, special
 from .Tabulate import _set_parameter
 from ..Profiles.Base import BaseBFGProfiles
 
-__all__ = ['ConvolvedProfile', 'GridPixelApprox', 'HealPixel']
+__all__ = ['ConvolvedProfile', 'GridPixelApprox', 'HealPixel', 'NoPix']
 
 #Define a shorthand to use everywhere
 fftlog = ccl.pyutils._fftlog_transform
@@ -113,8 +113,8 @@ class ConvolvedProfile(BaseBFGProfiles):
 
     #Need to explicitly set these two methods (to enable pickling)
     #since otherwise the getattr call above leads to infinite recursions.
-    def __getstate__(self): self.__dict__.copy()    
-    def __setstate__(self, state): self.__dict__.update(state)
+    def __getstate__(self): return self.__dict__.copy()    
+    def __setstate__(self, state): return self.__dict__.update(state)
 
     def set_parameter(self, key, value): _set_parameter(self, key, value)
     
@@ -615,6 +615,9 @@ class NoPix(object):
       or modification of the input profile due to a pixel window function.
     """
     
+    isHarmonic = False
+    size = 0
+
     def __init__(self):
         pass
         
