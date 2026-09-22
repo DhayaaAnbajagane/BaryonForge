@@ -177,7 +177,7 @@ def _hydif(name):
     dm_parameters = _fast(bpar_S19)
     dm = bfg.Profiles.Schneider19.DarkMatter(**dm_parameters)
 
-    parameters = {**_fast(bpar_HyDif), "DM": dm}
+    parameters = {**_fast(bpar_HyDif), "darkmatter": dm}
     module = bfg.Profiles.HyDif
     if name == "hydrostatic_gas":
         return module.HydrostaticGas(**parameters)

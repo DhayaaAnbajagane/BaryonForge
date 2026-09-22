@@ -75,9 +75,9 @@ def _schneider25():
 def _hydif():
     parameters = _fast({**bpar_S19, "mean_molecular_weight": 0.59})
     # HyDif's Gas plugs into Schneider19's own DarkMatterBaryon (Stars, CollisionlessMatter,
-    # DarkMatter unchanged), matching the pattern used in examples/22_Plot_Profiles_HyDif.ipynb.
+    # one-halo darkmatter unchanged), matching the pattern used in examples/22_Plot_Profiles_HyDif.ipynb.
     dm = S19.DarkMatter(**parameters)
-    gas = HyDif.Gas(DM=dm, **_fast(bpar_HyDif))
+    gas = HyDif.Gas(darkmatter=dm, **_fast(bpar_HyDif))
     dmb = S19.DarkMatterBaryon(
         gas=gas, twohalo=bfg.Profiles.misc.Zeros(), **parameters
     )

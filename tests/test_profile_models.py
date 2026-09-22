@@ -121,21 +121,21 @@ PROFILE_CASES: tuple[tuple[str, Callable[[], object]], ...] = (
     (
         "hydif_gas",
         lambda: bfg.Profiles.HyDif.Gas(
-            DM=bfg.Profiles.Schneider19.DarkMatter(**_fast(bpar_S19)),
+            darkmatter=bfg.Profiles.Schneider19.DarkMatter(**_fast(bpar_S19)),
             **_fast(bpar_HyDif),
         ),
     ),
     (
         "hydif_hydrostatic_gas",
         lambda: bfg.Profiles.HyDif.HydrostaticGas(
-            DM=bfg.Profiles.Schneider19.DarkMatter(**_fast(bpar_S19)),
+            darkmatter=bfg.Profiles.Schneider19.DarkMatter(**_fast(bpar_S19)),
             **_fast(bpar_HyDif),
         ),
     ),
     (
         "hydif_diffuse_gas",
         lambda: bfg.Profiles.HyDif.DiffuseGas(
-            DM=bfg.Profiles.Schneider19.DarkMatter(**_fast(bpar_S19)),
+            darkmatter=bfg.Profiles.Schneider19.DarkMatter(**_fast(bpar_S19)),
             **_fast(bpar_HyDif),
         ),
     ),
