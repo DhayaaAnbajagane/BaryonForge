@@ -6,6 +6,8 @@ Test index:
     test_split_join_preserves_runner_settings: checks split runners inherit the painting settings.
     test_anisotropic_painting_assigns_all_tracer_to_single_halo: checks tracer/mass units in PaintProfilesAnisShell.
     test_baryonification_moves_mass_inward_and_conserves_it: checks BaryonifyShell end to end.
+    test_split_join_does_not_create_empty_splits: checks catalogs that do not fill every job.
+    test_anisotropic_painting_background_includes_pixel_size: checks the background's pixel-area factor.
 """
 
 import warnings
@@ -131,6 +133,50 @@ def test_anisotropic_painting_assigns_all_tracer_to_single_halo():
     vec = hp.ang2vec(10.0, 10.0, lonlat=True)
     center = hp.vec2pix(NSIDE, *vec)
     assert result[center] == pytest.approx(1, rel=1e-6)
+
+
+def test_split_join_does_not_create_empty_splits():
+    cosmology_parameters = bfg.utils.build_cosmodict(_cosmology())
+    rng = np.random.default_rng(4)
+    catalog = bfg.HaloLightConeCatalog(
+        rng.uniform(0, 90, 5), rng.uniform(-30, 30, 5), np.full(5, 1.0e14), np.full(5, 0.3),
+        cosmology_parameters.copy()
+    )
+    shell = bfg.LightconeShell(np.zeros(hp.nside2npix(16)), cosmo=cosmology_parameters.copy(), redshift=0.3)
+    runner = bfg.PaintProfilesShell(catalog, shell, epsilon_max=20, model=GaussianProfile(), verbose=False)
+
+    # 5 halos over 4 jobs: 2 halos per split, so only 3 splits hold halos
+    split = bfg.utils.SplitJoinParallel(runner, njobs=4)
+    assert all(len(sub_runner.HaloLightConeCatalog.cat) > 0 for sub_runner in split.Runner_list)
+    joined = np.sum([sub_runner.process() for sub_runner in split.Runner_list], axis=0)
+    np.testing.assert_allclose(joined, runner.process())
+
+
+def test_anisotropic_painting_background_includes_pixel_size():
+    """The background term gets the same pixel-area factor as the halo terms."""
+    cosmology = _cosmology()
+    cosmology_parameters = bfg.utils.build_cosmodict(cosmology)
+    catalog = bfg.HaloLightConeCatalog(
+        np.array([10.0]), np.array([10.0]), np.array([1.0e14]), np.array([0.3]), cosmology_parameters.copy()
+    )
+    NSIDE = 64
+    tracer = bfg.Profiles.misc.ComovingToPhysical(GaussianProfile(proj_cutoff=10) * 1e10, factor=-3)
+    results = {}
+    for include_pixel_size in (False, True):
+        shell = bfg.LightconeShell(np.ones(hp.nside2npix(NSIDE)), cosmo=cosmology_parameters.copy(), redshift=0.3)
+        runner = bfg.PaintProfilesAnisShell(
+            catalog, shell, epsilon_max=5, model=bfg.Profiles.misc.Identity(),
+            Tracer_model=tracer, Mtot_model=tracer, background_val=1, global_tracer_fraction=1,
+            include_pixel_size=include_pixel_size, verbose=False,
+        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            results[include_pixel_size] = runner.process()
+
+    far = hp.vec2pix(NSIDE, *hp.ang2vec(100.0, -40.0, lonlat=True))
+    D_A = ccl.angular_diameter_distance(cosmology, 1 / 1.3)
+    assert results[False][far] > 0
+    assert results[True][far] / results[False][far] == pytest.approx(hp.nside2pixarea(NSIDE) * D_A**2, rel=1e-6)
 
 
 class InwardDisplacement:

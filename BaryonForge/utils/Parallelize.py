@@ -249,9 +249,9 @@ class SplitJoinParallel(object):
         #Now split
         
         catalog   = HaloCat.cat
-        Nsplits   = self.njobs
         Ntotal    = len(catalog)
-        Npersplit = int(np.ceil(Ntotal/Nsplits))
+        Npersplit = int(np.ceil(Ntotal/self.njobs))
+        Nsplits   = int(np.ceil(Ntotal/Npersplit)) #Fewer splits than njobs if needed, so no split is empty
 
         #Randomize catalog ordering. This helps optimize the parallelization. Else if 
         #low redshift halos are all the start, then handful of processes will be overburdened 

@@ -98,6 +98,8 @@ class DefaultRunnerSnapshot(object):
         else:
             coords = np.vstack([ParticleSnapshot.cat['x'], ParticleSnapshot.cat['y'], ParticleSnapshot.cat['z']]).T
                                
+        #Periodic KDTrees need data in [0, L). Snapshots stored on [0, L] can have x == L exactly.
+        coords    = np.mod(coords, ParticleSnapshot.L)
         self.tree = KDTree(coords, boxsize = ParticleSnapshot.L, **KDTree_kwargs)
 
                 
@@ -275,7 +277,6 @@ class BaryonifySnapshot(DefaultRunnerSnapshot):
             
         for i in ['x', 'y'] + ([] if self.ParticleSnapshot.is2D else ['z']):
             
-            new_cat[i]  = np.where(new_cat[i] > L, new_cat[i] - L, new_cat[i])
-            new_cat[i]  = np.where(new_cat[i] < 0, new_cat[i] + L, new_cat[i])
+            new_cat[i]  = np.mod(new_cat[i], L) #Wrap into [0, L), so x == L maps to 0 (as periodic KDTrees expect)
 
         return new_cat

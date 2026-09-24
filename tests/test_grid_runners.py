@@ -9,6 +9,10 @@ Test index:
     test_3D_grid_runners_are_centered_and_symmetric: checks 3D painting centroids and baryonification symmetry.
     test_gridded_map_coordinates_follow_axis_convention: checks GriddedMap.grid matches the map axes.
     test_elliptical_painting_orientation: checks ellipse orientation and axis ratio for +/- angles.
+    test_baryonify_grid_isolates_non_finite_displacements: checks a NaN halo leaves other halos unchanged.
+    test_baryonify_grid_accepts_parameterized_baryonification: checks BaryonificationClass with p_keys.
+    test_baryonify_grid_does_not_depend_on_bin_origin: checks large cutouts for bins centered on zero.
+    test_snapshot_output_is_wrapped_into_the_box: checks outputs lie in [0, L) and can be reused.
 """
 
 import numpy as np
@@ -234,3 +238,95 @@ def test_elliptical_painting_orientation(cosmology_parameters, angle):
     # A_ell is the major axis, see DefaultRunnerGrid.build_Rmat
     major = evecs[:, 1]
     assert abs(np.dot(major, [np.cos(theta), np.sin(theta)])) == pytest.approx(1, abs=1e-3)
+
+
+class TableEdgeDisplacement(InwardDisplacement):
+    """Like InwardDisplacement, but NaN for halos below 1e13 (as a table outside its mass range)."""
+
+    def displacement(self, r, M, a):
+        d = super().displacement(r, M, a)
+        return d * np.nan if M < 1.0e13 else d
+
+
+def test_baryonify_grid_isolates_non_finite_displacements(cosmology_parameters):
+    density = np.ones((N_PIX, N_PIX))
+    single = bfg.BaryonifyGrid(
+        _catalog(BINS[20], BINS[12], cosmology_parameters), _grid(cosmology_parameters, density),
+        epsilon_max=5, model=TableEdgeDisplacement(), verbose=False,
+    ).process()
+
+    # Add a small halo whose displacement is NaN, two pixels away from the first one
+    pair = bfg.HaloNDCatalog(x=np.array([BINS[20], BINS[22]]), y=np.array([BINS[12], BINS[12]]),
+                             M=np.array([1.0e14, 1.0e12]), redshift=REDSHIFT, cosmo=dict(cosmology_parameters))
+    both = bfg.BaryonifyGrid(pair, _grid(cosmology_parameters, density), epsilon_max=5,
+                             model=TableEdgeDisplacement(), verbose=False).process()
+    np.testing.assert_allclose(both, single, rtol=1e-12)
+
+
+class ParameterizedDisplacement(bfg.Profiles.BaryonificationClass):
+    """Minimal BaryonificationClass with a tabulated extra parameter (``cdelta``)."""
+
+    def __init__(self):
+        self.p_keys = ["cdelta"]
+
+    def displacement(self, r, M, a, cdelta):
+        return InwardDisplacement().displacement(r, M, a)
+
+
+def test_baryonify_grid_accepts_parameterized_baryonification(cosmology_parameters):
+    catalog = _catalog(BINS[20], BINS[12], cosmology_parameters, cdelta=np.array([4.0]))
+    density = np.ones((N_PIX, N_PIX))
+    result = bfg.BaryonifyGrid(catalog, _grid(cosmology_parameters, density), epsilon_max=5,
+                               model=ParameterizedDisplacement(), verbose=False).process()
+    expected = bfg.BaryonifyGrid(_catalog(BINS[20], BINS[12], cosmology_parameters),
+                                 _grid(cosmology_parameters, density), epsilon_max=5,
+                                 model=InwardDisplacement(), verbose=False).process()
+    np.testing.assert_allclose(result, expected)
+
+
+class WideInwardDisplacement:
+    """Every pixel within 7 Mpc moves 0.3 pixels inward."""
+
+    def displacement(self, r, M, a):
+        r = np.atleast_1d(r)
+        return np.where(r < 7, -0.3 * RES, 0.0)
+
+
+def test_baryonify_grid_does_not_depend_on_bin_origin(cosmology_parameters):
+    density = np.ones((N_PIX, N_PIX))
+    maps = []
+    for origin in (0.0, -BOX / 2):
+        bins = BINS + origin
+        catalog = _catalog(bins[20], bins[20], cosmology_parameters)
+        grid = bfg.GriddedMap(map=density, bins=bins, redshift=REDSHIFT, cosmo=dict(cosmology_parameters))
+        maps.append(bfg.BaryonifyGrid(catalog, grid, epsilon_max=10, model=WideInwardDisplacement(),
+                                      verbose=False).process())
+    np.testing.assert_allclose(maps[1], maps[0], rtol=1e-12)
+
+
+class OutwardDisplacement:
+    """Every particle within 2 Mpc moves 0.3 Mpc outward."""
+
+    def displacement(self, r, M, a):
+        r = np.atleast_1d(r)
+        return np.where(r < 2, 0.3, 0.0)
+
+
+def test_snapshot_output_is_wrapped_into_the_box(cosmology_parameters):
+    rng = np.random.default_rng(2)
+    x, y, z = rng.uniform(0, BOX, (3, 500))
+    x[:50] = rng.uniform(BOX - 1, BOX, 50)   # Particles near the edge get pushed across it
+    x[50] = BOX                               # Snapshots stored on [0, L] can have x == L
+    snapshot = bfg.ParticleSnapshot(x=x, y=y, z=z, M=np.ones(500), L=BOX,
+                                    redshift=REDSHIFT, cosmo=dict(cosmology_parameters))
+    catalog = _catalog(BOX - 0.5, 10.0, cosmology_parameters, z=np.array([10.0]))
+    new_catalog = bfg.BaryonifySnapshot(catalog, snapshot, epsilon_max=5,
+                                        model=OutwardDisplacement(), verbose=False).process()
+
+    for axis in ("x", "y", "z"):
+        assert np.all((new_catalog[axis] >= 0) & (new_catalog[axis] < BOX))
+
+    # The output must be usable as an input again
+    again = bfg.ParticleSnapshot(x=new_catalog["x"], y=new_catalog["y"], z=new_catalog["z"], M=np.ones(500),
+                                 L=BOX, redshift=REDSHIFT, cosmo=dict(cosmology_parameters))
+    bfg.BaryonifySnapshot(catalog, again, epsilon_max=5, model=OutwardDisplacement(), verbose=False).process()

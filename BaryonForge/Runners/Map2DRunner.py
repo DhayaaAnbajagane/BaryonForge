@@ -7,6 +7,7 @@ from numba import njit
 from ..utils import ParamTabulatedProfile
 from ..utils.Tabulate import _get_parameter
 from ..utils.misc import _default_mass_def
+from ..Profiles.BaryonCorrection import BaryonificationClass
 
 __all__ = ['DefaultRunnerGrid', 'BaryonifyGrid', 'PaintProfilesGrid', 'PaintProfilesAnisGrid',
            'regrid_pixels_2D', 'regrid_pixels_3D']
@@ -480,9 +481,9 @@ class BaryonifyGrid(DefaultRunnerGrid):
         keys          = vars(self.model).get('p_keys', []) #Check if model has property keys
 
         if len(keys) > 0:
-            txt = (f"You asked to use {keys} properties in Baryonification. You must pass a ParamTabulatedProfile"
-                   f"as the model. You have passed {type(self.model)} instead")
-            assert isinstance(self.model, ParamTabulatedProfile), txt
+            txt = (f"You asked to use {keys} properties in Baryonification. You must pass a ParamTabulatedProfile "
+                   f"or BaryonificationClass as the model. You have passed {type(self.model)} instead")
+            assert isinstance(self.model, (ParamTabulatedProfile, BaryonificationClass)), txt
 
         for j in tqdm(range(self.HaloNDCatalog.cat.size), desc = 'Baryonifying matter', disable = not self.verbose):
 
@@ -495,7 +496,6 @@ class BaryonifyGrid(DefaultRunnerGrid):
             a_j = 1/(1 + self.HaloNDCatalog.redshift)
             R_j = self.mass_def.get_radius(cosmo, M_j, a_j) #in physical Mpc
             R_q = self.epsilon_max * R_j/a_j
-            R_q = np.clip(R_q, 0, np.max(self.GriddedMap.bins)/2) #Can't query distances more than half box-size.
             
             if self.use_ellipticity:
                 q_j = self.HaloNDCatalog.cat['q_ell'][j]
@@ -548,9 +548,13 @@ class BaryonifyGrid(DefaultRunnerGrid):
                 #The 1/res makes sure the offset is in units of pixel widths.
                 #In regrid_pixels_2D, column 0 of pix_offsets shifts axis 1 of the map
                 #and column 1 shifts axis 0.
+                #Non-finite values (eg. a halo outside the table range, or the pixel exactly at the
+                #halo center, where x_hat = 0/0) are zeroed per halo, so they cannot erase the
+                #displacements of other halos in the same pixels.
                 offset = self.model.displacement(r_grid.flatten(), M_j, a_j, **o_j) / res
-                pix_offsets[inds, 0] += offset * y_hat.flatten()
-                pix_offsets[inds, 1] += offset * x_hat.flatten()
+                for col, hat in ((0, y_hat), (1, x_hat)):
+                    d = offset * hat.flatten()
+                    pix_offsets[inds, col] += np.where(np.isfinite(d), d, 0)
 
 
             else:
@@ -594,9 +598,9 @@ class BaryonifyGrid(DefaultRunnerGrid):
                 #The 1/res makes sure the offset is in units of pixel widths.
                 #In regrid_pixels_3D, columns 0, 1, 2 of pix_offsets shift axes 1, 0, 2 of the map.
                 offset = self.model.displacement(r_grid.flatten(), M_j, a_j, **o_j) / res
-                pix_offsets[inds, 0] += offset * y_hat.flatten()
-                pix_offsets[inds, 1] += offset * x_hat.flatten()
-                pix_offsets[inds, 2] += offset * z_hat.flatten()
+                for col, hat in ((0, y_hat), (1, x_hat), (2, z_hat)):
+                    d = offset * hat.flatten()
+                    pix_offsets[inds, col] += np.where(np.isfinite(d), d, 0) #Zeroed per halo, see the 2D case
             
             
         #Now that pixels have all been offset, let's regrid the map
@@ -730,9 +734,9 @@ class PaintProfilesGrid(DefaultRunnerGrid):
         keys = vars(self.model).get('p_keys', []) #Check if model has property keys
 
         if len(keys) > 0:
-            txt = (f"You asked to use {keys} properties in Baryonification. You must pass a ParamTabulatedProfile"
-                   f"as the model. You have passed {type(self.model)} instead")
-            assert isinstance(self.model, ParamTabulatedProfile), txt
+            txt = (f"You asked to use {keys} properties in Baryonification. You must pass a ParamTabulatedProfile "
+                   f"or BaryonificationClass as the model. You have passed {type(self.model)} instead")
+            assert isinstance(self.model, (ParamTabulatedProfile, BaryonificationClass)), txt
 
         dV = np.power(self.GriddedMap.res, 2 if self.GriddedMap.is2D else 3)
 

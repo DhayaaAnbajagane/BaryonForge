@@ -661,8 +661,11 @@ class PaintProfilesAnisShell(DefaultRunner):
         #Missing mass was assigned to uniform background. Here we account for that background's contribution
         Mfrac    = np.divide(dV * drho_m, Mtot_map, out = np.zeros_like(Mtot_map), where = Mtot_map > 0)
         Mfrac   *= orig_map
-        new_map += self.background_val * self.global_tracer_fraction * Mfrac
-        
-        new_map  = new_map.reshape(orig_map.shape)      
+        Bkg      = self.background_val * self.global_tracer_fraction * Mfrac
+        #Same pixel-size factor as the halo terms above, using the shell's distance
+        if self.include_pixel_size: Bkg = Bkg * (pixarea * dD**2)
+        new_map += Bkg
+
+        new_map  = new_map.reshape(orig_map.shape)
 
         return new_map
