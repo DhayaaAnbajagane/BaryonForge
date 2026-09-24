@@ -240,13 +240,15 @@ class BaseBFGProfiles(ccl.halos.profiles.HaloProfile):
         Advantageous as it can avoid any hankel transform artifacts.
 
         This replaces the original method, which is kept as `_projected_realspace_legacy`.
-        Against a direct (untabulated) line-of-sight integral, for S19 profiles with the default
-        `n_per_decade_proj` and cutoff = proj_cutoff = 250 Mpc, the median/max errors are
-        0.5-0.8% / <1% (legacy: 1.7-3.4% / 5-17%). The cost relative to the legacy method is
-        about 1.1-1.2x for profiles whose `_real` dominates the run time (eg. a DarkMatterBaryon,
-        either 2000 radii or a 100 radii x 30 masses table), 1.7x for DarkMatterOnly at
-        500 radii x 30 masses, and up to 4.5x for cheap profiles evaluated at many radii
-        (S19 Gas at 2000 radii: 0.04 s -> 0.16 s), where the per-radius integral dominates.
+        Extra grid nodes are placed around the 3D cutoff and just inside/outside the halo radius R
+        of every mass, where profiles are often sharply truncated (eg. Mead20, Arico20).
+        Against a direct (untabulated) line-of-sight integral, with the default `n_per_decade_proj`,
+        the median/max errors within R are 0.4-0.8% / <1.1% for S19, Mead20 and Arico20 profiles
+        (legacy: 1-3% / 3-5% for smooth S19 profiles, and up to 60-70% near R for the truncated
+        Mead20/Arico20 ones). The cost relative to the legacy method is about 1.1-1.4x when `_real`
+        dominates the run time (eg. S19 or Arico20 DarkMatterBaryon tables of 100 radii x 30 masses),
+        and up to ~5x for cheap profiles evaluated at many radii (eg. S19 Gas at 2000 radii:
+        0.05 s -> 0.21 s), where the per-radius line-of-sight integral dominates.
 
         Parameters
         ----------
@@ -305,8 +307,14 @@ class BaseBFGProfiles(ccl.halos.profiles.HaloProfile):
         else:
             edge_nodes = np.array([])
 
+        #Extra nodes just inside/outside the halo radius R of each mass. Many profiles are truncated
+        #sharply at R (eg. Mead20, Arico20, Truncation), which the log-spaced grid would otherwise
+        #smear over the (~25% wide) interval containing R.
+        R_nodes = np.stack([R * (1 - 1e-6), R * (1 + 1e-6)], axis = -1) #Shape (M, 2)
+        R_nodes = np.where((R_nodes > int_min) & (R_nodes < int_max), R_nodes, np.nan)
+
         r_integral  = np.geomspace(int_min, int_max, int_N)
-        r_integral  = np.unique(np.concatenate([r_integral, edge_nodes]))
+        r_integral  = np.unique(np.concatenate([r_integral, edge_nodes, R_nodes[np.isfinite(R_nodes)]]))
         r_proj      = np.geomspace(int_min, r_max, proj_N)
         r_proj      = np.concatenate([[0], r_proj]) #Line-of-sight integral starts at l = 0
         prof = np.asarray(self._real(cosmo, r_integral, M, a))
@@ -335,9 +343,19 @@ class BaseBFGProfiles(ccl.halos.profiles.HaloProfile):
         for i in range(M_use.size):
             positive = prof[i] > 0
             ln_prof  = np.log(np.where(positive, prof[i], 1))
+
+            #The line-of-sight values where each projected radius crosses R of this mass (NaN if it never does)
+            with np.errstate(invalid = 'ignore'):
+                l_R = np.sqrt(R_nodes[i][None, :]**2 - r_use[:, None]**2)
+            l_R = np.where((l_R > 0) & (l_R < r_max), l_R, np.nan)
+            crosses = np.any(np.isfinite(l_R), axis = 1)
+
             for j in range(r_use.size):
 
                 r_proj    = r_proj_j[j]
+                if crosses[j]:
+                    r_proj = np.sort(np.concatenate([r_proj, l_R[j][np.isfinite(l_R[j])]]))
+
                 r_los     = np.sqrt(r_proj**2 + r_use[j]**2)
                 integrand = np.interp(r_los, r_integral, prof[i])
 

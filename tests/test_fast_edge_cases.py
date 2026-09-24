@@ -42,6 +42,7 @@ Test index:
     test_truncated_fourier_matches_direct_transform: checks the Fourier transform of truncated profiles.
     test_projection_at_zero_radius: checks projected profiles at r = 0.
     test_projection_resolves_the_cutoff_edge: checks background terms projected up to the 3D cutoff.
+    test_projection_resolves_the_truncation_at_the_halo_radius: checks a profile truncated at R vs analytic.
     test_legacy_projection_is_retained: checks the original real-space projection is still available.
     test_concentration_classes_and_instances: checks c_M_relation accepts classes and instances.
     test_cached_profiles_in_halo_model: checks cached (HOD) profiles inside CCL halo-model calls.
@@ -852,6 +853,34 @@ def test_projection_resolves_the_cutoff_edge(cosmo):
         radii = np.sort(np.append(radii, radius))
         result = profile.projected(cosmo, radii, 1.0e14, 0.8)[radii == radius][0]
         assert result == pytest.approx(direct, rel=1e-2)
+
+
+class _TruncatedPowerLaw(BaseBFGProfiles):
+    """rho = r^-2 inside the halo radius R, zero outside (as in the Mead20/Arico20 truncations)."""
+
+    def _real(self, cosmo, r, M, a):
+        r_use = np.atleast_1d(r)
+        m_use = np.atleast_1d(M)
+        R = self.mass_def.get_radius(cosmo, m_use, a) / a
+        result = np.where(r_use[None, :] < R[:, None], r_use[None, :]**-2.0, 0.0)
+        if np.ndim(r) == 0:
+            result = np.squeeze(result, axis=-1)
+        if np.ndim(M) == 0:
+            result = np.squeeze(result, axis=0)
+        return result
+
+
+def test_projection_resolves_the_truncation_at_the_halo_radius(cosmo):
+    profile = _TruncatedPowerLaw(cutoff=50, proj_cutoff=50)
+    masses = np.array([1.0e13, 1.0e14])
+    R = profile.mass_def.get_radius(cosmo, masses, 0.8) / 0.8
+    for radii in (np.geomspace(1e-3, 5, 40), np.geomspace(2e-3, 3, 40)):
+        result = profile.projected(cosmo, radii, masses, 0.8)
+        # Analytic projection: (2/r) arctan(sqrt(R^2 - r^2) / r) inside R, zero outside
+        inside = radii[None, :] < R[:, None]
+        expected = np.where(inside, 2 / radii * np.arctan(np.sqrt(np.clip(R[:, None]**2 - radii**2, 0, None)) / radii), 0)
+        np.testing.assert_allclose(result[inside], expected[inside], rtol=1e-2)
+        np.testing.assert_allclose(result[~inside], 0, atol=1e-12)
 
 
 def test_legacy_projection_is_retained(cosmo):
