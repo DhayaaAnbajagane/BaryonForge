@@ -34,6 +34,11 @@ Test index:
     test_projection_does_not_depend_on_requested_radii: checks real-space projection convergence.
     test_emissivity_table_accepts_documented_inputs: checks point lists, ordering, and 2D queries.
     test_grid_pixel_window_matches_pixel_average: checks the grid pixel window against direct averaging.
+    test_runners_default_to_the_model_mass_definition: checks the default mass_def of runners/baryonification.
+    test_parameter_tables_match_parameters_by_name: checks tabulated parameters are matched by name.
+    test_displacement_table_matches_parameters_by_name: checks displacement parameters are matched by name.
+    test_simple_array_cache_returns_copies: checks cached outputs cannot be modified in place.
+    test_truncated_fourier_matches_direct_transform: checks the Fourier transform of truncated profiles.
 """
 
 from collections import Counter
@@ -650,3 +655,120 @@ def test_grid_pixel_window_matches_pixel_average():
     np.testing.assert_allclose(
         convolved.real(None, radii, 1.0e14, 0.8), direct, rtol=0.05
     )
+
+
+def test_runners_default_to_the_model_mass_definition(cosmo):
+    mass_def = ccl.halos.massdef.MassDef500c
+    model = LinearProfile(mass_def=mass_def)
+    catalog, shell = SimpleNamespace(cosmology={}), SimpleNamespace()
+
+    assert DefaultRunner(catalog, shell, epsilon_max=1, model=model).mass_def is model.mass_def
+    assert DefaultRunner(catalog, shell, epsilon_max=1, model=None).mass_def.name == "200c"
+    explicit = ccl.halos.massdef.MassDef200m
+    assert DefaultRunner(catalog, shell, epsilon_max=1, model=model, mass_def=explicit).mass_def is explicit
+
+    table = bfg.utils.ParamTabulatedProfile(model, cosmo)  # Has no mass_def itself
+    assert DefaultRunner(catalog, shell, epsilon_max=1, model=table).mass_def is model.mass_def
+
+    baryonification = bfg.Profiles.Baryonification3D(model, LinearProfile(mass_def=mass_def), cosmo)
+    assert baryonification.mass_def is model.mass_def
+
+
+class TwoParameterProfile(BaseBFGProfiles):
+    model_param_names = ["alpha", "beta"]
+
+    def __init__(self, alpha=1, beta=1, **kwargs):
+        super().__init__(alpha=alpha, beta=beta, **kwargs)
+        self._projected = self._real
+
+    def _real(self, cosmo, r, M, a):
+        r_use = np.atleast_1d(r)
+        m_use = np.atleast_1d(M)
+        result = (m_use[:, None] / 1.0e14) * (self.alpha + 10 * self.beta) * r_use[None, :]
+        if np.ndim(r) == 0:
+            result = np.squeeze(result, axis=-1)
+        if np.ndim(M) == 0:
+            result = np.squeeze(result, axis=0)
+        return result
+
+
+def test_parameter_tables_match_parameters_by_name(cosmo):
+    table = bfg.utils.ParamTabulatedProfile(TwoParameterProfile(), cosmo)
+    table.setup_interpolator(
+        z_min=0.1, z_max=0.1, N_samples_z=1,
+        M_min=1.0e13, M_max=1.0e14, N_samples_Mass=2,
+        R_min=0.1, R_max=1.0, N_samples_R=2,
+        other_params={"alpha": [1.0, 2.0], "beta": (1.0, 3.0)},  # Lists/tuples are accepted
+        verbose=False,
+    )
+    # Evaluate on the table's grid points, where the interpolation is exact
+    expected = TwoParameterProfile(alpha=2.0, beta=3.0).real(cosmo, 0.1, 1.0e14, 1 / 1.1)
+    for kwargs in ({"alpha": 2.0, "beta": 3.0}, {"beta": 3.0, "alpha": 2.0}):
+        np.testing.assert_allclose(table.real(cosmo, 0.1, 1.0e14, 1 / 1.1, **kwargs), expected)
+
+    with pytest.raises(ValueError, match="gamma"):
+        table.real(cosmo, 0.1, 1.0e14, 1 / 1.1, alpha=2.0, beta=3.0, gamma=1)
+
+
+class _ToyBaryonification(bfg.Profiles.BaryonificationClass):
+    """Analytic enclosed masses: the DMB mass is rescaled in radius by (1 + alpha + 10 beta)."""
+
+    def get_masses(self, model, r, M, a):
+        scale = 1 if model is self.DMO else (1 + model.alpha + 10 * model.beta)
+        return M[:, None] * (1 - np.exp(-r[None, :] * scale))
+
+
+def test_displacement_table_matches_parameters_by_name(cosmo):
+    toy = _ToyBaryonification(TwoParameterProfile(), TwoParameterProfile(), cosmo)
+    toy.setup_interpolator(
+        z_min=0.1, z_max=0.2, N_samples_z=2,
+        M_min=1.0e13, M_max=1.0e14, N_samples_Mass=2,
+        R_min=0.05, R_max=1.0, N_samples_R=40,
+        other_params={"alpha": [0.1, 0.2], "beta": [0.01, 0.05]}, verbose=False,
+    )
+    # Evaluate on the table's parameter grid points, where the interpolation is exact
+    radii = np.array([0.1, 0.3])
+    forward = toy.displacement(radii, 1.0e14, 1 / 1.15, alpha=0.2, beta=0.05)
+    reverse = toy.displacement(radii, 1.0e14, 1 / 1.15, beta=0.05, alpha=0.2)
+    np.testing.assert_allclose(forward, reverse)
+
+    # For these masses, r_DMB = r / (1 + alpha + 10 beta), so the displacement is analytic
+    np.testing.assert_allclose(forward, radii / (1 + 0.2 + 10 * 0.05) - radii, rtol=1e-2)
+
+    with pytest.raises(ValueError, match="gamma"):
+        toy.displacement(radii, 1.0e14, 1 / 1.15, alpha=0.2, beta=0.05, gamma=1)
+
+
+def test_simple_array_cache_returns_copies():
+    cached = SimpleArrayCache()(lambda values: np.asarray(values) * 2.0)
+    first = cached(np.array([1.0, 2.0]))
+    first *= 100  # Modifying the output in place must not change the cache
+    np.testing.assert_array_equal(cached(np.array([1.0, 2.0])), [2.0, 4.0])
+    second = cached(np.array([1.0, 2.0]))
+    second[:] = 0
+    np.testing.assert_array_equal(cached(np.array([1.0, 2.0])), [2.0, 4.0])
+
+
+def test_truncated_fourier_matches_direct_transform(cosmo):
+    from BaryonForge.Profiles.misc import TruncatedFourier
+
+    parameters = {**bpar_S19, "r_steps": 64, "cutoff": 1000, "proj_cutoff": 1000}
+    profile = bfg.Profiles.Schneider19.DarkMatter(**parameters)
+    profile.update_precision_fftlog(n_per_decade=1000)
+    mass, scale_factor = 1.0e14, 0.8
+    radius = profile.mass_def.get_radius(cosmo, mass, scale_factor) / scale_factor
+    k = np.array([0.05, 0.5, 2.0, 5.0]) / radius
+
+    # Direct transform of the profile truncated at the halo radius
+    r = np.geomspace(1e-6, radius, 20000)
+    rho = profile.real(cosmo, r, mass, scale_factor)
+    direct = np.array([np.trapz(4 * np.pi * r**2 * rho * np.sinc(ki * r / np.pi), r) for ki in k])
+
+    truncated = TruncatedFourier(profile, epsilon_max=1)
+    # 2% is the FFTLog accuracy at the lowest k; before the fix this was 10% at low k
+    np.testing.assert_allclose(truncated.fourier(cosmo, k, mass, scale_factor), direct, rtol=2e-2)
+    assert truncated.fourier(cosmo, k, np.array([1.0e13, 1.0e14]), scale_factor).shape == (2, 4)
+    assert truncated.mass_def is profile.mass_def
+    restored = pickle.loads(pickle.dumps(truncated))
+    np.testing.assert_allclose(restored.fourier(cosmo, k, mass, scale_factor),
+                               truncated.fourier(cosmo, k, mass, scale_factor))

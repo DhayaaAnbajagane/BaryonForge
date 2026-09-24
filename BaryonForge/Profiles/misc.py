@@ -371,37 +371,47 @@ class Zeros(BaseBFGProfiles):
 class TruncatedFourier(object):
     """
     Class for performing FFTLog transforms on profiles with sharp real-space truncations.
-    The class simply limits the `fourier` method integration limits, per halo, to account
-    for this truncation.
+    The class sets the profile to zero outside the truncation radii, per halo, and places a
+    node of the FFTLog grid exactly at the outer truncation radius, so the transform does not
+    depend on where the sharp edge falls on the grid. All other methods and attributes are
+    those of the input profile.
 
     You can set both a maximum and a minimum radii for the integration, though there is no
     known use-case where setting minimum-radii !=0 is reasonable.
 
     Parameters
     ----------
-    mass_def : ccl.halos.massdef.MassDef, optional
-        The mass definition for the halo. By default, this is set to `MassDef200c`, 
-        which defines the virial radius \( R_{200c} \) as the radius where the average 
-        density is 200 times the critical density.
+    Profile : ccl.halos.profiles.HaloProfile
+        The profile to transform. Its mass definition sets the halo radius, R.
+    epsilon_max : float
+        The outer truncation radius, in units of R.
+    epsilon_min : float, optional
+        The inner truncation radius, in units of R. Default is None (no inner truncation).
 
+    Notes
+    -----
+    The accuracy is set by the FFTLog precision of `Profile` (`n_per_decade`), as for any
+    CCL Fourier profile: about 2% at low k for the default of 100, and about 0.2% for 1000.
     """
-    
-    def __init__(self, Profile, epsilon_max, epsilon_min = None, **kwargs): 
-        
+
+    def __init__(self, Profile, epsilon_max, epsilon_min = None, **kwargs):
+
         self.Profile     = Profile
         self.epsilon_max = epsilon_max
         self.epsilon_min = epsilon_min
         self.fft_par     = Profile.precision_fftlog
 
-    def __getattr__(self, name):  
+    def __getattr__(self, name):
         '''
         Use the Profile's inbuilt methods for all routines EXCEPT the fourier
         routine, where we instead substitute with our method below
         '''
-        if name != 'fourier':
-            return getattr(self.Profile, name)
-        else:
-            return self.fourier
+        #Guard against lookups before Profile exists (eg. during unpickling)
+        try:
+            Profile = object.__getattribute__(self, 'Profile')
+        except AttributeError:
+            raise AttributeError(name) from None
+        return getattr(Profile, name)
 
     def fourier(self, cosmo, k, M, a):
 
@@ -413,20 +423,29 @@ class TruncatedFourier(object):
         for M_i in range(M_use.size):
 
             #Setup r_min and r_max the same way CCL internal methods do for FFTlog transforms.
-            #We set minimum and maximum radii here to make sure the transform uses sufficiently
-            #wide range in radii. It helps prevent ringing in transformed profiles.
-            r_min = R[M_i] * self.epsilon_min if self.epsilon_min is not None else (np.min(k) * self.fft_par['padding_lo_fftlog'])
-            r_max = R[M_i] * self.epsilon_max #The halo has a sharp truncation at Rdelta * epsilon, so we always set that as the max.
-            n     = self.fft_par['n_per_decade'] * np.int32(np.log10(r_max/r_min))
-            
+            #The profile is set to zero outside the truncation radii (rather than ending the grid there),
+            #since otherwise the low-k modes (k < 1/R) are only extrapolated and the mass is overestimated.
+            r_hi  = R[M_i] * self.epsilon_max #The halo has a sharp truncation at Rdelta * epsilon
+            r_lo  = R[M_i] * self.epsilon_min if self.epsilon_min is not None else 0
+            r_min = np.min([1/(np.max(k_use) * self.fft_par['padding_hi_fftlog']), r_hi/10])
+            r_max = np.max([1/(np.min(k_use) * self.fft_par['padding_lo_fftlog']), r_hi*10])
+
+            #Log-spaced grid with a node exactly at the truncation radius, which gets half the weight
+            #(as in the trapezoid rule). Otherwise the result depends on where the edge falls on the grid.
+            dlnr  = np.log(10) / self.fft_par['n_per_decade']
+            n_lo  = int(np.ceil(np.log(r_hi/r_min)/dlnr))
+            n_hi  = int(np.ceil(np.log(r_max/r_hi)/dlnr))
+            r_fft = r_hi * np.exp(dlnr * np.arange(-n_lo, n_hi + 1))
+
             #Generate the real-space profile, sampled at the points defined above.
-            r_fft = np.geomspace(r_min, r_max, n)
             prof  = self.Profile.real(cosmo, r_fft, M_use[M_i], a)
+            prof  = np.where((r_fft < r_hi) & (r_fft >= r_lo), prof, 0)
+            prof[n_lo] = 0.5 * self.Profile.real(cosmo, r_hi * (1 - 1e-10), M_use[M_i], a)
             
             #Now convert it to fourier space, apply the window function, and transform back
             k_out, Pk  = fftlog(r_fft, prof, 3, 0, self.fft_par['plaw_fourier'])
             
-            prof       = resample_array(k_out, Pk, k_use, self.precision_fftlog['extrapol'], self.precision_fftlog['extrapol'], 0, 0)
+            prof       = resample_array(k_out, Pk, k_use, self.fft_par['extrapol'], self.fft_par['extrapol'], 0, 0)
             kprof[M_i] = np.where(np.isnan(prof), 0, prof) * (2*np.pi)**3 #(2\pi)^3 is from the fourier transforms.
 
         if np.ndim(k) == 0: kprof = np.squeeze(kprof, axis=-1)

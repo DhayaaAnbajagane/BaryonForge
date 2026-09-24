@@ -2,8 +2,51 @@ import numpy as np
 import healpy as hp
 import warnings
 
-__all__ = ['HaloLightConeCatalog', 'HaloNDCatalog', 'LightconeShell', 
+__all__ = ['HaloLightConeCatalog', 'HaloNDCatalog', 'LightconeShell',
            'GriddedMap', 'ParticleSnapshot']
+
+
+def _check_cosmology(cosmo):
+    """
+    Checks that a cosmology dictionary has all required parameters, and returns a copy of it
+    (so the user's dictionary is not modified) with ``wa = 0`` added if it was not provided.
+    """
+
+    if not isinstance(cosmo, dict):
+        raise ValueError(f"The cosmology must be a dictionary of parameters, but got type {type(cosmo).__name__}.")
+
+    cosmo = dict(cosmo)
+
+    if 'wa' not in cosmo:
+        cosmo['wa'] = 0.0
+        warnings.warn("Value of wa not provided. Assuming LCDM value of wa = 0")
+
+    required = ['Omega_m', 'sigma8', 'h', 'Omega_b', 'n_s', 'w0']
+    missing  = [k for k in required if k not in cosmo]
+    if len(missing) > 0:
+        raise ValueError(f"Not all cosmology parameters provided. I need {required}, but {missing} are missing.")
+
+    return cosmo
+
+
+def _as_1d_arrays(names, values):
+    """
+    Converts scalars/lists/tuples/arrays into 1D float64 arrays and checks they all have the same length.
+    Raises a ValueError otherwise, asking for 1D arrays.
+    """
+
+    arrays = []
+    for name, value in zip(names, values):
+        array = np.atleast_1d(np.asarray(value, dtype = np.float64))
+        if array.ndim != 1:
+            raise ValueError(f"Input '{name}' has shape {array.shape}. Please pass a scalar or a 1D array.")
+        arrays.append(array)
+
+    sizes = {name : array.size for name, array in zip(names, arrays)}
+    if len(set(sizes.values())) > 1:
+        raise ValueError(f"All inputs must have the same length, but got sizes {sizes}.")
+
+    return arrays
 
 
 class HaloLightConeCatalog(object):
@@ -58,12 +101,14 @@ class HaloLightConeCatalog(object):
         t     = np.float64
         dtype = [('M', t), ('z', t), ('ra', t), ('dec', t)]
         dtype = dtype + [(name, t) for name, arr in arrays.items()]
-            
-        N   = 1 if not isinstance(ra, (list, np.ndarray, tuple)) else len(ra)
-        cat = np.zeros(len(ra), dtype)
+
+        #Accept scalars, lists, tuples, or arrays. Everything is stored as 1D float64 arrays.
+        ra, dec, M, z, *others = _as_1d_arrays(['ra', 'dec', 'M', 'z'] + list(arrays.keys()),
+                                               [ra, dec, M, z] + list(arrays.values()))
+        arrays = dict(zip(arrays.keys(), others))
+        cat    = np.zeros(ra.size, dtype)
 
         if np.any(np.abs(dec) == 90):
-            dec = dec.astype(t) #Need to upgrade type so the subtraction below is still accurate
             warnings.warn("Some halos found with declination exactly at the poles. Offsetting these by 4e-5 arcsec")
             dec = np.clip(dec, -90 + 1e-8, 90 - 1e-8)
         
@@ -76,18 +121,7 @@ class HaloLightConeCatalog(object):
 
         self.cat   = cat
 
-        keys = cosmo.keys()
-
-        if 'wa' not in keys:
-            cosmo['wa'] = 0.0
-            warnings.warn("Value of wa not provided. Assuming LCDM value of wa = 0")
-
-        if not (('Omega_m' in keys) & ('sigma8' in keys) & ('h' in keys) &
-                ('Omega_b' in keys) & ('n_s' in keys) & ('w0' in keys)):
-
-            raise ValueError("Not all cosmology parameters provided. I need Omega_m, sigma8, h, sigma8, Omega_b, n_s, w0")
-        else:
-            self.cosmo = cosmo
+        self.cosmo = _check_cosmology(cosmo)
 
     @property
     def data(self):
@@ -121,6 +155,9 @@ class HaloLightConeCatalog(object):
             A new `HaloLightConeCatalog` instance with the selected subset of halos.
         """
         
+        #An integer key returns a catalog with one halo
+        if isinstance(key, (int, np.integer)): key = np.atleast_1d(key)
+
         ra  = self.cat['ra'][key]
         dec = self.cat['dec'][key]
         z   = self.cat['z'][key]
@@ -206,16 +243,24 @@ class HaloNDCatalog(object):
 
     def __init__(self, x, y, M, redshift, cosmo, z = None, **arrays):
 
-        dtype = [('M', '>f'), ('x', '>f'), ('y', '>f'), ('z', '>f')]
-        dtype = dtype + [(name, '>f', arr.shape[1:] if len(arr.shape) > 1 else '') for name, arr in arrays.items()]
-        
-        
-        N = 1 if not isinstance(x, (list, np.ndarray, tuple)) else len(x)
-        cat = np.zeros(N, dtype)
+        #Accept scalars, lists, tuples, or arrays. Everything is stored as float64.
+        #Extra arrays can be multi-dimensional (eg. the ellipticity axes, A_ell), with one row per halo.
+        x, y, M = _as_1d_arrays(['x', 'y', 'M'], [x, y, M])
+        z       = np.zeros_like(x) if z is None else _as_1d_arrays(['x', 'z'], [x, z])[1] #Filler z-column for 2D
+        arrays  = {name : np.asarray(arr, dtype = np.float64) for name, arr in arrays.items()}
+        arrays  = {name : (arr[None] if arr.ndim == 0 else arr) for name, arr in arrays.items()}
+        for name, arr in arrays.items():
+            if arr.shape[0] != x.size:
+                raise ValueError(f"Input '{name}' has {arr.shape[0]} rows, but there are {x.size} halos.")
+
+        dtype = [('M', np.float64), ('x', np.float64), ('y', np.float64), ('z', np.float64)]
+        dtype = dtype + [(name, np.float64, arr.shape[1:]) for name, arr in arrays.items()]
+
+        cat = np.zeros(x.size, dtype)
 
         cat['x'] = x
         cat['y'] = y
-        cat['z'] = 0 if z is None else z #We'll just add filler to z-column for now
+        cat['z'] = z
         cat['M'] = M
         
         for name, arr in arrays.items(): cat[name] = arr
@@ -223,18 +268,7 @@ class HaloNDCatalog(object):
         self.cat = cat
         self.redshift = redshift
 
-        keys = cosmo.keys()
-
-        if 'wa' not in keys:
-            cosmo['wa'] = 0.0
-            warnings.warn("Value of wa not provided. Assuming LCDM value of wa = 0")
-
-        if not (('Omega_m' in keys) & ('sigma8' in keys) & ('h' in keys) &
-                ('Omega_b' in keys) & ('n_s' in keys) & ('w0' in keys)):
-
-            raise ValueError("Not all cosmology parameters provided. I need Omega_m, sigma8, h, sigma8, Omega_b, n_s, w0")
-        else:
-            self.cosmo = cosmo
+        self.cosmo = _check_cosmology(cosmo)
 
     @property
     def data(self):
@@ -268,6 +302,9 @@ class HaloNDCatalog(object):
             A new `HaloNDCatalog` instance with the selected subset of halos.
         """
         
+        #An integer key returns a catalog with one halo
+        if isinstance(key, (int, np.integer)): key = np.atleast_1d(key)
+
         x = self.cat['x'][key]
         y = self.cat['y'][key]
         z = self.cat['z'][key]
@@ -356,26 +393,17 @@ class LightconeShell(object):
         elif isinstance(path, str):
             self.map = hp.read_map(path)
 
-        elif isinstance(map, np.ndarray):
-            self.map = map
+        else:
+            self.map = np.asarray(map) #Also accepts lists/tuples
+            if self.map.ndim != 1:
+                raise ValueError(f"The HEALPix map must be a 1D array, but has shape {self.map.shape}.")
 
 
         self.NSIDE    = hp.npix2nside(self.map.size)
         self.redshift = redshift
 
         
-        keys = cosmo.keys()
-
-        if 'wa' not in keys:
-            cosmo['wa'] = 0.0
-            warnings.warn("Value of wa not provided. Assuming LCDM value of wa = 0")
-
-        if not (('Omega_m' in keys) & ('sigma8' in keys) & ('h' in keys) &
-                ('Omega_b' in keys) & ('n_s' in keys) & ('w0' in keys)):
-
-            raise ValueError("Not all cosmology parameters provided. I need Omega_m, sigma8, h, sigma8, Omega_b, n_s, w0")
-        else:
-            self.cosmo = cosmo
+        self.cosmo = _check_cosmology(cosmo)
 
     @property
     def data(self):
@@ -464,13 +492,19 @@ class GriddedMap(object):
 
     def __init__(self, map = None, redshift = None, bins = None, cosmo = None):
         
-        self.map      = map
+        self.map      = np.asarray(map)  #Also accepts lists
+        bins          = np.asarray(bins, dtype = np.float64)
+        if self.map.ndim not in (2, 3):
+            raise ValueError(f"GriddedMap needs a 2D or 3D map, but got shape {self.map.shape}.")
+        if (bins.ndim != 1) or (bins.size < 2):
+            raise ValueError("bins must be a 1D array (of at least two pixel centers).")
+
         self.redshift = redshift
         self.Npix     = self.map.shape[0]
         self.res      = bins[1] - bins[0]
         self.bins     = bins
         self.L        = bins[-1] + self.res/2 #Box size is center of last bin + 1/2 the bin width
-        
+
         self.is2D = True if len(self.map.shape) == 2 else False
 
         if self.is2D:
@@ -484,18 +518,7 @@ class GriddedMap(object):
             
         self.inds = np.arange(self.grid[0].size).reshape(self.grid[0].shape)
 
-        keys = cosmo.keys()
-
-        if 'wa' not in keys:
-            cosmo['wa'] = 0.0
-            warnings.warn("Value of wa not provided. Assuming LCDM value of wa = 0")
-
-        if not (('Omega_m' in keys) & ('sigma8' in keys) & ('h' in keys) &
-                ('Omega_b' in keys) & ('n_s' in keys) & ('w0' in keys)):
-
-            raise ValueError("Not all cosmology parameters provided. I need Omega_m, sigma8, h, sigma8, Omega_b, n_s, w0")
-        else:
-            self.cosmo = cosmo
+        self.cosmo = _check_cosmology(cosmo)
 
     @property
     def data(self):
@@ -606,13 +629,18 @@ class ParticleSnapshot(object):
     def __init__(self, x = None, y = None, z = None, M = None, L = None, redshift = None, cosmo = None):
         
         dtype = [('M', np.float64), ('x', np.float64), ('y', np.float64), ('z', np.float64)]
-        
-        cat = np.zeros(len(x), dtype)
+
+        #Accept scalars, lists, tuples, or arrays. A missing particle mass is stored as NaN.
+        x, y = _as_1d_arrays(['x', 'y'], [x, y])
+        z_in = np.zeros_like(x) if z is None else _as_1d_arrays(['x', 'z'], [x, z])[1]
+        M_in = np.full_like(x, np.nan) if M is None else np.broadcast_to(np.asarray(M, dtype = np.float64), x.shape)
+
+        cat = np.zeros(x.size, dtype)
 
         cat['x'] = x
         cat['y'] = y
-        cat['z'] = 0 if z is None else z #We'll just add filler to z-column for now
-        cat['M'] = M
+        cat['z'] = z_in #Filler z-column for 2D snapshots
+        cat['M'] = M_in
 
         self.L   = L
         self.cat = cat
@@ -620,18 +648,7 @@ class ParticleSnapshot(object):
 
         self.is2D = True if z is None else False
 
-        keys = cosmo.keys()
-
-        if 'wa' not in keys:
-            cosmo['wa'] = 0.0
-            warnings.warn("Value of wa not provided. Assuming LCDM value of wa = 0")
-
-        if not (('Omega_m' in keys) & ('sigma8' in keys) & ('h' in keys) &
-                ('Omega_b' in keys) & ('n_s' in keys) & ('w0' in keys)):
-
-            raise ValueError("Not all cosmology parameters provided. I need Omega_m, sigma8, h, sigma8, Omega_b, n_s, w0")
-        else:
-            self.cosmo = cosmo
+        self.cosmo = _check_cosmology(cosmo)
 
 
     @property

@@ -4,6 +4,7 @@ from scipy.spatial import KDTree
 from tqdm import tqdm
 from ..utils import ParamTabulatedProfile
 from ..utils.Tabulate import _get_parameter
+from ..utils.misc import _default_mass_def
 from ..Profiles.BaryonCorrection import BaryonificationClass
 
 __all__ = ['DefaultRunnerSnapshot', 'BaryonifySnapshot']
@@ -38,7 +39,7 @@ class DefaultRunnerSnapshot(object):
     
     mass_def : object, optional
         An instance of a mass definition object from the CCL (Core Cosmology Library), specifying the 
-        mass definition to be used. Default is `ccl.halos.massdef.MassDef(200, 'critical')`.
+        mass definition to be used. Default is None, in which case the mass definition of `model` is used (or 200c, if `model` has none).
     
     verbose : bool, optional
         A flag to enable verbose output for logging or debugging purposes. Default is True.
@@ -81,7 +82,7 @@ class DefaultRunnerSnapshot(object):
     """
     
     def __init__(self, HaloNDCatalog, ParticleSnapshot, epsilon_max, model,
-                 mass_def = ccl.halos.massdef.MassDef(200, 'critical'), verbose = True, KDTree_kwargs = {}):
+                 mass_def = None, verbose = True, KDTree_kwargs = {}):
 
         self.HaloNDCatalog    = HaloNDCatalog
         self.ParticleSnapshot = ParticleSnapshot
@@ -89,7 +90,7 @@ class DefaultRunnerSnapshot(object):
         self.cosmo = HaloNDCatalog.cosmology
         self.model = model
         
-        self.mass_def = mass_def
+        self.mass_def = _default_mass_def(model) if mass_def is None else mass_def
         self.verbose  = verbose
         
         if ParticleSnapshot.is2D:

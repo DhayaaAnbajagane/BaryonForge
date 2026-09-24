@@ -562,7 +562,7 @@ class ParamTabulatedProfile(object):
         
         other_params : dict, optional
             A dictionary of other parameters to be tabulated. The keys are parameter names, and the values are
-            arrays of parameter values. Default is an empty dictionary.
+            arrays (or lists) of parameter values. Default is an empty dictionary.
         
         verbose : bool, optional
             If `True`, display a progress bar during the tabulation process. Default is `True`.
@@ -574,6 +574,7 @@ class ParamTabulatedProfile(object):
         z_range  = np.linspace(z_min, z_max, N_samples_z) if z_linear_sampling else np.geomspace(z_min, z_max, N_samples_z)
         dlnr     = np.log(r[1]) - np.log(r[0])
 
+        other_params = {k : np.atleast_1d(np.asarray(v, dtype = float)) for k, v in other_params.items()} #Allow lists/tuples
         p_keys   = list(other_params.keys()); setattr(self, 'p_keys', p_keys)
         interp3D = np.zeros([z_range.size, M_range.size, r.size] + [other_params[k].size for k in p_keys]) + np.nan
         interp2D = np.zeros([z_range.size, M_range.size, r.size] + [other_params[k].size for k in p_keys]) + np.nan
@@ -656,7 +657,10 @@ class ParamTabulatedProfile(object):
         empty = np.ones_like(r_use)
         z_in  = np.log(1/a)*empty #This is log(1 + z)
         r_in  = np.log(r_use)
-        k_in  = [kwargs[k] * empty for k in kwargs.keys()]
+        extra = [k for k in kwargs.keys() if k not in self.p_keys]
+        if len(extra) > 0:
+            raise ValueError(f"Parameters {extra} were passed, but the table was only built with {self.p_keys}.")
+        k_in  = [kwargs[k] * empty for k in self.p_keys] #Same order as the table axes, not the kwargs order
         
         for i in range(M_use.size):
             M_in  = np.log(M_use[i])*empty

@@ -6,6 +6,7 @@ from tqdm import tqdm
 from numba import njit
 from ..utils import ParamTabulatedProfile
 from ..utils.Tabulate import _get_parameter
+from ..utils.misc import _default_mass_def
 
 __all__ = ['DefaultRunnerGrid', 'BaryonifyGrid', 'PaintProfilesGrid', 'PaintProfilesAnisGrid',
            'regrid_pixels_2D', 'regrid_pixels_3D']
@@ -198,7 +199,7 @@ class DefaultRunnerGrid(object):
     
     mass_def : object, optional
         An instance of a mass definition object from the CCL (Core Cosmology Library), specifying 
-        the mass definition to be used. Default is `ccl.halos.massdef.MassDef(200, 'critical')`.
+        the mass definition to be used. Default is None, in which case the mass definition of `model` is used (or 200c, if `model` has none).
     
     verbose : bool, optional
         A flag to enable verbose output for logging or debugging purposes. Default is True.
@@ -253,7 +254,7 @@ class DefaultRunnerGrid(object):
     """
     
     def __init__(self, HaloNDCatalog, GriddedMap, epsilon_max, model, use_ellipticity = False,
-                 mass_def = ccl.halos.massdef.MassDef(200, 'critical'), include_pixel_size = True, verbose = True):
+                 mass_def = None, include_pixel_size = True, verbose = True):
 
         self.HaloNDCatalog = HaloNDCatalog
         self.GriddedMap    = GriddedMap
@@ -262,7 +263,7 @@ class DefaultRunnerGrid(object):
         
         
         self.epsilon_max = epsilon_max
-        self.mass_def    = mass_def
+        self.mass_def    = _default_mass_def(model) if mass_def is None else mass_def
         self.verbose     = verbose
         
         self.use_ellipticity    = use_ellipticity
@@ -849,7 +850,7 @@ class PaintProfilesAnisGrid(PaintProfilesGrid):
 
     def __init__(self, HaloNDCatalog, GriddedMap, epsilon_max, model, Tracer_model, Mtot_model, 
                  background_val, global_tracer_fraction, 
-                 mass_def = ccl.halos.massdef.MassDef(200, 'critical'), 
+                 mass_def = None, 
                  include_pixel_size = True, use_ellipticity = False, verbose = True):
         
         self.Tracer_model   = Tracer_model

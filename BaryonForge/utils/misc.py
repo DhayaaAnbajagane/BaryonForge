@@ -7,6 +7,20 @@ from scipy import interpolate
 __all__ = ['generate_operator_method', 'destory_Pk', 'build_cosmodict', 'safe_Pchip_minimize', 'combine_fftpars']
 
 
+def _default_mass_def(model, default = ccl.halos.massdef.MassDef200c):
+    """
+    Returns the mass definition of a model: a profile, a `BaryonificationClass`, or a tabulated
+    profile (which holds the profile in its `model` attribute). Falls back to `default` (200c)
+    if no mass definition can be found, eg. if `model` is None.
+    """
+
+    for obj in (model, getattr(model, 'model', None)):
+        mass_def = getattr(obj, 'mass_def', None)
+        if mass_def is not None: return mass_def
+
+    return default
+
+
 def generate_operator_method(op, reflect = False):
     """
     Defines a method for generating simple arithmetic operations for the Profile classes.

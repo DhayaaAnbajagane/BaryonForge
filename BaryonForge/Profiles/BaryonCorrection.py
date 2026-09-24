@@ -8,7 +8,7 @@ import copy
 from itertools import product
 
 from ..utils.Tabulate import _set_parameter
-from ..utils.misc     import destory_Pk
+from ..utils.misc     import destory_Pk, _default_mass_def
 
 __all__ = ['BaryonificationClass', 'Baryonification3D', 'Baryonification2D']
 
@@ -31,7 +31,7 @@ class BaryonificationClass(object):
     epsilon_max : float, optional
         The maximum displacement factor for the mass profile, in units of halo radius. Default is 20.
     mass_def : object, optional
-        Mass definition object from CCL, default is `MassDef(200, 'critical')`.
+        Mass definition object from CCL. Default is None, in which case the mass definition of `DMO` is used.
 
     Notes
     -----
@@ -86,7 +86,7 @@ class BaryonificationClass(object):
     """
 
 
-    def __init__(self, DMO, DMB, cosmo, epsilon_max = 20, mass_def = ccl.halos.massdef.MassDef(200, 'critical'),
+    def __init__(self, DMO, DMB, cosmo, epsilon_max = 20, mass_def = None,
                  r_min_int = 1e-6, r_max_int = 1000, N_int = 500):
         
         self.DMO = DMO
@@ -103,7 +103,7 @@ class BaryonificationClass(object):
         
         self.cosmo       = cosmo #CCL cosmology instance
         self.epsilon_max = epsilon_max
-        self.mass_def    = mass_def
+        self.mass_def    = _default_mass_def(DMO) if mass_def is None else mass_def
 
 
         self.r_min_int   = r_min_int
@@ -208,6 +208,7 @@ class BaryonificationClass(object):
         r        = np.geomspace(R_min, R_max, N_samples_R)
         z_range  = np.linspace(z_min, z_max, N_samples_z) if z_linear_sampling else np.geomspace(z_min, z_max, N_samples_z)
         a_range  = 1/(1 + z_range)
+        other_params = {k : np.atleast_1d(np.asarray(v, dtype = float)) for k, v in other_params.items()} #Allow lists/tuples
         p_keys   = list(other_params.keys()); setattr(self, 'p_keys', p_keys)
         d_interp = np.zeros([z_range.size, M_range.size, r.size] + [other_params[k].size for k in p_keys])
 
@@ -370,7 +371,7 @@ class BaryonificationClass(object):
         empty = np.ones_like(r_use)
         z_in  = np.log(1/a)*empty #This is log(1 + z)
         r_in  = np.log(r_use)
-        k_in  = [kwargs[k] * empty for k in kwargs.keys()]
+        k_in  = [kwargs[k] * empty for k in self.p_keys] #Same order as the table axes, not the kwargs order
 
         #Get the ranges we used as input, so we can check if requested
         #ranges are contained within the input/tabulated ranges.
@@ -456,7 +457,11 @@ class BaryonificationClass(object):
             
         for k in self.p_keys:
             assert k in kwargs.keys(), "Need to provide %s as input into `displacement'. Table was built with this." % k
-        
+
+        extra = [k for k in kwargs.keys() if k not in self.p_keys]
+        if len(extra) > 0:
+            raise ValueError(f"Parameters {extra} were passed to `displacement', but the table was only built with {self.p_keys}.")
+
         return self._readout(r, M, a, **kwargs)
 
 

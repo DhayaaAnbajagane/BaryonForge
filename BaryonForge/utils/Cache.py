@@ -1,4 +1,5 @@
 
+import copy
 import numpy as np
 import pyccl as ccl
 from collections import OrderedDict
@@ -16,11 +17,13 @@ class _CachedFunction:
         self.func = func
 
     def __call__(self, *args):
+        #Always hand out copies, so that callers modifying the output in-place
+        #cannot corrupt the cached value
         if self.cache.contains(*args):
-            return self.cache.get(*args)
+            return copy.deepcopy(self.cache.get(*args))
 
         value = self.func(*args)
-        self.cache.set(value, *args)
+        self.cache.set(copy.deepcopy(value), *args)
         return value
 
 
@@ -43,8 +46,9 @@ class SimpleArrayCache:
 
     When used as a decorator, the cache wraps a function of the form
     ``func(*args)`` and automatically caches its return value based
-    on these arguments. Repeated calls with identical inputs return the
-    cached result without re-evaluating the function.
+    on these arguments. Repeated calls with identical inputs return (a copy of)
+    the cached result without re-evaluating the function. Copies are returned so
+    that in-place modifications of the output cannot corrupt the cache.
 
     Parameters
     ----------
