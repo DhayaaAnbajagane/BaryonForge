@@ -925,6 +925,38 @@ class Temperature(MeadProfiles):
     
     
     def projected(self, cosmo, r, M, a):
+        """
+        Computes the projected temperature profile as the unweighted average of the temperature
+        along the line of sight,
+
+        .. math::
+
+            T_{\\rm proj}(r) = \\frac{1}{2 L} \\int_{-L}^{L} T\\left(\\sqrt{r^2 + l^2}\\right) dl,
+
+        where :math:`L` is `proj_cutoff` (or `padding_hi_proj * max(r)` if `proj_cutoff` is not set).
+
+        Note that this differs from the projected temperature in the `Thermodynamic` and
+        `Arico20` modules, which is a density-weighted average (the ratio of the projected pressure
+        and projected number density). The result here therefore depends on the choice of
+        `proj_cutoff`. For a density-weighted temperature, use the ratio of the projected
+        `Pressure` and projected gas number density.
+
+        Parameters
+        ----------
+        cosmo : pyccl.Cosmology
+            The cosmology object.
+        r : array_like
+            Projected radii, in comoving Mpc.
+        M : float or array_like
+            Halo mass, in solar masses.
+        a : float
+            Scale factor.
+
+        Returns
+        -------
+        prof : ndarray
+            The line-of-sight averaged temperature, in Kelvin.
+        """
 
         r_max = self.padding_hi_proj * np.max(r)
         if self.proj_cutoff is not None: r_max = self.proj_cutoff

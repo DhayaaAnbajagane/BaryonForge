@@ -3,11 +3,15 @@
 Test index:
     test_schneider25_normalization_follows_mass_definition: checks S25 gas normalization for 500c.
     test_arico_bound_gas_truncates_at_its_own_radius: checks the A20 truncation mass definition.
+    test_arico_modified_dark_matter_matches_at_boundary: checks the A20 DM/bound-gas matching at R.
+    test_battaglia_warns_on_inconsistent_mass_definition: checks the Battaglia mass_def warning.
     test_model_modules_support_star_imports: checks every model module's ``__all__``.
     test_wrapper_profiles_have_string_representations: checks repr of convenience classes.
     test_shocked_gas_preserves_input_shapes: checks ShockedGas output shapes.
     test_lss_classes_use_their_own_model_fractions: checks Mead/Arico LSS classes use their own fractions.
 """
+
+import warnings
 
 import numpy as np
 import pyccl as ccl
@@ -65,6 +69,28 @@ def test_arico_bound_gas_truncates_at_its_own_radius(cosmo):
     result = bound_gas.real(cosmo, np.array([0.9, 1.1, 1.3]) * radius, 1.0e14, 0.8)
     assert result[0] > 0
     np.testing.assert_array_equal(result[1:], 0)
+
+
+def test_arico_modified_dark_matter_matches_at_boundary(cosmo):
+    """Just inside R, the modified DM density is the gravity-only minus bound-gas density."""
+    modified = bfg.Profiles.Arico20.ModifiedDarkMatter(**_fast(bpar_A20))
+    masses, scale_factor = np.array([1.0e13, 1.0e14]), 0.8
+    radius = modified.mass_def.get_radius(cosmo, masses, scale_factor) / scale_factor * (1 - 1e-6)
+    for mass, r in zip(masses, radius):
+        gravity_only = modified.GravityOnly.real(cosmo, r, mass, scale_factor)
+        bound_gas = modified.Gas.real(cosmo, r, mass, scale_factor)
+        assert bound_gas > 0
+        assert modified.real(cosmo, r, mass, scale_factor) == pytest.approx(gravity_only - bound_gas, rel=1e-6)
+
+
+def test_battaglia_warns_on_inconsistent_mass_definition():
+    with pytest.warns(UserWarning, match="500c"):
+        bfg.Profiles.Battaglia.Pressure("500_AGN", mass_def=ccl.halos.massdef.MassDef200c)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        bfg.Profiles.Battaglia.Pressure("500_AGN", mass_def=ccl.halos.massdef.MassDef500c)
+        bfg.Profiles.Battaglia.Pressure("200_AGN")
 
 
 @pytest.mark.parametrize(

@@ -787,9 +787,12 @@ class ModifiedDarkMatter(AricoProfiles):
         fDM = 1 - cosmo.cosmo.params.Omega_b/cosmo.cosmo.params.Omega_m
 
         #Solving equation A10 of https://arxiv.org/pdf/1911.08471 through minimization
+        #The densities at R are evaluated just inside R, since the truncated profiles
+        #(eg. BoundGas) are exactly zero at r = R and beyond.
         rp    = np.geomspace(self.r_min_int, self.r_max_int, self.r_steps)
-        pGro  = np.array([self.GravityOnly.real(cosmo, r, m, a) for r, m in zip(R, M_use)])[:, None]
-        pBG   = np.array([self.Gas.real(cosmo, r, m, a) for r, m in zip(R, M_use)])[:, None]
+        R_in  = R * (1 - 1e-6)
+        pGro  = np.array([self.GravityOnly.real(cosmo, r, m, a) for r, m in zip(R_in, M_use)])[:, None]
+        pBG   = np.array([self.Gas.real(cosmo, r, m, a) for r, m in zip(R_in, M_use)])[:, None]
         LHS   = rp * np.power(rp + r_s, 2) * (pGro - pBG) * (np.log(1 + rp/r_s) - 1/(1 + r_s/rp)) + (pGro - pBG)/3 * (R[:, None]**3 - rp**3)
         RHS   = fDM * M_use[:, None] / (4*np.pi)
         rp    = np.exp([safe_Pchip_minimize((LHS - RHS)[m_i], np.log(rp)) for m_i in range(LHS.shape[0])])[:, None]

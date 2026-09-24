@@ -1,5 +1,6 @@
 import numpy as np
 import pyccl as ccl
+import warnings
 from ..utils.constants import (Msun_to_Kg, Mpc_to_m, G, Y, Pth_to_Pe)
 
 
@@ -27,6 +28,10 @@ class Pressure(ccl.halos.profiles.HaloProfile):
         - '200_AGN': Calibrated using AGN feedback and a 200c overdensity mass definition.
         - '500_AGN': Calibrated using AGN feedback and a 500c overdensity mass definition.
         - '500_SH': Calibrated without AGN feedback and a 500c overdensity mass definition.
+    mass_def : ccl.halos.massdef.MassDef, optional
+        The mass definition of the profile. The profile is always computed assuming input masses
+        are in the mass definition of `Model_def`, so this should match it. A warning is raised
+        if it does not. Default is `MassDef200c`.
     truncate : float, optional
         Radius (in units of \( R / R_{\text{def}} \), where \( R_{\text{def}} \) is the halo 
         radius defined via the chosen spherical overdensity) at which to truncate the profiles 
@@ -93,6 +98,13 @@ class Pressure(ccl.halos.profiles.HaloProfile):
 
         #Import all other parameters from the base CCL Profile class
         super(Pressure, self).__init__(mass_def = mass_def)
+
+        #The profile is always computed with the mass definition of the calibration (self.mdef),
+        #so input masses must be in that definition. Warn if the declared mass_def disagrees.
+        if self.mass_def.name != self.mdef.name:
+            warnings.warn(f"Battaglia model '{Model_def}' is calibrated for {self.mdef.name} masses, and the profile "
+                          f"is computed assuming the input masses are {self.mdef.name}. However, mass_def = {self.mass_def.name} "
+                          f"was set for this profile. Pass mass_def = MassDef{self.mdef.name} to make these consistent.")
 
         #Constant that helps with the fourier transform convolution integral.
         #This value minimized the ringing due to the transforms

@@ -306,9 +306,10 @@ class GridPixelApprox(object):
 
     Notes
     -----
-    - The `beam()` method uses the spherical Bessel function of the first kind (`spherical_jn`) to compute the beam function.
-    - The `real()` and `projected()` methods compute the effective radius from the given pixel size and use this
-      radius in the `beam()` function.
+    - The `beam()` method is the spherical (3D) tophat window, using the spherical Bessel function `spherical_jn`.
+      The `beam_2D()` method is the circular (2D) tophat window, using the Bessel function `j1`.
+    - The `real()` and `projected()` methods compute the volume- and area-equivalent radius from the given
+      pixel size and use this radius in the `beam()` and `beam_2D()` functions, respectively.
     """
     
     isHarmonic = False
@@ -328,47 +329,70 @@ class GridPixelApprox(object):
     
     def beam(self, k, R):
         """
-        Computes the beam function for given wavenumbers and a radius.
+        Computes the (3D) beam function of a spherical tophat, for given wavenumbers and a radius.
 
-        The beam function represents the response of a circular tophat window function and is derived from 
-        the spherical Bessel function of the first kind, \( j_1 \). The beam function \( B(k) \) is calculated 
-        as:
+        The beam function is the Fourier transform of a uniform sphere of radius \( R \), normalized
+        to unity at \( k = 0 \). It is given by the spherical Bessel function of the first kind, \( j_1 \):
 
         .. math::
 
-            B(k) = \\frac{3j_1(kr)}{kr}
-
-        where:
-        
-        - \( k \) is the wavenumber.
-        - \( r = 2R \) is the diameter of the pixel (not the radius).
-        - \( j_1 \) is the spherical Bessel function of the first kind of order one.
-
-        The factor of 2 in the radius calculation arises because the window function is defined for the 
-        diameter rather than the radius.
+            B(k) = \\frac{3j_1(kR)}{kR}
 
         Parameters
         ----------
         k : ndarray
             An array of wavenumbers at which to evaluate the beam function.
-        
+
         R : float
-            The effective radius of the pixel, which depends on the size of the grid's pixel.
+            The radius of the spherical tophat.
 
         Returns
         -------
         beam : ndarray
-            An array of the beam function values corresponding to the input wavenumbers. The output is 
-            calculated as \( \\frac{3j_1(kr)}{kr} \), with special handling to avoid division by zero when 
-            \( kr = 0 \).
+            An array of the beam function values corresponding to the input wavenumbers, with special
+            handling to avoid division by zero when \( kR = 0 \).
 
         """
-        
-        kr = k * (2*R) #Factor of 2 because the window function needs diameter, not radius
+
+        kr = k * R
 
         with np.errstate(invalid = 'ignore', divide = 'ignore'):
             beam = np.where(kr > 0, 3*special.spherical_jn(1, kr)/kr, 1)
-            
+
+        return beam
+
+
+    def beam_2D(self, k, R):
+        """
+        Computes the (2D) beam function of a circular tophat (a disc), for given wavenumbers and a radius.
+
+        The beam function is the 2D Fourier transform of a uniform disc of radius \( R \), normalized
+        to unity at \( k = 0 \). It is given by the Bessel function of the first kind, \( J_1 \):
+
+        .. math::
+
+            B(k) = \\frac{2J_1(kR)}{kR}
+
+        Parameters
+        ----------
+        k : ndarray
+            An array of wavenumbers at which to evaluate the beam function.
+
+        R : float
+            The radius of the disc.
+
+        Returns
+        -------
+        beam : ndarray
+            An array of the beam function values corresponding to the input wavenumbers, with special
+            handling to avoid division by zero when \( kR = 0 \).
+        """
+
+        kr = k * R
+
+        with np.errstate(invalid = 'ignore', divide = 'ignore'):
+            beam = np.where(kr > 0, 2*special.j1(kr)/kr, 1)
+
         return beam
         
         
@@ -415,9 +439,10 @@ class GridPixelApprox(object):
         """
         Computes the projected-space approximation of the pixel window function.
 
-        This method approximates the pixel window function using a circular tophat in projected space. 
-        The effective radius \( R \) is calculated based on the area-equivalent size of the grid's pixel, 
-        assuming a circular shape. The projected-space window function is then computed using this radius.
+        This method approximates the pixel window function using a circular tophat (a disc) in projected space.
+        The effective radius \( R \) is calculated based on the area-equivalent size of the grid's pixel,
+        assuming a circular shape. The projected-space window function is then computed using this radius,
+        and the 2D (disc) window function, \( 2J_1(kR)/(kR) \).
 
         The effective radius \( R \) is given by:
 
@@ -443,13 +468,13 @@ class GridPixelApprox(object):
         - This function approximates the projected-space window function by using a circular tophat model, 
         which simplifies the computation while capturing the essential behavior of the pixel's effect 
         in projected space.
-        - The beam function is calculated by calling the `self.beam()` method, which computes the response 
-        using the spherical Bessel function of the first kind.
+        - The beam function is calculated by calling the `self.beam_2D()` method, which computes the response
+        using the Bessel function of the first kind.
         """
-        
+
         R = np.sqrt(self.size**2 / np.pi)
-        
-        return self.beam(k, R)
+
+        return self.beam_2D(k, R)
             
             
 

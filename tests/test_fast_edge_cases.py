@@ -640,3 +640,13 @@ def test_grid_pixel_window_matches_pixel_average():
     np.testing.assert_allclose(
         convolved.projected(None, radii, 1.0e14, 0.8), direct, rtol=0.05
     )
+
+    # Same in 3D, averaging the real-space profile over a cubic pixel
+    offsets = np.linspace(-size / 2, size / 2, 31)
+    dx, dy, dz = np.meshgrid(offsets, offsets, offsets)
+    direct = np.array([
+        np.mean(np.exp(-((r + dx)**2 + dy**2 + dz**2) / 2 / 0.3**2)) for r in radii
+    ])
+    np.testing.assert_allclose(
+        convolved.real(None, radii, 1.0e14, 0.8), direct, rtol=0.05
+    )
