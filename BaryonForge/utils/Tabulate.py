@@ -74,6 +74,41 @@ def _set_parameter_recursive(obj, key, value, seen):
             _set_parameter_recursive(getattr(obj, k), key, value, seen)
 
 
+def _record_parameters(obj, keys):
+    """
+    Records the current value of every attribute that `_set_parameter(obj, key, ...)` would modify,
+    for each key in `keys`. Pass the output to `_restore_parameters` to undo those modifications.
+
+    Returns
+    -------
+    records : list of (object, str, any)
+        The (sub-)profile, the attribute name, and its current value.
+    """
+
+    records = []
+    for key in keys: _record_parameter_recursive(obj, key, records, set())
+    return records
+
+
+def _record_parameter_recursive(obj, key, records, seen):
+
+    #Same traversal as _set_parameter_recursive
+    if id(obj) in seen: return
+    seen.add(id(obj))
+
+    for k in dir(obj):
+        if k == key:
+            records.append((obj, key, getattr(obj, key)))
+        elif isinstance(getattr(obj, k), (ccl.halos.profiles.HaloProfile,)):
+            _record_parameter_recursive(getattr(obj, k), key, records, seen)
+
+
+def _restore_parameters(records):
+    """Restores the attribute values saved by `_record_parameters`."""
+
+    for obj, key, value in records: setattr(obj, key, value)
+
+
 _NOT_FOUND = object()
 
 def _get_parameter(obj, key):
@@ -565,7 +600,8 @@ class ParamTabulatedProfile(object):
         
         other_params : dict, optional
             A dictionary of other parameters to be tabulated. The keys are parameter names, and the values are
-            arrays (or lists) of parameter values. Default is an empty dictionary.
+            arrays (or lists) of parameter values. Default is an empty dictionary. The model's parameters are
+            set to these values while tabulating, and restored to their original values afterwards.
         
         verbose : bool, optional
             If `True`, display a progress bar during the tabulation process. Default is `True`.
@@ -584,7 +620,10 @@ class ParamTabulatedProfile(object):
 
         #If other_params is empty then iterator will be empty and the code still works fine
         iterator = [p for p in product(*[np.arange(other_params[k].size) for k in p_keys])]
-        
+
+        #The loop below changes the model's parameters. Save them, so the model is returned unchanged.
+        original_params = _record_parameters(self.model, p_keys)
+
         #Loop over params to build table
         with tqdm(total = interp3D.size//(M_range.size*r.size), desc = 'Building Table', disable = not verbose) as pbar:
             for j in range(z_range.size):                
@@ -602,7 +641,9 @@ class ParamTabulatedProfile(object):
                     interp3D[index] = self.model.real(self.cosmo, r, M_range, a_j)
                     interp2D[index] = self.model.projected(self.cosmo, r, M_range, a_j)
                     pbar.update(1)
-                    
+
+        _restore_parameters(original_params)
+
 
         input_grid_1 = tuple([np.log(1 + z_range), np.log(M_range), np.log(r)] + [other_params[k] for k in p_keys])
 

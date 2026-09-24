@@ -36,8 +36,8 @@ Test index:
     test_emissivity_table_accepts_documented_inputs: checks point lists, ordering, and 2D queries.
     test_grid_pixel_window_matches_pixel_average: checks the grid pixel window against direct averaging.
     test_runners_default_to_the_model_mass_definition: checks the default mass_def of runners/baryonification.
-    test_parameter_tables_match_parameters_by_name: checks tabulated parameters are matched by name.
-    test_displacement_table_matches_parameters_by_name: checks displacement parameters are matched by name.
+    test_parameter_tables_match_parameters_by_name: checks tabulated parameters are matched by name and restored.
+    test_displacement_table_matches_parameters_by_name: checks displacement parameters are matched by name and restored.
     test_simple_array_cache_returns_copies: checks cached outputs cannot be modified in place.
     test_truncated_fourier_matches_direct_transform: checks the Fourier transform of truncated profiles.
     test_projection_at_zero_radius: checks projected profiles at r = 0.
@@ -739,6 +739,15 @@ def test_parameter_tables_match_parameters_by_name(cosmo):
     with pytest.raises(ValueError, match="gamma"):
         table.real(cosmo, 0.1, 1.0e14, 1 / 1.1, alpha=2.0, beta=3.0, gamma=1)
 
+    # Tabulating must leave the model's parameters (including those of sub-profiles) unchanged
+    assert (table.model.alpha, table.model.beta) == (1, 1)
+    composite = TwoParameterProfile(alpha=4) + TwoParameterProfile(alpha=6)
+    bfg.utils.ParamTabulatedProfile(composite, cosmo).setup_interpolator(
+        z_min=0.1, z_max=0.1, N_samples_z=1, M_min=1.0e13, M_max=1.0e14, N_samples_Mass=2,
+        R_min=0.1, R_max=1.0, N_samples_R=2, other_params={"alpha": [1.0, 2.0]}, verbose=False,
+    )
+    assert (composite.Profile1.alpha, composite.Profile2.alpha) == (4, 6)
+
 
 class _ToyBaryonification(bfg.Profiles.BaryonificationClass):
     """Analytic enclosed masses: the DMB mass is rescaled in radius by (1 + alpha + 10 beta)."""
@@ -767,6 +776,10 @@ def test_displacement_table_matches_parameters_by_name(cosmo):
 
     with pytest.raises(ValueError, match="gamma"):
         toy.displacement(radii, 1.0e14, 1 / 1.15, alpha=0.2, beta=0.05, gamma=1)
+
+    # Tabulating must leave the DMO/DMB parameters unchanged
+    for profile in (toy.DMO, toy.DMB):
+        assert (profile.alpha, profile.beta) == (1, 1)
 
 
 def test_simple_array_cache_returns_copies():

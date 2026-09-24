@@ -7,7 +7,7 @@ import warnings
 import copy
 from itertools import product
 
-from ..utils.Tabulate import _set_parameter
+from ..utils.Tabulate import _set_parameter, _record_parameters, _restore_parameters
 from ..utils.misc     import destory_Pk, _default_mass_def
 
 __all__ = ['BaryonificationClass', 'Baryonification3D', 'Baryonification2D']
@@ -187,8 +187,9 @@ class BaryonificationClass(object):
             for any models that have sharp features (eg. Arico20) as a function of Rdelta. The model is built
             the same, but the interpolation table is organized differently as as to improve accuracy for such models.
         other_params : dict, optional
-            Additional parameters for model customization. To be provided in the format `{key : [list-like of vals]}`. 
-            The default is an empty dictionary.
+            Additional parameters for model customization. To be provided in the format `{key : [list-like of vals]}`.
+            The default is an empty dictionary. The DMO/DMB parameters are set to these values while tabulating,
+            and restored to their original values afterwards.
         verbose : bool, optional
             If True, display progress information using `tqdm`. Default is True.
 
@@ -216,7 +217,10 @@ class BaryonificationClass(object):
         
         #If other_params is empty then iterator will be empty and the code still works fine
         iterator = [p for p in product(*[np.arange(other_params[k].size) for k in p_keys])]
-        
+
+        #The loop below changes the DMO/DMB parameters. Save them, so the profiles are returned unchanged.
+        original_params = _record_parameters(self.DMO, p_keys) + _record_parameters(self.DMB, p_keys)
+
         with tqdm(total = d_interp.size//(M_range.size*r.size), desc = 'Building Table', disable = not verbose) as pbar:
             for j in range(z_range.size):
                 
@@ -307,8 +311,10 @@ class BaryonificationClass(object):
                         #Build a custom index into the array
                         index = tuple([j, i, slice(None)] + list(c))
                         d_interp[index] = offset
-                            
+
                     pbar.update(1)
+
+        _restore_parameters(original_params)
 
 
         input_rad  = np.log(r) if not Rdelta_sampling else np.log(rdelta_range)
