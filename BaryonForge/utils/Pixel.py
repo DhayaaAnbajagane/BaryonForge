@@ -554,8 +554,12 @@ class HealPixel(object):
         Returns a zero array for the real-space window function.
 
         This method indicates that the real-space representation of the HEALPix pixel window function
-        is not supported. It returns a zero array, which will propagate through calculations and help
-        to throw errors when attempting to use real-space profiles.
+        is not supported. It returns a zero array, so the `real()` and `fourier()` methods of a
+        `ConvolvedProfile` using this pixel are identically zero. Note that this does *not* raise an
+        informative error: downstream calculations silently use the zeros, or fail with unrelated
+        errors (eg. `Baryonification3D.setup_interpolator` raises a ValueError from its interpolator).
+        Only use the `projected()` method of profiles convolved with a `HealPixel`. Tabulating such
+        profiles (eg. `TabulatedProfile`) is fine, as long as only the projected table is used.
 
         Parameters
         ----------
@@ -569,7 +573,7 @@ class HealPixel(object):
         """
 
         #Can't use healpix pixel for real-space, so just make the beam 0.
-        #That way the real-space profile will also be 0 and throw errors. 
+        #That way the real-space profile will also be 0 (silently; see docstring).
         return np.zeros_like(k)
         
     
