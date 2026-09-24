@@ -391,6 +391,10 @@ class BaseBFGProfiles(ccl.halos.profiles.HaloProfile):
         r_use = np.atleast_1d(r)
         M_use = np.atleast_1d(M)
 
+        z = 1/a - 1
+
+        R = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
+
         #Integral limits
         int_min = self.padding_lo_proj   * np.min(r_use)
         int_max = self.padding_hi_proj   * np.max(r_use)
@@ -415,11 +419,16 @@ class BaseBFGProfiles(ccl.halos.profiles.HaloProfile):
         r_proj = np.geomspace(int_min, r_max, int_N)
         prof = np.asarray(self._real(cosmo, r_integral, M, a))
 
+        # ``r_integral`` is always one-dimensional, irrespective of whether
+        # the requested projected radius was scalar.  The only dimension
+        # squeezed by ``_real`` here is therefore the mass dimension.
         if np.ndim(M) == 0:
             prof = prof[None, :]
 
         proj_prof = np.zeros([M_use.size, r_use.size])
 
+        #This nested loop saves on memory, and vectorizing the calculation doesn't really
+        #speed things up, so better to keep the loop this way.
         for i in range(M_use.size):
             for j in range(r_use.size):
 
