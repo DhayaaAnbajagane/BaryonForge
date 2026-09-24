@@ -290,10 +290,12 @@ class DefaultRunnerGrid(object):
         Parameters
         ----------
         A : ndarray
-            A 1D array representing the vector to be rotated. It will be normalized within the method.
-        
+            A 1D array giving the orientation (x, y) of the ellipse. It is normalized within the method.
+            Note that, with this transformation, the painted/displaced profile is *compressed* along `A`,
+            i.e. `A` is the direction of the ellipse's minor axis (and the major axis is perpendicular to it).
+
         q : float
-            The ellipticity parameter, used to compute the shear transformation.
+            The axis ratio (minor/major) of the ellipse, used to compute the shear transformation.
 
         Returns
         -------
@@ -308,17 +310,17 @@ class DefaultRunnerGrid(object):
             If a 3D rotation is attempted, indicating that the method is not yet verified for 3D vectors.
         """
 
-        A /= np.linalg.norm(A)
+        A = np.asarray(A, dtype = float) / np.linalg.norm(A) #Not in-place, so the input is not modified
 
         if len(A) == 1:
             raise  ValueError("Can't rotate a 1-dimensional vector")
-        
+
         elif len(A) == 2:
-            
-            #The 2D rotation is done using routines implemented in the galsim Shear class
-            
-            ref  = np.array([1., 0.])
-            beta = np.arccos(np.dot(A, ref))
+
+            #The 2D rotation is done using routines implemented in the galsim Shear class.
+            #Use the signed angle of A (arccos would map A = (cos t, -sin t) onto (cos t, sin t)).
+
+            beta = np.arctan2(A[1], A[0])
             eta  = -np.log(q) 
             
             if eta > 1e-4:

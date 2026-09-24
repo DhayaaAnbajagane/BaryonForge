@@ -8,6 +8,7 @@ Test index:
     test_large_halos_on_grids_with_odd_half_size: checks cutouts larger than a quarter box on N = 50 grids.
     test_3D_grid_runners_are_centered_and_symmetric: checks 3D painting centroids and baryonification symmetry.
     test_gridded_map_coordinates_follow_axis_convention: checks GriddedMap.grid matches the map axes.
+    test_elliptical_painting_orientation: checks ellipse orientation and axis ratio for +/- angles.
 """
 
 import numpy as np
@@ -207,3 +208,29 @@ def test_gridded_map_coordinates_follow_axis_convention(cosmology_parameters):
                                     epsilon_max=5, model=GaussianProfile(), verbose=False).process()
     peak = np.unravel_index(np.argmax(painted), painted.shape)
     assert (x[peak], y[peak]) == (BINS[20], BINS[12])
+
+
+class OneMpcGaussian(GaussianProfile):
+    width = 1.0
+
+
+@pytest.mark.parametrize("angle", (30.0, -30.0, 75.0))
+def test_elliptical_painting_orientation(cosmology_parameters, angle):
+    n_pix, box = 80, 40.0
+    bins = (np.arange(n_pix) + 0.5) * box / n_pix
+    theta = np.radians(angle)
+    catalog = bfg.HaloNDCatalog(x=[bins[40]], y=[bins[40]], M=[1e14], redshift=REDSHIFT, cosmo=dict(cosmology_parameters),
+                                q_ell=[0.5], A_ell=np.array([[np.cos(theta), np.sin(theta)]]))
+    gridded = bfg.GriddedMap(map=np.zeros((n_pix, n_pix)), bins=bins, redshift=REDSHIFT, cosmo=dict(cosmology_parameters))
+    painted = bfg.PaintProfilesGrid(catalog, gridded, epsilon_max=5, model=OneMpcGaussian(),
+                                    use_ellipticity=True, verbose=False).process()
+
+    x, y = gridded.grid
+    w = painted / painted.sum()
+    dx, dy = x - bins[40], y - bins[40]
+    Q = np.array([[(w*dx*dx).sum(), (w*dx*dy).sum()], [(w*dx*dy).sum(), (w*dy*dy).sum()]])
+    evals, evecs = np.linalg.eigh(Q)
+    assert np.sqrt(evals[0] / evals[1]) == pytest.approx(0.5, rel=1e-2)
+    # The profile is compressed along A_ell (the minor axis, see DefaultRunnerGrid.build_Rmat)
+    minor = evecs[:, 0]
+    assert abs(np.dot(minor, [np.cos(theta), np.sin(theta)])) == pytest.approx(1, abs=1e-3)

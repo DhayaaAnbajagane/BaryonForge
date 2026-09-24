@@ -361,6 +361,11 @@ def test_default_runner_coordinate_and_rotation_helpers():
     np.testing.assert_allclose(
         rotation @ np.array([1.0, 0.0]), [0.0, 1.0], atol=1e-15
     )
+    # Clockwise rotations too, and the inputs must not be modified in place
+    A, ref = np.array([0.0, 2.0]), np.array([3.0, 0.0])
+    rotation = runner.build_Rmat(A, ref)
+    np.testing.assert_allclose(rotation @ np.array([0.0, 1.0]), [1.0, 0.0], atol=1e-15)
+    np.testing.assert_array_equal(A, [0.0, 2.0])
 
     with pytest.raises(NotImplementedError, match="ellipticity"):
         DefaultRunner(

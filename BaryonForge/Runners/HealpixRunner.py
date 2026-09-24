@@ -206,11 +206,13 @@ class DefaultRunner(object):
             A 2x2 rotation matrix that rotates vector A to align with vector ref.
         """
 
-        A   /= np.linalg.norm(A)
-        ref /= np.linalg.norm(ref)
-    
-        ang  = np.arccos(np.dot(A, ref))
-        Rmat = np.array([[np.cos(ang), -np.sin(ang)], 
+        #Not in-place, so the inputs are not modified
+        A   = np.asarray(A,   dtype = float) / np.linalg.norm(A)
+        ref = np.asarray(ref, dtype = float) / np.linalg.norm(ref)
+
+        #Signed angle from A to ref (arccos alone cannot tell the rotation direction)
+        ang  = np.arctan2(A[0]*ref[1] - A[1]*ref[0], np.dot(A, ref))
+        Rmat = np.array([[np.cos(ang), -np.sin(ang)],
                          [np.sin(ang), np.cos(ang)]])
         
         return Rmat
