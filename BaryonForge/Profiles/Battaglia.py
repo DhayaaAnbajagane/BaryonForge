@@ -249,6 +249,9 @@ class GasDensity(ccl.halos.profiles.HaloProfile):
 
     def __init__(self, Model_def, truncate = False):
 
+        if Model_def not in ('200_AGN', '200_SH'):
+            raise ValueError(f"Input Model_def = {Model_def} not valid. Select one of: 200_AGN, 200_SH")
+
         self.mdef = ccl.halos.massdef.MassDef(200, 'critical')
 
         self.Model_def = Model_def

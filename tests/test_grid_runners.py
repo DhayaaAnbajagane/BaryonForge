@@ -5,6 +5,9 @@ Test index:
     test_baryonified_grid_is_symmetric_about_the_halo: checks displacement geometry and mass conservation.
     test_anisotropic_painting_background_units: checks the halo/background split of PaintProfilesAnisGrid.
     test_snapshot_particle_at_halo_center_stays_finite: checks the zero-separation particle.
+    test_large_halos_on_grids_with_odd_half_size: checks cutouts larger than a quarter box on N = 50 grids.
+    test_3D_grid_runners_are_centered_and_symmetric: checks 3D painting centroids and baryonification symmetry.
+    test_gridded_map_coordinates_follow_axis_convention: checks GriddedMap.grid matches the map axes.
 """
 
 import numpy as np
@@ -135,3 +138,72 @@ def test_snapshot_particle_at_halo_center_stays_finite(cosmology_parameters):
     for axis in ("x", "y", "z"):
         assert np.all(np.isfinite(new_catalog[axis]))
     assert new_catalog["x"][0] == pytest.approx(10)
+
+
+class WideGaussian(GaussianProfile):
+    width = 3.0
+
+
+def test_large_halos_on_grids_with_odd_half_size(cosmology_parameters):
+    """N = 50 (so N/2 is odd), with cutouts (15 R ~ 36 Mpc) larger than a quarter of the box."""
+    n_pix, box = 50, 50.0
+    bins = (np.arange(n_pix) + 0.5) * box / n_pix
+    catalog = bfg.HaloNDCatalog(x=[25.5], y=[25.5], M=[1e15], redshift=REDSHIFT, cosmo=dict(cosmology_parameters))
+
+    def grid(values):
+        return bfg.GriddedMap(map=values, bins=bins, redshift=REDSHIFT, cosmo=dict(cosmology_parameters))
+
+    painted = bfg.PaintProfilesGrid(catalog, grid(np.zeros((n_pix, n_pix))), epsilon_max=15,
+                                    model=WideGaussian(), verbose=False).process()
+    #Integral of the projected Gaussian (amplitude M / 1e14 = 10) out to 15 R (the mask radius)
+    radius = 15 * ccl.halos.MassDef200c.get_radius(ccl.Cosmology(**ccl_dict), 1e15, 1 / (1 + REDSHIFT)) * (1 + REDSHIFT)
+    width = WideGaussian.width
+    expected = 10 * 2 * np.pi * width**3 * np.sqrt(2 * np.pi) * (1 - np.exp(-radius**2 / 2 / width**2))
+    assert painted.sum() == pytest.approx(expected, rel=1e-2)
+
+    baryonified = bfg.BaryonifyGrid(catalog, grid(np.ones((n_pix, n_pix))), epsilon_max=15,
+                                    model=InwardDisplacement(), verbose=False).process()
+    assert baryonified.sum() == pytest.approx(n_pix**2)
+
+
+def test_3D_grid_runners_are_centered_and_symmetric(cosmology_parameters):
+    n_pix, box = 24, 12.0
+    res  = box / n_pix
+    bins = (np.arange(n_pix) + 0.5) * res
+
+    def grid(values):
+        return bfg.GriddedMap(map=values, bins=bins, redshift=REDSHIFT, cosmo=dict(cosmology_parameters))
+
+    #Painting (3D uses the real-space profile)
+    position = (bins[12] + 0.1 * res, bins[7] - 0.2 * res, bins[15] + 0.3 * res)
+    catalog  = bfg.HaloNDCatalog(x=[position[0]], y=[position[1]], z=[position[2]], M=[1e14],
+                                 redshift=REDSHIFT, cosmo=dict(cosmology_parameters))
+    painted  = bfg.PaintProfilesGrid(catalog, grid(np.zeros((n_pix,) * 3)), epsilon_max=5,
+                                     model=GaussianProfile(), verbose=False).process()
+    for axis in range(3):
+        others   = tuple(j for j in range(3) if j != axis)
+        centroid = (painted.sum(axis=others) * bins).sum() / painted.sum()
+        assert centroid == pytest.approx(position[axis], abs=0.02 * res)
+
+    #Baryonification of a uniform field around a halo at a pixel center
+    catalog = bfg.HaloNDCatalog(x=[bins[12]], y=[bins[7]], z=[bins[15]], M=[1e14],
+                                redshift=REDSHIFT, cosmo=dict(cosmology_parameters))
+    new_map = bfg.BaryonifyGrid(catalog, grid(np.ones((n_pix,) * 3)), epsilon_max=5,
+                                model=InwardDisplacement(), verbose=False).process()
+    assert new_map.sum() == pytest.approx(n_pix**3)
+    assert np.unravel_index(np.argmax(new_map), new_map.shape) == (12, 7, 15)
+    window = new_map[12 - 5: 12 + 6, 7 - 5: 7 + 6, 15 - 5: 15 + 6]
+    np.testing.assert_allclose(window, window[::-1, ::-1, ::-1], rtol=1e-10)
+
+
+def test_gridded_map_coordinates_follow_axis_convention(cosmology_parameters):
+    gridded = _grid(cosmology_parameters)
+    x, y = gridded.grid
+    np.testing.assert_array_equal(x[:, 0], BINS)  #x varies along axis 0
+    np.testing.assert_array_equal(y[0, :], BINS)  #y varies along axis 1
+
+    #A painted halo peaks at the pixel whose grid coordinates are the halo position
+    painted = bfg.PaintProfilesGrid(_catalog(BINS[20], BINS[12], cosmology_parameters), gridded,
+                                    epsilon_max=5, model=GaussianProfile(), verbose=False).process()
+    peak = np.unravel_index(np.argmax(painted), painted.shape)
+    assert (x[peak], y[peak]) == (BINS[20], BINS[12])

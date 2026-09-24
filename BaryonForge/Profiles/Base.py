@@ -49,6 +49,12 @@ class BaseBFGProfiles(ccl.halos.profiles.HaloProfile):
 
     Parameters
     ----------
+    mass_def : ccl.halos.massdef.MassDef, optional
+        The halo mass definition. Default is `MassDef200c`.
+    c_M_relation : ccl concentration class or instance, optional
+        The concentration-mass relation, used when `cdelta` is not provided. Either a class
+        (eg. `ccl.halos.ConcentrationDiemer15`), which is initialized with `mass_def`, or an
+        initialized instance. Default is None (each profile then uses its own fiducial relation).
     use_fftlog_projection : bool, optional
         If True, the default FFTLog projection method is used for the `projected` method. 
         If False, a custom real-space projection is employed. Default is False.
@@ -104,11 +110,18 @@ class BaseBFGProfiles(ccl.halos.profiles.HaloProfile):
             else:
                 setattr(self, m, None)
 
-        #Let user specify their own c_M_relation as desired
-        if c_M_relation is not None:
-            self.c_M_relation = c_M_relation(mass_def = mass_def)
-        else:
+        #Let user specify their own c_M_relation as desired. This can be a CCL concentration
+        #class (initialized here with this profile's mass_def), or an already-initialized instance.
+        if c_M_relation is None:
             self.c_M_relation = None
+        elif isinstance(c_M_relation, ccl.halos.halo_model_base.Concentration):
+            self.c_M_relation = c_M_relation
+            mdef = ccl.halos.MassDef.from_specs(mass_def)[0] if isinstance(mass_def, str) else mass_def
+            if c_M_relation.mass_def.name != mdef.name:
+                warnings.warn(f"The c_M_relation instance is defined for {c_M_relation.mass_def.name} masses, "
+                              f"but this profile uses mass_def = {mdef.name}.")
+        else:
+            self.c_M_relation = c_M_relation(mass_def = mass_def)
 
         #Also save the original input to propogate into profile ops.
         self._c_M_relation    = c_M_relation
@@ -250,9 +263,11 @@ class BaseBFGProfiles(ccl.halos.profiles.HaloProfile):
 
         R = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
 
-        #Integral limits
-        int_min = self.padding_lo_proj   * np.min(r_use)
-        int_max = self.padding_hi_proj   * np.max(r_use)
+        #Integral limits. Use the smallest *positive* radius, so r = 0 (eg. a halo exactly
+        #at a pixel center) can still be evaluated.
+        r_pos   = r_use[r_use > 0]
+        int_min = self.padding_lo_proj   * (np.min(r_pos) if r_pos.size > 0 else 1e-6)
+        int_max = self.padding_hi_proj   * np.max(np.append(r_pos, int_min))
 
         #Use proj_cutoff and if it is not passed then default to the regular cutoff
         if self.proj_cutoff is not None:
@@ -300,7 +315,7 @@ class BaseBFGProfiles(ccl.halos.profiles.HaloProfile):
 
                 if np.any(positive):
                     upper  = np.clip(np.searchsorted(r_integral, r_los), 1, r_integral.size - 1)
-                    loglog = positive[upper] & positive[upper - 1]
+                    loglog = positive[upper] & positive[upper - 1] & (r_los > 0)
                     integrand[loglog] = np.exp(np.interp(np.log(r_los[loglog]), ln_r_integral, ln_prof))
 
                 proj_prof[i, j] = 2*np.trapz(integrand, r_proj)

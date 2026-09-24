@@ -468,7 +468,9 @@ class GriddedMap(object):
         A boolean indicating whether the map is 2D (`True`) or 3D (`False`).
     
     grid : list of ndarrays
-        A list of numpy arrays representing the meshgrid of bin coordinates, useful for indexing.
+        The (x, y) or (x, y, z) coordinates of every pixel center. Axis 0 of the map is x, axis 1
+        is y, and axis 2 is z, so that `grid[0][i, j] = bins[i]`. This is the same convention used
+        by the runners and by `ParticleSnapshot.make_map`.
     
     inds : ndarray
         An array of indices corresponding to positions in the grid.
@@ -507,12 +509,14 @@ class GriddedMap(object):
 
         self.is2D = True if len(self.map.shape) == 2 else False
 
+        #Axis 0 of the map is x, axis 1 is y (and axis 2 is z), matching the runners and
+        #ParticleSnapshot.make_map. So grid[0][i, j] = bins[i] is the x-coordinate of pixel (i, j).
         if self.is2D:
             assert self.map.shape[0] == self.map.shape[1] #Maps have to be square maps
-            self.grid = np.meshgrid(bins, bins, indexing = 'xy')
+            self.grid = np.meshgrid(bins, bins, indexing = 'ij')
         else:
             assert (self.map.shape[0] == self.map.shape[1]) & (self.map.shape[1] == self.map.shape[2]) #Maps have to be cubic maps
-            self.grid = np.meshgrid(bins, bins, bins, indexing = 'xy')
+            self.grid = np.meshgrid(bins, bins, bins, indexing = 'ij')
 
         assert self.Npix == self.bins.size, f"Map has {self.Npix} pixels a side, but you passed {self.bins.size} bins"
             

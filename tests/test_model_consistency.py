@@ -92,6 +92,9 @@ def test_battaglia_warns_on_inconsistent_mass_definition():
         bfg.Profiles.Battaglia.Pressure("500_AGN", mass_def=ccl.halos.massdef.MassDef500c)
         bfg.Profiles.Battaglia.Pressure("200_AGN")
 
+    with pytest.raises(ValueError, match="Model_def"):
+        bfg.Profiles.Battaglia.GasDensity("500_AGN")
+
 
 @pytest.mark.parametrize(
     "module", ("Schneider19", "Schneider25", "Arico20", "Mead20", "HyDif",

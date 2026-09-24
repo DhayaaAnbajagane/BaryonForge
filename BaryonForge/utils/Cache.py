@@ -16,14 +16,17 @@ class _CachedFunction:
         self.cache = cache
         self.func = func
 
-    def __call__(self, *args):
+    def __call__(self, *args, **kwargs):
+        #Keyword arguments (eg. CCL calls get_normalization(cosmo, a, hmc = hmc)) are part of the key
+        key = args + tuple(item for k in sorted(kwargs) for item in (k, kwargs[k]))
+
         #Always hand out copies, so that callers modifying the output in-place
         #cannot corrupt the cached value
-        if self.cache.contains(*args):
-            return copy.deepcopy(self.cache.get(*args))
+        if self.cache.contains(*key):
+            return copy.deepcopy(self.cache.get(*key))
 
-        value = self.func(*args)
-        self.cache.set(copy.deepcopy(value), *args)
+        value = self.func(*args, **kwargs)
+        self.cache.set(copy.deepcopy(value), *key)
         return value
 
 
@@ -199,7 +202,12 @@ class CachedHODProfile(CachedProfile, ccl.halos.profiles.hod.HaloProfileHOD):
         for m in self.methods:
             setattr(self, m, SimpleArrayCache(self.maxsize)(getattr(self.Profile, m)))
         
-        #We just set this to the same as the inputted profile.
-        ccl.halos.profiles.hod.HaloProfileHOD.__init__(self, mass_def = self.Profile.mass_def)
+        #BaseBFGProfiles.__init__ is not run for this class, so set the attributes its properties use
+        self._c_M_relation = None
+        self._use_fftlog_projection = False
 
-        self.update_precision_fftlog(**self.Profile.precision_fftlog.to_dict())
+        #We just set this to the same as the inputted profile (HOD profiles also need a concentration).
+        ccl.halos.profiles.hod.HaloProfileHOD.__init__(self, mass_def = self.Profile.mass_def,
+                                                       concentration = self.Profile.concentration)
+
+        ccl.halos.profiles.HaloProfile.update_precision_fftlog(self, **self.Profile.precision_fftlog.to_dict())

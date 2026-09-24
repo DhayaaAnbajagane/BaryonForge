@@ -39,6 +39,9 @@ Test index:
     test_displacement_table_matches_parameters_by_name: checks displacement parameters are matched by name.
     test_simple_array_cache_returns_copies: checks cached outputs cannot be modified in place.
     test_truncated_fourier_matches_direct_transform: checks the Fourier transform of truncated profiles.
+    test_projection_at_zero_radius: checks projected profiles at r = 0.
+    test_concentration_classes_and_instances: checks c_M_relation accepts classes and instances.
+    test_cached_profiles_in_halo_model: checks cached (HOD) profiles inside CCL halo-model calls.
 """
 
 from collections import Counter
@@ -772,3 +775,51 @@ def test_truncated_fourier_matches_direct_transform(cosmo):
     restored = pickle.loads(pickle.dumps(truncated))
     np.testing.assert_allclose(restored.fourier(cosmo, k, mass, scale_factor),
                                truncated.fourier(cosmo, k, mass, scale_factor))
+
+
+def test_projection_at_zero_radius(cosmo):
+    # A halo can sit exactly on a pixel center; the (cored) projection there must be finite
+    parameters = {**bpar_S19, "r_steps": 64, "cutoff": 20, "proj_cutoff": 20}
+    gas = bfg.Profiles.Schneider19.Gas(**parameters)
+    result = gas.projected(cosmo, np.array([0.0, 1e-4, 0.1]), 1.0e14, 0.8)
+    assert np.all(np.isfinite(result))
+    assert result[0] == pytest.approx(result[1], rel=1e-3)
+
+
+def test_concentration_classes_and_instances(cosmo):
+    parameters = {**bpar_S19, "r_steps": 64, "cutoff": 20, "proj_cutoff": 20}
+    mass_def = ccl.halos.massdef.MassDef200c
+    from_class = bfg.Profiles.Schneider19.DarkMatter(**parameters, c_M_relation=ccl.halos.ConcentrationDuffy08)
+    from_instance = bfg.Profiles.Schneider19.DarkMatter(
+        **parameters, c_M_relation=ccl.halos.ConcentrationDuffy08(mass_def=mass_def)
+    )
+    radii = np.array([0.1, 1.0])
+    np.testing.assert_allclose(from_instance.real(cosmo, radii, 1.0e14, 0.8),
+                               from_class.real(cosmo, radii, 1.0e14, 0.8))
+
+    with pytest.warns(UserWarning, match="200m"):
+        bfg.Profiles.Schneider19.DarkMatter(
+            **parameters, c_M_relation=ccl.halos.ConcentrationDuffy08(mass_def=ccl.halos.massdef.MassDef200m)
+        )
+
+
+def test_cached_profiles_in_halo_model(cosmo):
+    from BaryonForge.utils.Cache import CachedHODProfile
+
+    mass_def = ccl.halos.massdef.MassDef200c
+    hmc = ccl.halos.HMCalculator(mass_function="Tinker08", halo_bias="Tinker10", mass_def=mass_def, nM=16)
+    k = np.array([0.1, 1.0])
+
+    parameters = {**bpar_S19, "r_steps": 64, "cutoff": 1000}
+    dark_matter = bfg.Profiles.Schneider19.DarkMatter(**parameters)
+    np.testing.assert_allclose(
+        ccl.halos.halomod_power_spectrum(cosmo, hmc, k, 0.8, CachedProfile(dark_matter)),
+        ccl.halos.halomod_power_spectrum(cosmo, hmc, k, 0.8, dark_matter),
+    )
+
+    hod = ccl.halos.HaloProfileHOD(mass_def=mass_def, concentration=ccl.halos.ConcentrationDuffy08(mass_def=mass_def))
+    cached_hod = CachedHODProfile(hod)
+    np.testing.assert_allclose(
+        ccl.halos.halomod_power_spectrum(cosmo, hmc, k, 0.8, cached_hod, prof_2pt=ccl.halos.Profile2ptHOD()),
+        ccl.halos.halomod_power_spectrum(cosmo, hmc, k, 0.8, hod, prof_2pt=ccl.halos.Profile2ptHOD()),
+    )

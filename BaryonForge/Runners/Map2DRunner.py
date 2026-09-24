@@ -502,7 +502,7 @@ class BaryonifyGrid(DefaultRunnerGrid):
             res    = self.GriddedMap.res
             Nsize  = 2 * R_q / res
             Nsize  = int(Nsize // 2)*2 #Force it to be even
-            Nsize  = np.clip(Nsize, 2, bins.size//2)
+            Nsize  = np.clip(Nsize, 2, 2*(bins.size//2)) #At most the full box width (radius L/2), and always even
 
             #Pixel-center offsets (from the central pixel) of the cutout. These match the
             #indices chosen by pick_indices, which run from center - width to center + width - 1.
@@ -752,7 +752,7 @@ class PaintProfilesGrid(DefaultRunnerGrid):
             res    = self.GriddedMap.res
             Nsize  = 2 * self.epsilon_max * R_j / res
             Nsize  = int(Nsize // 2)*2 #Force it to be even
-            Nsize  = np.clip(Nsize, 2, bins.size//2) #Can't skip small halos because we still must sum all contributions to a pixel
+            Nsize  = np.clip(Nsize, 2, 2*(bins.size//2)) #Even, at most the full box width. Can't skip small halos because we still must sum all contributions to a pixel
 
             #Pixel-center offsets (from the central pixel) of the cutout, matching pick_indices
             cutout_width = Nsize//2
@@ -935,7 +935,7 @@ class PaintProfilesAnisGrid(PaintProfilesGrid):
                 A_j = self.HaloNDCatalog.cat['A_ell'][j]
                 A_j = A_j/np.sqrt(np.sum(A_j**2))
             
-            Nsize = np.clip(Nsize, 2, bins.size//2) #Can't skip small halos because we still must sum all contributions to a pixel
+            Nsize = np.clip(Nsize, 2, 2*(bins.size//2)) #Even, at most the full box width. Can't skip small halos because we still must sum all contributions to a pixel
 
             #Pixel-center offsets (from the central pixel) of the cutout, matching pick_indices
             cutout_width = Nsize//2

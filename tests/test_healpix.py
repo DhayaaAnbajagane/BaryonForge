@@ -5,6 +5,7 @@ Test index:
     test_painting_skips_halos_smaller_than_a_pixel: checks halos with no pixels in their cutout.
     test_split_join_preserves_runner_settings: checks split runners inherit the painting settings.
     test_anisotropic_painting_assigns_all_tracer_to_single_halo: checks tracer/mass units in PaintProfilesAnisShell.
+    test_baryonification_moves_mass_inward_and_conserves_it: checks BaryonifyShell end to end.
 """
 
 import warnings
@@ -130,3 +131,25 @@ def test_anisotropic_painting_assigns_all_tracer_to_single_halo():
     vec = hp.ang2vec(10.0, 10.0, lonlat=True)
     center = hp.vec2pix(NSIDE, *vec)
     assert result[center] == pytest.approx(1, rel=1e-6)
+
+
+class InwardDisplacement:
+    """Comoving displacement of -1.5 Mpc within 6 comoving Mpc of the halo."""
+
+    def displacement(self, r, M, a):
+        return np.where(np.atleast_1d(r) < 6, -1.5, 0.0)
+
+
+def test_baryonification_moves_mass_inward_and_conserves_it():
+    cosmology_parameters = bfg.utils.build_cosmodict(_cosmology())
+    NSIDE = 1024  # ~1.2 comoving Mpc pixels at z = 0.3
+    catalog = bfg.HaloLightConeCatalog([30.0], [10.0], [1e15], [0.3], cosmology_parameters.copy())
+    original = np.ones(hp.nside2npix(NSIDE))
+    shell = bfg.LightconeShell(map=original, cosmo=cosmology_parameters.copy(), redshift=0.3)
+    result = bfg.BaryonifyShell(catalog, shell, epsilon_max=5, model=InwardDisplacement(), verbose=False).process()
+
+    assert result.sum() == pytest.approx(original.sum())
+    disc = hp.query_disc(NSIDE, hp.ang2vec(30.0, 10.0, lonlat=True), np.radians(8 / 60))
+    assert result[disc].sum() > 1.5 * original[disc].sum()
+    far = hp.query_disc(NSIDE, hp.ang2vec(60.0, -20.0, lonlat=True), np.radians(8 / 60))
+    np.testing.assert_allclose(result[far], original[far])

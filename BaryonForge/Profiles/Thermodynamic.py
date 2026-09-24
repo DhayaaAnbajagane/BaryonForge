@@ -499,9 +499,12 @@ class GasNumberDensity(BaseThermodynamicProfile):
     gas : Gas, optional
         An instance of the `Gas` class defining the gas density profile. If not provided, 
         a default `Gas` object is created using `kwargs`.
-    mean_molecular_weight : float, optional
-        Mean molecular weight of the gas. Default is 1.15, which is typical for ionized 
-        hydrogen with a small fraction of helium.
+    mean_molecular_weight : float
+        Mean mass per particle of the species being counted, in units of the proton mass.
+        Required (there is no default). The value sets which number density is returned:
+        about 0.59 for the total particle number density of an ionized H/He gas (use this
+        with the total gas `Pressure` to get a temperature), about 1.14 = 2/(1 + X) for the
+        electron number density, and 1/X ~ 1.32 for the hydrogen number density.
     **kwargs
         Additional keyword arguments passed to initialize the `Gas` profile and other 
         parameters from `SchneiderProfiles`.
@@ -1123,7 +1126,9 @@ class XrayCounts(BaseThermodynamicProfile):
     electronnumberdensity : BaseThermodynamicProfile, optional
         Electron number density profile object used to compute :math:`n_e(r)`.
         If not provided, a default `GasNumberDensity` profile is constructed
-        from ``kwargs``.
+        from ``kwargs``, using the ``mean_molecular_weight`` in ``kwargs``. In that case
+        ``mean_molecular_weight`` must be the *electron* value, ~2/(1 + X) ~ 1.14, not the
+        total mean molecular weight of the gas (~0.59), which would overestimate :math:`n_e` by ~2x.
     hydrogennumberdensity : BaseThermodynamicProfile, optional
         Hydrogen number density profile object used to compute
         :math:`n_{\\rm H}(r)`. If not provided, a default `GasNumberDensity`
