@@ -55,13 +55,26 @@ def _set_parameter(obj, key, value):
 
     """
 
+    _set_parameter_recursive(obj, key, value, set())
+
+
+def _set_parameter_recursive(obj, key, value, seen):
+
+    #Some profiles hold references to themselves (eg. prof4params = self)
+    #or share sub-profiles, so we track visited objects to avoid infinite recursion
+    if id(obj) in seen: return
+    seen.add(id(obj))
+
     obj_keys = dir(obj)
-    
+
     for k in obj_keys:
         if k == key:
             setattr(obj, key, value)
         elif isinstance(getattr(obj, k), (ccl.halos.profiles.HaloProfile,)):
-            _set_parameter(getattr(obj, k), key, value)
+            _set_parameter_recursive(getattr(obj, k), key, value, seen)
+
+
+_NOT_FOUND = object()
 
 def _get_parameter(obj, key):
     """
@@ -87,13 +100,25 @@ def _get_parameter(obj, key):
     `getattr` : Built-in function used to get the attribute of an object.
     """
 
+    res = _get_parameter_recursive(obj, key, set())
+    return None if res is _NOT_FOUND else res
+
+
+def _get_parameter_recursive(obj, key, seen):
+
+    if id(obj) in seen: return _NOT_FOUND
+    seen.add(id(obj))
+
     obj_keys = dir(obj)
-    res      = []
     for k in obj_keys:
-        if k == key: 
+        if k == key:
             return getattr(obj, key)
         elif isinstance(getattr(obj, k), (ccl.halos.profiles.HaloProfile,)):
-            return _get_parameter(getattr(obj, k), key)
+            #Keep searching if this sub-profile does not have the key
+            res = _get_parameter_recursive(getattr(obj, k), key, seen)
+            if res is not _NOT_FOUND: return res
+
+    return _NOT_FOUND
 
             
 class TabulatedProfile(ccl.halos.profiles.HaloProfile):
@@ -753,7 +778,7 @@ class TabulatedCorrelation3D(object):
             for j in range(z_range.size):
                 
                 a = 1/(1 + z_range[j])
-                interp3D[j, :] = ccl.correlation_3d(self.cosmo, a, r)
+                interp3D[j, :] = ccl.correlation_3d(self.cosmo, r = r, a = a)
                 
                 pbar.update(1)
         

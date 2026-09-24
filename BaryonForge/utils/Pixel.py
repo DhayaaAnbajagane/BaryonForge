@@ -1,7 +1,7 @@
 import pyccl as ccl
 import numpy as np, healpy as hp
 from scipy import interpolate, special
-from .Tabulate import _set_parameter
+from .Tabulate import _set_parameter, _get_parameter
 from ..Profiles.Base import BaseBFGProfiles
 
 __all__ = ['ConvolvedProfile', 'GridPixelApprox', 'HealPixel', 'NoPix']
@@ -74,8 +74,10 @@ class ConvolvedProfile(BaseBFGProfiles):
         
         self.isHarmonic = Pixel.isHarmonic
 
-        #We just set this to the same as the inputted profile.
-        BaseBFGProfiles.__init__(self, mass_def = Profile.mass_def)
+        #We just set this to the same as the inputted profile, including its cutoffs
+        cutoffs = {k : _get_parameter(Profile, k) for k in ['cutoff', 'proj_cutoff']}
+        cutoffs = {k : v for k, v in cutoffs.items() if v is not None}
+        BaseBFGProfiles.__init__(self, mass_def = Profile.mass_def, **cutoffs)
 
         self.update_precision_fftlog(**self.Profile.precision_fftlog.to_dict())
 

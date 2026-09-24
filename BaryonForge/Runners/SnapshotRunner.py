@@ -235,8 +235,10 @@ class BaryonifySnapshot(DefaultRunnerSnapshot):
                 dy   = self.ParticleSnapshot.cat['y'][inds] - y_j
                 d    = self.compute_distance(dx, dy)
 
-                x_hat = self.enforce_periodicity(dx)/d
-                y_hat = self.enforce_periodicity(dy)/d
+                #A particle exactly at the halo center has no direction. Give it zero displacement.
+                with np.errstate(invalid = 'ignore', divide = 'ignore'):
+                    x_hat = np.where(d > 0, self.enforce_periodicity(dx)/d, 0)
+                    y_hat = np.where(d > 0, self.enforce_periodicity(dy)/d, 0)
 
                 #Compute the displacement needed
                 offset = self.model.displacement(d, M_j, a_j, **o_j)
@@ -251,9 +253,11 @@ class BaryonifySnapshot(DefaultRunnerSnapshot):
                 dz   = self.ParticleSnapshot.cat['z'][inds] - z_j
                 d    = self.compute_distance(dx, dy, dz)
 
-                x_hat = self.enforce_periodicity(dx)/d
-                y_hat = self.enforce_periodicity(dy)/d
-                z_hat = self.enforce_periodicity(dz)/d
+                #A particle exactly at the halo center has no direction. Give it zero displacement.
+                with np.errstate(invalid = 'ignore', divide = 'ignore'):
+                    x_hat = np.where(d > 0, self.enforce_periodicity(dx)/d, 0)
+                    y_hat = np.where(d > 0, self.enforce_periodicity(dy)/d, 0)
+                    z_hat = np.where(d > 0, self.enforce_periodicity(dz)/d, 0)
 
                 #Compute the displacement needed
                 offset = self.model.displacement(d, M_j, a_j, **o_j)

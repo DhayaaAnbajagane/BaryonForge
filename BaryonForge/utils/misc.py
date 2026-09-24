@@ -7,22 +7,15 @@ from scipy import interpolate
 __all__ = ['generate_operator_method', 'destory_Pk', 'build_cosmodict', 'safe_Pchip_minimize', 'combine_fftpars']
 
 
-def _evaluate_real(profile, cosmo, r, M, a):
-    """Evaluate a profile through its real-space implementation."""
-    real_method = getattr(profile, '_real', None)
-    if real_method is not None:
-        return real_method(cosmo, r, M, a)
-    return profile._fftlog_wrap(cosmo, r, M, a, fourier_out = False)
-
 def generate_operator_method(op, reflect = False):
     """
     Defines a method for generating simple arithmetic operations for the Profile classes.
 
     The `generate_operator_method` function dynamically creates methods that can be used to perform
     arithmetic operations (such as addition, subtraction, multiplication, etc.) on instances of the
-    `HaloProfile` classes or similar. This function alters the `_real()` routine in the `HaloProfile`
-    classes so that the new result is equivalent to computing the `_real()` of the individual classes
-    and then performing the specified arithmetic operation.
+    `HaloProfile` classes or similar. The operation returns a `CombinedProfile`, whose `real()` is
+    equivalent to computing the `real()` of the individual classes and then performing the specified
+    arithmetic operation. See `CombinedProfile` for how the projected and Fourier profiles are computed.
 
     Parameters
     ----------
@@ -57,107 +50,22 @@ def generate_operator_method(op, reflect = False):
     if op in [add, mul, sub, pow, truediv]:
         def operator_method(self, other):
 
-            assert isinstance(other, (int, float, ccl.halos.profiles.HaloProfile)), f"Object must be int/float/SchneiderProfile but is type '{type(other).__name__}'."
+            assert isinstance(other, (int, float, np.number, ccl.halos.profiles.HaloProfile)), \
+                   f"Object must be int/float/HaloProfile but is type '{type(other).__name__}'."
 
+            #Imported here to avoid a circular import (Profiles.Base imports this module)
+            from ..Profiles.misc import CombinedProfile
 
-            mdl_pars = self.model_params
-            hyp_pars = self.hyper_params
-            fft_pars = self.precision_fftlog.to_dict()
-
-            if isinstance(other, ccl.halos.profiles.HaloProfile):
-                mdl_pars |= other.model_params
-                hyp_pars |= other.hyper_params
-                fft_pars  = combine_fftpars(fft_pars, other.precision_fftlog.to_dict())
-
-
-            Combined = self.__class__(**mdl_pars, **hyp_pars)
-            Combined.update_precision_fftlog(**fft_pars)
-
-            def __tmp_real__(cosmo, r, M, a):
-
-                A = _evaluate_real(self, cosmo, r, M, a)
-
-                if isinstance(other, ccl.halos.profiles.HaloProfile):
-                    B = _evaluate_real(other, cosmo, r, M, a)
-                else:
-                    B = other
-
-                if not reflect:
-                    return op(A, B)
-                else:
-                    return op(B, A)
-
-            def __str_prf__():
-
-                op_name = op.__name__
-                cl_name = self.__str_prf__()
-                
-                #Check if it has cutom string output already
-                #If not then use the class name. Or if int/float just use number
-                if isinstance(other, ccl.halos.profiles.HaloProfile):
-                    if hasattr(other, '__str_prf__'):
-                        ot_name = other.__str_prf__()
-                    else:
-                        ot_name = other.__class__.__name__ 
-                else: 
-                    ot_name = other
-
-                
-                if not reflect:
-                    return f"{op_name}[{cl_name}, {ot_name}]"
-                else:
-                    return f"{op_name}[{ot_name}, {cl_name}]"
-
-            Combined._real = __tmp_real__
-            Combined.__str_prf__ = __str_prf__
-
-
-            #Do the same operations on fourier side only if the profile exists.
-            #This happens for a small handful of profiles
-            if hasattr(self, '_fourier') & ((not isinstance(other, ccl.halos.profiles.HaloProfile)) | hasattr(other, '_fourier')):
-                def __tmp_fourier__(cosmo, r, M, a):
-
-                    A = self._fourier(cosmo, r, M, a)
-
-                    if isinstance(other, ccl.halos.profiles.HaloProfile):
-                        B = other._fourier(cosmo, r, M, a)
-                    else:
-                        B = other
-
-                    if not reflect:
-                        return op(A, B)
-                    else:
-                        return op(B, A)
-                    
-                Combined._fourier = __tmp_fourier__
-                    
-            return Combined
+            return CombinedProfile(op, self, other, reflect = reflect)
 
     #For some operators we don't need a second input, so rewrite function for that
     elif op in [abs, neg, pos]:
 
         def operator_method(self):
 
-            Combined = self.__class__(**self.model_params, **self.hyper_params)
-            Combined.update_precision_fftlog(**self.precision_fftlog.to_dict())
+            from ..Profiles.misc import CombinedProfile
 
-            def __tmp_real__(cosmo, r, M, a):
-
-                A = self._real(cosmo, r, M, a)
-
-                return op(A)
-
-            def __str_prf__():
-
-                op_name = op.__name__
-                cl_name = self.__str_prf__()
-
-                return f"{op_name}[{cl_name}]"
-
-            Combined._real = __tmp_real__
-            Combined.__str_prf__ = __str_prf__
-
-            return Combined
+            return CombinedProfile(op, self)
 
     return operator_method
 
@@ -225,8 +133,8 @@ def build_cosmodict(cosmo):
     
     Notes
     -----
-    If `sigma8` is not already computed in the Cosmology object, this function invokes 
-    `cosmo.compute_sigma()` to compute and update its value before returning the dictionary.
+    If `sigma8` is not set in the Cosmology object (eg. it was initialized with `A_s`), this
+    function computes it with `pyccl.sigma8(cosmo)` before returning the dictionary.
     """
     
     cdict = {'Omega_m' : cosmo.cosmo.params.Omega_m,
@@ -239,8 +147,7 @@ def build_cosmodict(cosmo):
             }
     
     if np.isnan(cdict['sigma8']):
-        cosmo.compute_sigma()
-        cdict['sigma'] = cosmo.cosmo.params.sigma8
+        cdict['sigma8'] = float(ccl.sigma8(cosmo))
         
     return cdict
 
@@ -333,7 +240,7 @@ def combine_fftpars(setA, setB):
 
             if A != B:
                 warnings.warn(f"Value of parameter {k} is inconsistent between two profiles you are combining ({A}, {B}). "
-                            "We will use {A} as the default value")
+                              f"We will use {A} as the default value")
             
         #Otherwise, we have clear rules for setting params
         #such that you encompass the requirements of

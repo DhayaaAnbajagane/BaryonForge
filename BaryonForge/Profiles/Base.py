@@ -7,8 +7,8 @@ from ..utils.Tabulate import _set_parameter
 __all__ = ['BaseBFGProfiles', 'hyper_params']
 
 
-hyper_params = ['mass_def', 'c_M_relation', 'use_fftlog_projection', 
-                'padding_hi_proj', 'padding_hi_proj', 'n_per_decade_proj',
+hyper_params = ['mass_def', 'c_M_relation', 'use_fftlog_projection',
+                'padding_lo_proj', 'padding_hi_proj', 'n_per_decade_proj',
                 'r_min_int', 'r_max_int', 'r_steps', 'xi_mm']
 
 class BaseBFGProfiles(ccl.halos.profiles.HaloProfile):
@@ -149,12 +149,16 @@ class BaseBFGProfiles(ccl.halos.profiles.HaloProfile):
         self._use_fftlog_projection = use_fftlog_projection
 
         #Constant that helps with the fourier transform convolution integral.
-        #This value minimized the ringing due to the transforms
-        self.update_precision_fftlog(plaw_fourier = -2)
+        #This value minimized the ringing due to the transforms.
+        #NOTE: These are defaults for *this* profile only. We deliberately do not recurse into
+        #any sub-profiles held as attributes, since they already set their own (possibly custom,
+        #eg. Stars) precision during their own initialization.
+        Haloprofile = ccl.halos.profiles.HaloProfile
+        Haloprofile.update_precision_fftlog(self, plaw_fourier = -2)
 
         #Need this to prevent projected profile from artificially cutting off
-        self.update_precision_fftlog(padding_lo_fftlog = 1e-2, padding_hi_fftlog = 1e2,
-                                     padding_lo_extra  = 1e-4, padding_hi_extra  = 1e4)
+        Haloprofile.update_precision_fftlog(self, padding_lo_fftlog = 1e-2, padding_hi_fftlog = 1e2,
+                                            padding_lo_extra  = 1e-4, padding_hi_extra  = 1e4)
         
     
     @property
@@ -173,13 +177,19 @@ class BaseBFGProfiles(ccl.halos.profiles.HaloProfile):
         return params
     
 
-    def update_precision_fftlog(self, **pars):
+    def update_precision_fftlog(self, _seen = None, **pars):
         """
         Updates the FFT parameters for the fourier method, and does so
         recursively for any and all BaryonForge (BFG) profiles that are
         held as attributes within a given class.
         """
-        
+
+        #Track visited objects, since some profiles hold references to
+        #themselves (eg. prof4params = self) and would otherwise recurse forever
+        _seen = set() if _seen is None else _seen
+        if id(self) in _seen: return
+        _seen.add(id(self))
+
         Haloprofile = ccl.halos.profiles.HaloProfile
         #Set precision for yourself
         Haloprofile.update_precision_fftlog(self, **pars)
@@ -187,10 +197,10 @@ class BaseBFGProfiles(ccl.halos.profiles.HaloProfile):
         #Now check if you have any attributes that also need
         #to have their precision updated
         obj_keys = dir(self)
-    
+
         for k in obj_keys:
             if isinstance(getattr(self, k), (ccl.halos.profiles.HaloProfile,)):
-                BaseBFGProfiles.update_precision_fftlog(getattr(self, k), **pars)
+                BaseBFGProfiles.update_precision_fftlog(getattr(self, k), _seen = _seen, **pars)
                       
 
     @property
@@ -243,14 +253,7 @@ class BaseBFGProfiles(ccl.halos.profiles.HaloProfile):
         #Integral limits
         int_min = self.padding_lo_proj   * np.min(r_use)
         int_max = self.padding_hi_proj   * np.max(r_use)
-        int_N   = self.n_per_decade_proj * np.int32(np.log10(int_max/int_min))
-        
-        #If proj_cutoff was passed, then use the largest of the two
-        if self.proj_cutoff is not None: 
-            int_max = np.max([self.proj_cutoff, int_max])
-        r_integral  = np.geomspace(int_min, int_max, int_N)
-        
-        
+
         #Use proj_cutoff and if it is not passed then default to the regular cutoff
         if self.proj_cutoff is not None:
             r_max = self.proj_cutoff
@@ -260,8 +263,17 @@ class BaseBFGProfiles(ccl.halos.profiles.HaloProfile):
             r_max = 1e4
             warnings.warn("WARNING: projected() profile requested without specifying proj_cutoff or cutoff. "
                           "Defaulting the integral upper limit to 10,000 (comoving) Mpc.")
-            
-        r_proj = np.geomspace(int_min, r_max, int_N)
+
+        #The 3D profile must be sampled out to sqrt(r_max^2 + max(r)^2), so use the largest limit.
+        #The number of points is set *after* the limits are final, so that n_per_decade_proj is
+        #honoured irrespective of which radii were requested.
+        int_max  = np.max([int_max, np.sqrt(r_max**2 + np.max(r_use)**2)])
+        int_N    = max(int(np.ceil(self.n_per_decade_proj * np.log10(int_max/int_min))) + 1, 2)
+        proj_N   = max(int(np.ceil(self.n_per_decade_proj * np.log10(r_max/int_min))) + 1, 2)
+
+        r_integral  = np.geomspace(int_min, int_max, int_N)
+        r_proj      = np.geomspace(int_min, r_max, proj_N)
+        r_proj      = np.concatenate([[0], r_proj]) #Line-of-sight integral starts at l = 0
         prof = np.asarray(self._real(cosmo, r_integral, M, a))
 
         # ``r_integral`` is always one-dimensional, irrespective of whether
@@ -274,10 +286,24 @@ class BaseBFGProfiles(ccl.halos.profiles.HaloProfile):
 
         #This nested loop saves on memory, and vectorizing the calculation doesn't really
         #speed things up, so better to keep the loop this way.
+        #Interpolate in log-log space wherever the profile is positive (exact for power-laws,
+        #so the result does not depend on where the grid points happen to fall). In intervals
+        #touching zero/negative values (eg. sharp truncations), fall back to linear interpolation.
+        ln_r_integral = np.log(r_integral)
         for i in range(M_use.size):
+            positive = prof[i] > 0
+            ln_prof  = np.log(np.where(positive, prof[i], 1))
             for j in range(r_use.size):
 
-                proj_prof[i, j] = 2*np.trapz(np.interp(np.sqrt(r_proj**2 + r_use[j]**2), r_integral, prof[i]), r_proj)
+                r_los     = np.sqrt(r_proj**2 + r_use[j]**2)
+                integrand = np.interp(r_los, r_integral, prof[i])
+
+                if np.any(positive):
+                    upper  = np.clip(np.searchsorted(r_integral, r_los), 1, r_integral.size - 1)
+                    loglog = positive[upper] & positive[upper - 1]
+                    integrand[loglog] = np.exp(np.interp(np.log(r_los[loglog]), ln_r_integral, ln_prof))
+
+                proj_prof[i, j] = 2*np.trapz(integrand, r_proj)
 
         #Handle dimensions so input dimensions are mirrored in the output
         if np.ndim(r) == 0:

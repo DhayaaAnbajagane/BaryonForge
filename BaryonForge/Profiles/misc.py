@@ -1,12 +1,215 @@
 import numpy as np
 import pyccl as ccl
+from operator import add, mul, sub, truediv, pow, neg, pos, abs
 from .Base import BaseBFGProfiles, hyper_params
 from scipy import interpolate
-from ..utils.Tabulate import _set_parameter
+from ..utils.Tabulate import _set_parameter, _get_parameter
+from ..utils.misc import combine_fftpars
 from pyccl.pyutils import resample_array, _fftlog_transform
 fftlog = _fftlog_transform
 
-__all__ = ['Truncation', 'Identity', 'Zeros', 'ComovingToPhysical', 'Mdelta_to_Mtot']
+__all__ = ['Truncation', 'Identity', 'Zeros', 'ComovingToPhysical', 'Mdelta_to_Mtot', 'CombinedProfile']
+
+
+#CCL implementation hooks. These must never be delegated from a container/composite
+#profile to one of its inputs, since CCL uses their presence to decide how to compute
+#real/fourier/projected profiles.
+_CCL_HOOKS = ('_real', '_fourier', '_projected', '_cumul2d', '_fftlog_wrap', '_projected_fftlog_wrap')
+
+
+def _has_custom_method(profile, method):
+    """
+    Returns True if the `projected` or `fourier` method of a profile does something other than
+    the default: the real-space projection of `BaseBFGProfiles`, or the FFTLog of the real profile.
+    """
+
+    Haloprofile = ccl.halos.profiles.HaloProfile
+
+    #Public method has been overriden (eg. ComovingToPhysical, ConvolvedProfile, Temperature)
+    public = getattr(profile, method, None)
+    if getattr(public, '__func__', None) is not getattr(Haloprofile, method): return True
+
+    if method == 'projected':
+        hook = getattr(profile, '_projected', None)
+        return (hook is not None) and (getattr(hook, '__func__', None) is not BaseBFGProfiles._projected_realspace)
+    else:
+        return getattr(profile, '_fourier', None) is not None
+
+
+class CombinedProfile(BaseBFGProfiles):
+    """
+    Profile obtained from an arithmetic operation between profiles, or between a profile and a number.
+
+    This class is what the arithmetic operators (``+``, ``-``, ``*``, ``/``, ``**``, unary ``-``, ``+``
+    and ``abs``) of every BaryonForge profile return. It is rarely constructed directly.
+
+    The input profiles are stored as attributes (``Profile1``, ``Profile2``), so that
+    `set_parameter`, `update_precision_fftlog`, tabulation over parameters, and pickling all
+    reach them. Attributes that are not found on the combined profile (eg. model parameters,
+    or methods like ``get_f_gas``) are looked up on ``Profile1``, the profile the operator was
+    called on.
+
+    Parameters
+    ----------
+    op : callable
+        One of ``operator.add, sub, mul, truediv, pow, neg, pos, abs``.
+    Profile1 : ccl.halos.profiles.HaloProfile
+        The profile whose operator was called.
+    Profile2 : ccl.halos.profiles.HaloProfile, int, or float, optional
+        The second operand. Not needed for unary operators.
+    reflect : bool, optional
+        If True, the operation is ``op(Profile2, Profile1)`` (eg. ``2 - profile``).
+
+    Notes
+    -----
+    - The real-space profile is always ``op`` applied to the ``real()`` outputs of the inputs.
+    - For scaling by a number (and negation), the projected and Fourier profiles are the scaled
+      ``projected()`` and ``fourier()`` outputs of the input. This is exact, and respects any
+      custom projection that the input implements (eg. `ComovingToPhysical`, `ConvolvedProfile`).
+    - For sums/differences of profiles, the same is done if either input has a custom projection
+      (or Fourier transform). Otherwise, the combined real profile is projected (or FFTLog'd)
+      directly, which avoids numerical cancellation between large terms (eg. ``DMB - TwoHalo``).
+    - For other (non-linear) operations, the projected profile is the real-space projection of
+      the combined real profile, and the Fourier profile is the FFTLog of it.
+    - Numerical settings (``mass_def``, ``cutoff``, ``proj_cutoff``, projection precision) are
+      inherited from ``Profile1``. The FFTLog precision is a superset of both inputs.
+    """
+
+    def __init__(self, op, Profile1, Profile2 = None, reflect = False):
+
+        self.op       = op
+        self.Profile1 = Profile1
+        self.Profile2 = Profile2
+        self.reflect  = reflect
+
+        is_prof2 = isinstance(Profile2, ccl.halos.profiles.HaloProfile)
+        is_unary = op in (neg, pos, abs)
+
+        #Inherit numerical settings from the first profile
+        settings = {}
+        for k in ['cutoff', 'proj_cutoff', 'padding_lo_proj', 'padding_hi_proj', 'n_per_decade_proj']:
+            v = _get_parameter(Profile1, k)
+            if (v is None) and is_prof2: v = _get_parameter(Profile2, k)
+            if v is not None: settings[k] = v
+        use_fftlog = bool(getattr(Profile1, '_use_fftlog_projection', False))
+        if use_fftlog and ('cutoff' in settings): settings['proj_cutoff'] = settings['cutoff']
+
+        super().__init__(mass_def = Profile1.mass_def, use_fftlog_projection = use_fftlog, **settings)
+
+        fft_pars = Profile1.precision_fftlog.to_dict()
+        if is_prof2: fft_pars = combine_fftpars(fft_pars, Profile2.precision_fftlog.to_dict())
+        ccl.halos.profiles.HaloProfile.update_precision_fftlog(self, **fft_pars)
+
+        #Scaling by a number (or negation) commutes with projection and Fourier transforms, so
+        #we apply it directly to the projected/fourier profiles of the input.
+        scaling = (is_unary and (op is not abs)) or \
+                  ((op is mul) and (not is_prof2)) or \
+                  ((op is truediv) and (not is_prof2) and (not reflect))
+
+        #Sums/differences of profiles are also linear. If any input has a custom projection
+        #(eg. ComovingToPhysical, ConvolvedProfile) or Fourier transform, we must combine the
+        #inputs' projected/fourier profiles to respect it. Otherwise, we project the combined
+        #real-space profile, which avoids numerical cancellation between large, similar terms
+        #(eg. DarkMatterBaryon - TwoHalo).
+        summed  = (op in (add, sub)) and is_prof2
+
+        if scaling or (summed and any(_has_custom_method(p, 'projected') for p in (Profile1, Profile2))):
+            self._projected = self._projected_linear
+        if scaling or (summed and any(_has_custom_method(p, 'fourier') for p in (Profile1, Profile2))):
+            self._fourier   = self._fourier_linear
+
+
+    def __getattr__(self, name):
+
+        #Delegate unknown attributes to the first profile. Guard against lookups
+        #before Profile1 exists (eg. during unpickling), and never delegate dunder
+        #methods or the CCL implementation hooks.
+        if (name.startswith('__') and name.endswith('__')) or (name in _CCL_HOOKS):
+            raise AttributeError(name)
+        try:
+            Profile1 = object.__getattribute__(self, 'Profile1')
+        except AttributeError:
+            raise AttributeError(name) from None
+        return getattr(Profile1, name)
+
+
+    def _apply(self, method, cosmo, r, M, a):
+
+        A = getattr(self.Profile1, method)(cosmo, r, M, a)
+        if self.op in (neg, pos, abs): return self.op(A)
+
+        if isinstance(self.Profile2, ccl.halos.profiles.HaloProfile):
+            B = getattr(self.Profile2, method)(cosmo, r, M, a)
+        else:
+            B = self.Profile2
+
+        return self.op(B, A) if self.reflect else self.op(A, B)
+
+    def _real(self, cosmo, r, M, a):             return self._apply('real', cosmo, r, M, a)
+    def _projected_linear(self, cosmo, r, M, a): return self._apply('projected', cosmo, r, M, a)
+    def _fourier_linear(self, cosmo, k, M, a):   return self._apply('fourier', cosmo, k, M, a)
+
+
+    @property
+    def model_params(self):
+        params = {}
+        for p in (self.Profile2, self.Profile1): #So that Profile1 takes precedence
+            if isinstance(p, ccl.halos.profiles.HaloProfile): params.update(getattr(p, 'model_params', {}))
+        return params
+
+    @property
+    def hyper_params(self):
+        return getattr(self.Profile1, 'hyper_params', BaseBFGProfiles.hyper_params.fget(self))
+
+
+    def __str_prf__(self):
+
+        def name(p):
+            if isinstance(p, ccl.halos.profiles.HaloProfile):
+                return p.__str_prf__() if hasattr(p, '__str_prf__') else p.__class__.__name__
+            return p
+
+        op_name = self.op.__name__
+        if self.op in (neg, pos, abs): return f"{op_name}[{name(self.Profile1)}]"
+        if self.reflect: return f"{op_name}[{name(self.Profile2)}, {name(self.Profile1)}]"
+        return f"{op_name}[{name(self.Profile1)}, {name(self.Profile2)}]"
+
+    def __str_par__(self):
+        return self.Profile1.__str_par__() if hasattr(self.Profile1, '__str_par__') else "()"
+
+
+class WrappedProfile(object):
+    """
+    Mixin for convenience classes that are defined as a combination of other profiles,
+    stored in the attribute ``myprof`` (eg. ``Gas = BoundGas + EjectedGas``).
+
+    All attribute lookups, model/hyper parameters, string representations, and pickling
+    are forwarded to ``myprof``. It must be placed before the profile base class in the
+    inheritance list.
+    """
+
+    def __getattr__(self, name):
+
+        #Guard against lookups before myprof exists (eg. during unpickling)
+        try:
+            myprof = object.__getattribute__(self, 'myprof')
+        except AttributeError:
+            raise AttributeError(name) from None
+        return getattr(myprof, name)
+
+    #Need to explicitly set these two methods (to enable pickling)
+    #since otherwise the getattr call above leads to infinite recursions.
+    def __getstate__(self): return self.__dict__.copy()
+    def __setstate__(self, state): self.__dict__.update(state)
+
+    @property
+    def model_params(self): return self.myprof.model_params
+
+    @property
+    def hyper_params(self): return self.myprof.hyper_params
+
+    def __str_prf__(self): return f"{self.__class__.__name__}"
+    def __str_par__(self): return self.myprof.__str_par__()
 
 class Truncation(BaseBFGProfiles):
     """
@@ -256,35 +459,41 @@ class ComovingToPhysical(BaseBFGProfiles):
     Returns
     -------
     ccl.halo.HaloProfile object
-        A halo profile class with `_real` and `projected` routines that have been rescaled by
-        scale factor `a` to the appropriate power.
+        A halo profile class with `real`, `projected`, and `fourier` routines that have been
+        rescaled by scale factor `a` to the appropriate power. The Fourier profile is rescaled
+        by ``a^(factor + 3)``, since it is an integral over (comoving) volume, and is evaluated
+        at comoving wavenumbers.
     """
-    
+
     hyper_param_names = hyper_params + ['profile', 'factor']
     def __init__(self, profile, factor, **kwargs):
-        
+
         self.profile = profile
         self.factor  = factor
 
         #Remove mass_def from kwargs if provided because we need to use the
         #mass_def from the input profile instead
-        kwargs.pop('mass_def', None) 
+        kwargs.pop('mass_def', None)
+
+        #The cutoffs of this wrapper are those of the input profile
+        for k in ['cutoff', 'proj_cutoff']:
+            v = _get_parameter(profile, k)
+            if (k not in kwargs) and (v is not None): kwargs[k] = v
 
         #We just set this to the same as the inputted profile.
         super().__init__(mass_def = profile.mass_def, **kwargs)
-    
-        
+
+
     def real(self, cosmo, r, M, a):      return self.profile.real(cosmo, r, M, a)      * np.power(a, self.factor)
     def projected(self, cosmo, r, M, a): return self.profile.projected(cosmo, r, M, a) * np.power(a, self.factor + 1)
+    def fourier(self, cosmo, k, M, a):   return self.profile.fourier(cosmo, k, M, a)   * np.power(a, self.factor + 3)
 
     def set_parameter(self, key, value): _set_parameter(self, key, value)
 
-    #Have dummy methods because CCL asserts that these must exist.
-    #Hacky because I want to keep SchneiderProfiles as base class
-    #in order to get __init__ to be simple, but then we have to follow
-    #the CCL HaloProfile base class API. 
-    def _real(self): return np.nan
-    def _projected(self): return np.nan
+    #CCL asserts that at least one of these methods exist. They simply
+    #forward to the public methods above, which do not use them.
+    def _real(self, cosmo, r, M, a):      return self.real(cosmo, r, M, a)
+    def _projected(self, cosmo, r, M, a): return self.projected(cosmo, r, M, a)
     
 
 class Mdelta_to_Mtot(object):

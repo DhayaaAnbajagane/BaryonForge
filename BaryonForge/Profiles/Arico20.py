@@ -4,7 +4,7 @@ import warnings
 
 from scipy import interpolate, special, integrate
 from ..utils import safe_Pchip_minimize
-from .misc import Zeros, Truncation
+from .misc import Zeros, Truncation, WrappedProfile
 from . import Schneider19 as S19, Base
 from .Thermodynamic import (G, Msun_to_Kg, Mpc_to_m, kb_cgs, m_p, m_to_cm)
 
@@ -33,11 +33,14 @@ class AricoProfiles(Base.BaseBFGProfiles):
 
     #Define the new param names
     model_param_names = model_params
+    hyper_param_names = Base.hyper_params
 
     #Use a smaller r_max, since most profiles are truncated at R200c now.
     def __init__(self, r_max_int = 10, **kwargs):
-        
-        super().__init__(**kwargs, r_max_int = r_max_int)
+
+        #Call the base class explicitly (not super()) so that classes which also inherit
+        #from Schneider19 classes (eg. DarkMatterOnlywithLSS) do not run their __init__.
+        Base.BaseBFGProfiles.__init__(self, **kwargs, r_max_int = r_max_int)
                 
     
     def _get_gas_params(self, M, a, cosmo):
@@ -331,7 +334,7 @@ class DarkMatter(AricoProfiles):
         return prof
 
 
-class TwoHalo(S19.TwoHalo, AricoProfiles):
+class TwoHalo(AricoProfiles, S19.TwoHalo):
     __doc__ = S19.TwoHalo.__doc__.replace('SchneiderProfiles', 'AricoProfiles')
 
 
@@ -484,7 +487,7 @@ class BoundGasUntruncated(AricoProfiles):
         #Do normalization halo-by-halo, since we want custom radial ranges.
         #This way, we can handle sharp transition at R200c without needing
         #super fine resolution in the grid.
-        Normalization = np.ones_like(M_use)
+        Normalization = np.ones(M_use.shape) #Float array, even if M is an integer
         for m_i in range(M_use.shape[0]):
             r_integral = np.geomspace(self.r_min_int, R[m_i], self.r_steps)
             u_integral = r_integral/R_co[m_i]
@@ -553,7 +556,7 @@ class BoundGas(BoundGasUntruncated):
     """
 
     def _real(self, cosmo, R, M, a):
-        return super()._real(cosmo, R, M, a) * Truncation(epsilon_trunc = 1)._real(cosmo, R, M, a)
+        return super()._real(cosmo, R, M, a) * Truncation(epsilon_trunc = 1, mass_def = self.mass_def)._real(cosmo, R, M, a)
         
 
 
@@ -688,7 +691,7 @@ class ReaccretedGas(AricoProfiles):
         return prof
     
 
-class Gas(AricoProfiles):
+class Gas(WrappedProfile, AricoProfiles):
     """
     Convenience class for combining gas components in halos.
 
@@ -703,12 +706,6 @@ class Gas(AricoProfiles):
     """
 
     def __init__(self, **kwargs): self.myprof = BoundGas(**kwargs) + EjectedGas(**kwargs) + ReaccretedGas(**kwargs)
-    def __getattr__(self, name):  return getattr(self.myprof, name)
-    
-    #Need to explicitly set these two methods (to enable pickling)
-    #since otherwise the getattr call above leads to infinite recursions.
-    def __getstate__(self): return self.__dict__.copy()    
-    def __setstate__(self, state): return self.__dict__.update(state)
 
 
 class ModifiedDarkMatter(AricoProfiles):
@@ -936,7 +933,7 @@ class CollisionlessMatter(AricoProfiles):
                 #after two or three iterations.
                 if (counter >= self.max_iter) & (max_rel_diff > self.reltol): 
                     
-                    med_rel_diff = np.max(abs_diff[safe_range])
+                    med_rel_diff = np.median(abs_diff[safe_range])
                     warn_text = ("Profile of halo index %d did not converge after %d tries. " % (m_i, counter) +
                                  "Max_diff = %0.5f, Median_diff = %0.5f. Try increasing max_iter." % (max_rel_diff, med_rel_diff)
                                 )
@@ -1015,7 +1012,7 @@ class DarkMatterBaryon(Gas):
         self.myprof = self.Gas + self.Stars + self.CollisionlessMatter
         
 
-class DarkMatterOnlywithLSS(S19.DarkMatterOnly, AricoProfiles):
+class DarkMatterOnlywithLSS(AricoProfiles, S19.DarkMatterOnly):
 
     __doc__ = S19.DarkMatterOnly.__doc__.replace('SchneiderProfiles', 'AricoProfiles')
 

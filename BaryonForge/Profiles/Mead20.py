@@ -4,7 +4,7 @@ import warnings
 
 from scipy import interpolate, special
 from ..utils import safe_Pchip_minimize
-from .misc import Zeros
+from .misc import Zeros, WrappedProfile
 from . import Schneider19 as S19, Arico20 as A20, Base
 from .Thermodynamic import (G, Msun_to_Kg, Mpc_to_m, kb_cgs, m_p, m_to_cm)
 
@@ -34,6 +34,7 @@ class MeadProfiles(Base.BaseBFGProfiles):
 
     #Define the new param names
     model_param_names = model_params
+    hyper_param_names = Base.hyper_params
 
 
     def _get_star_frac(self, M_use, a, cosmo):
@@ -119,7 +120,7 @@ class MeadProfiles(Base.BaseBFGProfiles):
     def get_f_star_sat(self, M_use, a, cosmo):
         return self._get_star_frac(M_use, a, cosmo)[2]  
 
-    def _get_gas_params(self): return self.M0, self.beta
+    def _get_gas_params(self): return self.M_0, self.beta
 
     def _get_gas_frac(self, M_use, a, cosmo):
 
@@ -234,7 +235,7 @@ class DarkMatter(MeadProfiles):
         return prof
     
 
-class TwoHalo(S19.TwoHalo, MeadProfiles):
+class TwoHalo(MeadProfiles, S19.TwoHalo):
     __doc__ = S19.TwoHalo.__doc__.replace('Schneider', 'Mead')
 
 
@@ -317,26 +318,17 @@ class SatelliteStars(DarkMatter):
         return prof
 
 
-class Stars(MeadProfiles):
+class Stars(WrappedProfile, MeadProfiles):
     """
     Convenience class for combining central and satellite star components.
 
-    This class serves as a unified interface for gas profiles in halos, combining the contributions 
-    from the central galaxy (`CentralStars`) and satellite galaxies (`SatelliteStars`). It simplifies calculations where 
-    the total gas profile is required, leveraging the underlying logic and methods of the individual 
+    This class serves as a unified interface for star profiles in halos, combining the contributions
+    from the central galaxy (`CentralStars`) and satellite galaxies (`SatelliteStars`). It simplifies calculations where
+    the total star profile is required, leveraging the underlying logic and methods of the individual
     star components.
     """
 
     def __init__(self, **kwargs): self.myprof = CentralStars(**kwargs) + SatelliteStars(**kwargs)
-    def __getattr__(self, name):  return getattr(self.myprof, name)
-    
-    @property
-    def __dict__(self): return self.myprof.__dict__
-    
-    #Need to explicitly set these two methods (to enable pickling)
-    #since otherwise the getattr call above leads to infinite recursions.
-    def __getstate__(self): self.__dict__.copy()    
-    def __setstate__(self, state): self.__dict__.update(state)
 
 
 class DeltaStars(MeadProfiles):
@@ -459,7 +451,7 @@ class BoundGas(MeadProfiles):
         #Do normalization halo-by-halo, since we want custom radial ranges.
         #This way, we can handle sharp transition at R200c without needing
         #super fine resolution in the grid.
-        Normalization = np.ones_like(M_use)
+        Normalization = np.ones(M_use.shape) #Float array, even if M is an integer
         for m_i in range(M_use.shape[0]):
             r_integral    = np.geomspace(self.r_min_int, R[m_i], self.r_steps)
             x_integral    = r_integral/r_s[m_i]
@@ -558,23 +550,17 @@ class EjectedGas(MeadProfiles):
         return prof
 
 
-class Gas(MeadProfiles):
+class Gas(WrappedProfile, MeadProfiles):
     """
     Convenience class for combining bound and ejected gas components.
 
-    This class serves as a unified interface for gas profiles in halos, combining the contributions 
-    from bound gas (`BoundGas`) and ejected gas (`EjectedGas`). It simplifies calculations where 
-    the total gas profile is required, leveraging the underlying logic and methods of the individual 
+    This class serves as a unified interface for gas profiles in halos, combining the contributions
+    from bound gas (`BoundGas`) and ejected gas (`EjectedGas`). It simplifies calculations where
+    the total gas profile is required, leveraging the underlying logic and methods of the individual
     gas components.
     """
 
     def __init__(self, **kwargs): self.myprof = BoundGas(**kwargs) + EjectedGas(**kwargs)
-    def __getattr__(self, name):  return getattr(self.myprof, name)
-    
-    #Need to explicitly set these two methods (to enable pickling)
-    #since otherwise the getattr call above leads to infinite recursions.
-    def __getstate__(self): self.__dict__.copy()    
-    def __setstate__(self, state): self.__dict__.update(state)
 
 
 class GasAddDiffuse(MeadProfiles):
@@ -707,7 +693,7 @@ class DarkMatterOnly(DarkMatter):
     """
 
 
-class DarkMatterBaryon(S19.DarkMatterBaryon, MeadProfiles):
+class DarkMatterBaryon(MeadProfiles, S19.DarkMatterBaryon):
 
     """
     Class representing a combined dark matter and baryonic matter profile.
@@ -835,7 +821,7 @@ class DarkMatterBaryonAddDiffuse(DarkMatterBaryon):
         return prof
 
 
-class DarkMatterOnlywithLSS(S19.DarkMatterOnly, MeadProfiles):
+class DarkMatterOnlywithLSS(MeadProfiles, S19.DarkMatterOnly):
 
     __doc__ = S19.DarkMatterOnly.__doc__.replace('Schneider', 'Mead')
 
@@ -850,7 +836,7 @@ class DarkMatterOnlywithLSS(S19.DarkMatterOnly, MeadProfiles):
         MeadProfiles.__init__(self, **kwargs)
 
 
-class DarkMatterBaryonwithLSS(S19.DarkMatterBaryon, MeadProfiles):
+class DarkMatterBaryonwithLSS(MeadProfiles, S19.DarkMatterBaryon):
 
     __doc__ = S19.DarkMatterBaryon.__doc__.replace('Schneider', 'Mead')
 

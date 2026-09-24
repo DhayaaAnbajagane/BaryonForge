@@ -591,7 +591,7 @@ class Temperature(BaseThermodynamicProfile):
     where:
         - \( P(r) \) is the Thermal pressure profile of a species.
         - \( n(r) \) is the number density profile of a species.
-        - \( k_B \) is the Boltzmann constant (in eV).
+        - \( k_B \) is the Boltzmann constant (in erg/K), so the temperature is in Kelvin.
     """
     
     def __init__(self, thermalpressure = None, gasnumberdensity = None, **kwargs):
@@ -642,7 +642,7 @@ class Temperature(BaseThermodynamicProfile):
         cosmo : Cosmology
             The cosmology object containing cosmological parameters.
         r : array_like
-            The projected radial distances at which to compute the profile, in units of Mpc/h.
+            The projected radial distances at which to compute the profile, in comoving Mpc.
         M : float
             The halo mass, in units of solar masses.
         a : float
@@ -651,7 +651,7 @@ class Temperature(BaseThermodynamicProfile):
         Returns
         -------
         prof : array_like
-            The projected average temperature profile, in units of eV.
+            The projected (density-weighted) average temperature profile, in Kelvin.
 
         Notes
         -----
@@ -664,7 +664,7 @@ class Temperature(BaseThermodynamicProfile):
         where:
             - \( P_{\text{proj}}(r) \) is the projected thermal pressure profile.
             - \( n_{\text{proj}}(r) \) is the projected number density profile.
-            - \( k_B \) is the Boltzmann constant (in eV).
+            - \( k_B \) is the Boltzmann constant (in erg/K), so the temperature is in Kelvin.
 
         Regions with zero gas density (\( n_{\text{proj}}(r) = 0 \)) are assigned a temperature of 0 
         to avoid division errors, as these regions lack gas to support a meaningful temperature.

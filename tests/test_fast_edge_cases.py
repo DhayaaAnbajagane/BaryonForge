@@ -23,6 +23,17 @@ Test index:
     test_serialization_preserves_cached_and_convolved_profiles: checks wrapper serialization.
     test_parameter_helpers_reach_nested_profiles: checks nested parameter helpers.
     test_fft_parameter_merging_and_pchip_edge_cases: checks numerical utility boundaries.
+    test_get_parameter_searches_all_nested_profiles: checks nested lookup past unrelated profiles.
+    test_self_referencing_profiles_do_not_recurse_forever: checks tSZ wrappers of non-S19 pressures.
+    test_wrapping_preserves_inner_fft_precision: checks wrappers keep custom FFTLog settings.
+    test_comoving_to_physical_fourier_scaling: checks the scale-factor power of the Fourier profile.
+    test_integer_masses_match_float_masses: checks integer mass inputs.
+    test_cosmodict_computes_sigma8_from_As: checks sigma8 for A_s cosmologies.
+    test_tabulated_correlation_function_evaluates: checks the xi_mm tabulator.
+    test_cached_profile_forwards_uncached_methods: checks uncached methods use the input profile.
+    test_projection_does_not_depend_on_requested_radii: checks real-space projection convergence.
+    test_emissivity_table_accepts_documented_inputs: checks point lists, ordering, and 2D queries.
+    test_grid_pixel_window_matches_pixel_average: checks the grid pixel window against direct averaging.
 """
 
 from collections import Counter
@@ -41,7 +52,7 @@ from BaryonForge.utils.Tabulate import _get_parameter
 from BaryonForge.utils.misc import build_cosmodict, combine_fftpars, safe_Pchip_minimize
 from BaryonForge.Runners.HealpixRunner import DefaultRunner, regrid_pixels_hpix
 
-from defaults import ccl_dict
+from defaults import bpar_A20, bpar_S19, ccl_dict
 
 
 @pytest.fixture(scope="module")
@@ -440,3 +451,192 @@ def test_fft_parameter_merging_and_pchip_edge_cases():
     assert safe_Pchip_minimize(x, y) == pytest.approx(0)
     with pytest.warns(UserWarning, match="Cannot minimize"):
         assert safe_Pchip_minimize(np.array([1.0, 2.0]), y[:2]) == np.inf
+
+
+class _Container(BaseBFGProfiles):
+    """Profile holding two sub-profiles, where only the second has ``amplitude``."""
+
+    def __init__(self, first, second, **kwargs):
+        self.Alpha = first
+        self.Beta = second
+        super().__init__(**kwargs)
+
+    def _real(self, cosmo, r, M, a):
+        return self.Beta.real(cosmo, r, M, a)
+
+
+def test_get_parameter_searches_all_nested_profiles():
+    container = _Container(LinearProfile(), ParameterProfile(amplitude=3))
+    assert _get_parameter(container, "amplitude") == 3
+    assert _get_parameter(container, "not_a_parameter") is None
+
+
+def test_self_referencing_profiles_do_not_recurse_forever(cosmo):
+    # Pressure models without a `prof4params` attribute make ThermalSZ point
+    # `prof4params` at itself. Wrapping and setting parameters must still work.
+    pressure = bfg.Profiles.Battaglia.Pressure("200_AGN")
+    tsz = bfg.Profiles.ThermalSZ(pressure, cutoff=20, proj_cutoff=20)
+    assert tsz.prof4params is tsz
+
+    compton_y = bfg.Profiles.misc.ComovingToPhysical(tsz, factor=-3)
+    compton_y.set_parameter("r_steps", 7)
+    result = compton_y.projected(cosmo, np.array([0.1, 1.0]), 1.0e14, 0.8)
+    assert tsz.r_steps == 7
+    assert np.all(np.isfinite(result)) and np.all(result > 0)
+
+
+def test_wrapping_preserves_inner_fft_precision():
+    parameters = {**bpar_S19, "r_steps": 64, "cutoff": 20, "proj_cutoff": 20}
+    stars = bfg.Profiles.Schneider19.Stars(**parameters)
+    assert stars.precision_fftlog["padding_lo_fftlog"] == 1e-5
+
+    bfg.Profiles.misc.ComovingToPhysical(stars, factor=-3)
+    ConvolvedProfile(stars, bfg.utils.NoPix())
+    CachedProfile(stars)
+    assert stars.precision_fftlog["padding_lo_fftlog"] == 1e-5
+
+    dmb = bfg.Profiles.Schneider19.DarkMatterBaryon(**parameters)
+    assert dmb.Stars.precision_fftlog["padding_lo_fftlog"] == 1e-5
+
+
+def test_comoving_to_physical_fourier_scaling():
+    inner = LinearProfile()
+    converted = bfg.Profiles.misc.ComovingToPhysical(inner, factor=-2)
+    k = np.array([0.1, 1.0])
+    masses = np.array([1.0e13, 1.0e14])
+    np.testing.assert_allclose(
+        converted.fourier(None, k, masses, 0.5),
+        inner.fourier(None, k, masses, 0.5) * 0.5,
+    )
+
+
+def test_integer_masses_match_float_masses(cosmo):
+    parameters = {**bpar_S19, "r_steps": 64, "cutoff": 20, "proj_cutoff": 20}
+    radii = np.array([0.1, 1.0])
+    for profile in (bfg.Profiles.Schneider19.DarkMatter(**parameters),
+                    bfg.Profiles.Arico20.BoundGas(**{**bpar_A20, "r_steps": 64})):
+        np.testing.assert_allclose(
+            profile.real(cosmo, radii, 10**14, 0.8),
+            profile.real(cosmo, radii, 1.0e14, 0.8),
+        )
+        np.testing.assert_allclose(
+            profile.real(cosmo, radii, np.array([10**13, 10**14]), 0.8),
+            profile.real(cosmo, radii, np.array([1.0e13, 1.0e14]), 0.8),
+        )
+
+
+def test_cosmodict_computes_sigma8_from_As():
+    cosmology = ccl.Cosmology(
+        Omega_c=0.26, Omega_b=0.04, h=0.7, A_s=2.1e-9, n_s=0.96
+    )
+    parameters = build_cosmodict(cosmology)
+    assert set(parameters) == {
+        "Omega_m", "Omega_b", "sigma8", "h", "n_s", "w0", "wa"
+    }
+    assert parameters["sigma8"] == pytest.approx(ccl.sigma8(cosmology))
+
+
+def test_tabulated_correlation_function_evaluates(cosmo):
+    from BaryonForge.utils.Tabulate import TabulatedCorrelation3D
+
+    table = TabulatedCorrelation3D(cosmo, R_range=[1.0, 10.0], N_samples=16)
+    table.setup_interpolator(z_min=0, z_max=0.5, N_samples_z=2)
+    radii = np.array([2.0, 5.0])
+    np.testing.assert_allclose(
+        table(radii, 1.0), ccl.correlation_3d(cosmo, r=radii, a=1.0), rtol=1e-2
+    )
+
+
+def test_cached_profile_forwards_uncached_methods(cosmo):
+    parameters = {**bpar_S19, "r_steps": 64, "cutoff": 20, "proj_cutoff": 20}
+    gas = bfg.Profiles.Schneider19.Gas(**parameters)
+    cached = CachedProfile(gas, methods=["real"])
+    radii = np.array([0.1, 1.0])
+
+    assert cached.proj_cutoff == gas.proj_cutoff
+    np.testing.assert_allclose(
+        cached.projected(cosmo, radii, 1.0e14, 0.8),
+        gas.projected(cosmo, radii, 1.0e14, 0.8),
+    )
+
+
+def test_projection_does_not_depend_on_requested_radii(cosmo):
+    parameters = {**bpar_S19, "cutoff": 1000, "proj_cutoff": 1000}
+    gas = bfg.Profiles.Schneider19.Gas(**parameters)
+    reference = bfg.Profiles.Schneider19.Gas(
+        **parameters, n_per_decade_proj=100
+    ).projected(cosmo, np.array([1e-3, 0.3, 10]), 1.0e14, 0.8)[1]
+
+    scalar = gas.projected(cosmo, 0.3, 1.0e14, 0.8)
+    wide = gas.projected(cosmo, np.array([1e-3, 0.3, 10]), 1.0e14, 0.8)[1]
+    assert scalar == pytest.approx(reference, rel=1e-2)
+    assert wide == pytest.approx(reference, rel=1e-2)
+
+
+def test_emissivity_table_accepts_documented_inputs():
+    temperatures = np.geomspace(1e5, 1e9, 5)
+    metallicities = np.linspace(0, 1, 3)
+    redshifts = np.array([0.0, 1.0])  # Scale factor is then *descending*
+    T, Z, A = np.meshgrid(
+        temperatures, metallicities, 1 / (1 + redshifts), indexing="ij"
+    )
+    emissivity = np.sqrt(T) * (1 + Z) * A**2
+
+    def expected(t, z, a):
+        return np.sqrt(t) * (1 + z) * a**2
+
+    grid_table = bfg.utils.EmissivityTable(T, Z, A, emissivity)
+    point_table = bfg.utils.EmissivityTable(
+        T.ravel(), Z.ravel(), A.ravel(), emissivity.ravel()
+    )
+    strict_table = bfg.utils.EmissivityTable(
+        T, Z, A, emissivity, pad_low_T=False
+    )
+
+    query_T = np.array([[1e5, 1e7], [1e9, 1e6]])
+    query_Z = np.full_like(query_T, 0.5)
+    for table in (grid_table, point_table, strict_table):
+        for a in (0.5, 1.0):
+            result = table(query_T, query_Z, a)
+            assert result.shape == query_T.shape
+            np.testing.assert_allclose(
+                result, expected(query_T, query_Z, a), rtol=0.3
+            )
+            # Exactly on the tabulated grid points
+            np.testing.assert_allclose(
+                table(query_T, query_Z * 0, a)[0, 0], expected(1e5, 0, a)
+            )
+
+
+class _Gaussian(BaseBFGProfiles):
+    """Gaussian of width 0.3 Mpc, with its analytic projection."""
+
+    def _real(self, cosmo, r, M, a):
+        r_use = np.atleast_1d(r)
+        m_use = np.atleast_1d(M)
+        result = np.exp(-r_use[None, :]**2 / 2 / 0.3**2) * np.ones((m_use.size, 1))
+        if np.ndim(r) == 0:
+            result = np.squeeze(result, axis=-1)
+        if np.ndim(M) == 0:
+            result = np.squeeze(result, axis=0)
+        return result
+
+    def projected(self, cosmo, r, M, a):
+        return np.sqrt(2 * np.pi) * 0.3 * self._real(cosmo, r, M, a)
+
+
+def test_grid_pixel_window_matches_pixel_average():
+    size = 0.5
+    radii = np.array([1e-4, 0.3, 0.6])
+    convolved = ConvolvedProfile(_Gaussian(), bfg.utils.GridPixelApprox(size=size))
+
+    # Direct average of the projected profile over a square pixel centered at each radius
+    offsets = np.linspace(-size / 2, size / 2, 201)
+    dx, dy = np.meshgrid(offsets, offsets)
+    direct = np.array([
+        np.mean(np.sqrt(2 * np.pi) * 0.3 * np.exp(-((r + dx)**2 + dy**2) / 2 / 0.3**2))
+        for r in radii
+    ])
+    np.testing.assert_allclose(
+        convolved.projected(None, radii, 1.0e14, 0.8), direct, rtol=0.05
+    )

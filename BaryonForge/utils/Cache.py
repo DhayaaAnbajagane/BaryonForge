@@ -3,6 +3,7 @@ import numpy as np
 import pyccl as ccl
 from collections import OrderedDict
 from ..Profiles.Base import BaseBFGProfiles
+from .Tabulate import _get_parameter
 
 __all__ = ['SimpleArrayCache', 'CachedProfile']
 
@@ -143,11 +144,18 @@ class CachedProfile(BaseBFGProfiles):
 
         for m in self.methods:
             setattr(self, m, SimpleArrayCache(self.maxsize)(getattr(self.Profile, m)))
-        
-        #We just set this to the same as the inputted profile.
-        super().__init__(mass_def = self.Profile.mass_def)
 
-        self.update_precision_fftlog(**self.Profile.precision_fftlog.to_dict())
+        #Profile methods that are not cached are forwarded to the input profile directly.
+        #Otherwise, they would be computed by this wrapper with its own (default) settings.
+        for m in ['real', 'projected', 'fourier']:
+            if m not in self.methods: setattr(self, m, getattr(self.Profile, m))
+
+        #We just set this to the same as the inputted profile.
+        cutoffs = {k : _get_parameter(self.Profile, k) for k in ['cutoff', 'proj_cutoff']}
+        cutoffs = {k : v for k, v in cutoffs.items() if v is not None}
+        super().__init__(mass_def = self.Profile.mass_def, **cutoffs)
+
+        ccl.halos.profiles.HaloProfile.update_precision_fftlog(self, **self.Profile.precision_fftlog.to_dict())
 
 
     def __getattr__(self, key):

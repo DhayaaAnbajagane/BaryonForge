@@ -287,7 +287,7 @@ class DarkMatter(SchneiderProfiles):
         #The analytic integral doesn't work since we have a truncation radii now.
         #We loop over every halo, instead of vectorizing, since the integral limits
         #now depend on the halo radius. 
-        Normalization = np.zeros_like(M_use)
+        Normalization = np.zeros(M_use.shape) #Float array, even if M is an integer
         for m_i in range(M_use.size):
             r_integral     = np.geomspace(self.r_min_int, R[m_i], self.r_steps)
             prof_integral  = 1/(r_integral/r_s[m_i] * (1 + r_integral/r_s[m_i])**2) * 1/(1 + (r_integral/r_t[m_i])**2)**2
@@ -671,14 +671,12 @@ class ShockedGas(Gas):
         R = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
 
         #Minimum is 0.25 since a factor of 4x drop is the maximum possible for a shock
-        rho_gas = super()._real(cosmo, r, M, a)
+        #Evaluate with the array inputs so rho_gas always has shape (M, r)
+        rho_gas = super()._real(cosmo, r_use, M_use, a)
         g_arg   = 1/self.width_shock*(np.log(r_use) - np.log(self.epsilon_shock*R)[:, None])
         g_arg   = np.where(g_arg > 1e2, np.inf, g_arg) #To prevent overflows when doing exp
         factor  = (1 - 0.25)/(1 + np.exp(g_arg)) + 0.25
-        
-        #Get the right size for rho_gas
-        if M_use.size == 1: rho_gas = rho_gas[None, :]
-            
+
         prof = rho_gas * factor
         
         #Handle dimensions so input dimensions are mirrored in the output
@@ -901,7 +899,7 @@ class CollisionlessMatter(SchneiderProfiles):
                 #after two or three iterations.
                 if (counter >= self.max_iter) & (max_rel_diff > self.reltol): 
                     
-                    med_rel_diff = np.max(abs_diff[safe_range])
+                    med_rel_diff = np.median(abs_diff[safe_range])
                     warn_text = ("Profile of halo index %d did not converge after %d tries. " % (m_i, counter) +
                                  "Max_diff = %0.5f, Median_diff = %0.5f. Try increasing max_iter." % (max_rel_diff, med_rel_diff)
                                 )

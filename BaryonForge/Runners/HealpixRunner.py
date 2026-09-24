@@ -467,13 +467,17 @@ class PaintProfilesShell(DefaultRunner):
             
             radius = R_j * self.epsilon_max / D_j
             pixind = hp.query_disc(self.LightconeShell.NSIDE, vec_j, radius, inclusive = False, nest = False)
+
+            #Halo is smaller than a pixel, so no pixel centers fall within the cutout. Skip it.
+            if pixind.size == 0: continue
+
             vec    = np.stack(hp.pix2vec(nside = NSIDE, ipix = pixind), axis = 1)
-            
+
             pos_j  = vec_j * D_j #We assume flat cosmologies, where D_a is the right distance to use here
             pos    = vec   * D_j
             diff   = pos - pos_j
             r_sep  = np.sqrt(np.sum(diff**2, axis = 1))
-            
+
             #Compute the painted map
             Paint  = Baryons.projected(cosmo, r_sep/a_j, M_j, a_j, **o_j)
             Paint  = np.where(np.isfinite(Paint), Paint, 0) #Set non-finite values to 0
@@ -578,9 +582,15 @@ class PaintProfilesAnisShell(DefaultRunner):
                                       include_pixel_size = True,
                                       mass_def = self.mass_def, verbose = self.verbose).process()
         
-        dL = (2 * _get_parameter(self.Mtot_model, 'proj_cutoff')) #Factor of 2 since proj_cutoff == Lproj/2
+        assert self.LightconeShell.redshift is not None, "The LightconeShell must have a redshift to use PaintProfilesAnisShell"
+
+        #Physical volume of the (conical) pixel, over the projection length centered on the shell.
+        #The projection length is comoving, so convert it to physical with the scale factor, since
+        #D_A and the painted masses (with include_pixel_size = True) are physical.
+        a_shell = 1/(1 + self.LightconeShell.redshift)
+        dL = (2 * _get_parameter(self.Mtot_model, 'proj_cutoff')) * a_shell #Factor of 2 since proj_cutoff == Lproj/2
         dD = D_a(self.LightconeShell.redshift)
-        dV = pixarea * ((dD + dL)**3 - dD**3)
+        dV = pixarea * ((dD + dL/2)**3 - np.clip(dD - dL/2, 0, None)**3) / 3
         rho_halos = np.sum(Mtot_map) / (dV * Mtot_map.size)
 
         #Now add the background contribution (we so far only have the halo contribution)
@@ -615,18 +625,23 @@ class PaintProfilesAnisShell(DefaultRunner):
             
             radius = R_j * self.epsilon_max / D_j
             pixind = hp.query_disc(self.LightconeShell.NSIDE, vec_j, radius, inclusive = False, nest = False)
+
+            #Halo is smaller than a pixel, so no pixel centers fall within the cutout. Skip it.
+            if pixind.size == 0: continue
+
             vec    = np.stack(hp.pix2vec(nside = NSIDE, ipix = pixind), axis = 1)
-            
+
             pos_j  = vec_j * D_j #We assume flat cosmologies, where D_a is the right distance to use here
             pos    = vec   * D_j
             diff   = pos - pos_j
             r_sep  = np.sqrt(np.sum(diff**2, axis = 1))
-            
+
             #Compute the painted map
             Painting = Paint(cosmo, r_sep/a_j, M_j, a_j, **o_j)
             Painting = np.where(np.isfinite(Painting), Painting, 0)
             Canvas   = Tracer(cosmo, r_sep/a_j, M_j, a_j, **o_j)
             Canvas   = np.where(np.isfinite(Canvas) & np.invert(np.isnan(Canvas)), Canvas, 0)
+            Canvas   = Canvas * (pixarea * D_j**2) #Tracer mass in pixel, same units as Mtot_map (painted with include_pixel_size = True)
             Mfrac    = np.divide(Canvas, Mtot_map[pixind], out = np.zeros_like(Canvas), where = Mtot_map[pixind] > 0)
             Mfrac   *= orig_map[pixind]
             

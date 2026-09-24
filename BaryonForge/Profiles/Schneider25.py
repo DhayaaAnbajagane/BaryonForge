@@ -5,10 +5,11 @@ import warnings
 from scipy import interpolate, integrate
 from . import Schneider19 as S19
 from .Base import BaseBFGProfiles, hyper_params
+from .misc import WrappedProfile
 
-__all__ = ['model_params', 'SchneiderProfiles', 
-           'DarkMatter', 'TwoHalo', 'Stars', 'SatelliteStars', 
-           'Gas', 'ShockedGas', 'CollisionlessMatter',
+__all__ = ['model_params', 'Schneider25Profiles',
+           'DarkMatter', 'TwoHalo', 'Stars', 'SatelliteStars',
+           'HotGas', 'InnerGas', 'Gas', 'CollisionlessMatter',
            'DarkMatterOnly', 'DarkMatterBaryon']
 
 
@@ -280,7 +281,7 @@ class DarkMatter(Schneider25Profiles):
         #The analytic integral doesn't work since we have a truncation radii now.
         #We loop over every halo, instead of vectorizing, since the integral limits
         #now depend on the halo radius. 
-        Normalization = np.zeros_like(M_use)
+        Normalization = np.zeros(M_use.shape) #Float array, even if M is an integer
         for m_i in range(M_use.size):
             r_integral     = np.geomspace(self.r_min_int, R[m_i], self.r_steps)
             prof_integral  = 1/(r_integral/r_s[m_i] * (1 + r_integral/r_s[m_i])**2) * 1/(1 + (r_integral/r_t[m_i])**2)**2
@@ -322,7 +323,7 @@ class TwoHalo(Schneider25Profiles):
 
     .. math::
 
-        \\rho_{\\text{2h}}(r) = \\left(1 + b(M) \\cdot \\xi_{\\text{mm}}(r)\\right) \\cdot \\rho_{\\text{m}}(a) \\cdot \\text{kfac}
+        \\rho_{\\text{2h}}(r) = f_{\\text{excl}}(r) \\left(1 + b(M) \\cdot \\xi_{\\text{mm}}(r)\\right) \\cdot \\rho_{\\text{m}}(a) \\cdot \\text{kfac}
 
     where:
 
@@ -330,10 +331,14 @@ class TwoHalo(Schneider25Profiles):
 
       .. math::
 
-          b(M) = 1 + \\frac{q \\nu_M^2 - 1}{\\delta_c} + \\frac{2p}{\\delta_c \\left(1 + (q \\nu_M^2)^p\\right)}
+          b(M) = 1 + \\frac{q \\nu_M^2 - 1}{\\delta_c(a)} + \\frac{2p}{\\delta_c(a) \\left(1 + (q \\nu_M^2)^p\\right)}
 
-    - :math:`\\nu_M` is the peak height parameter, :math:`\\nu_M = \\delta_c / \\sigma(M)`.
-    - :math:`\\delta_c` is the critical density for spherical collapse.
+    - :math:`\\delta_c(a) = 1.686 / D(a)` is the critical density for spherical collapse, rescaled by
+      the linear growth factor :math:`D(a)` (normalized to 1 at :math:`a = 1`).
+    - :math:`\\nu_M = \\delta_c(a) / \\sigma(M, a)` is the peak height parameter, where :math:`\\sigma(M, a)`
+      is the (growth-dependent) RMS variance from `pyccl.sigmaM`.
+    - :math:`f_{\\text{excl}}(r) = 1 - \\exp\\left(-\\alpha_{\\text{excl}}\\, r / R\\right)` suppresses the
+      profile within the halo (halo exclusion).
     - :math:`\\xi_{\\text{mm}}(r)` is the matter-matter correlation function.
     - :math:`\\rho_{\\text{m}}(a)` is the mean matter density at scale factor `a`.
     - :math:`\\text{kfac}` is an additional exponential cutoff factor to prevent numerical overflow.
@@ -395,56 +400,40 @@ class TwoHalo(Schneider25Profiles):
 
 class Stars(Schneider25Profiles):
     """
-    Class representing the two-halo term density profile based on linear theory.
+    Class representing the stellar density profile of the central galaxy.
 
-    This class extends `Schneider25Profiles` and implements the large-scale clustering 
-    contribution to the halo density profile (the two-halo term) using the linear matter 
-    correlation function and a Sheth-Tormen-type halo bias prescription.
+    This class extends `Schneider25Profiles` and implements the central galaxy (cga) profile
+    as a power-law with an exponential cutoff. The profile is normalized numerically so that
+    it contains the mass :math:`f_{\\mathrm{cga}} M_{\\mathrm{tot}}`.
 
     The real-space profile is defined as:
 
     .. math::
 
-        \\rho_{\\mathrm{2h}}(r) = \\left[1 + b(M)\\,\\xi_{\\mathrm{mm}}(r)\\right] \\cdot \\bar{\\rho}_m(a) 
-        \\cdot f_{\\mathrm{excl}}(r, R) \\cdot k_{\mathrm{cut}}(r),
+        \\rho_{\\mathrm{cga}}(r) = \\frac{f_{\\mathrm{cga}} M_{\\mathrm{tot}}}{N}
+        \\cdot \\frac{1}{r^2} \\exp\\left(-\\frac{r}{R_{\\mathrm{cga}}}\\right) \\cdot k_{\\mathrm{cut}}(r),
 
     where:
-    - \\( b(M) \\) is the halo bias, given by:
-
-      .. math::
-
-          b(M) = 1 + \\frac{q \\nu^2 - 1}{\\delta_c} + \\frac{2p}{\\delta_c\\left[1 + (q \\nu^2)^p\\right]},
-
-    - \\( \\nu = \\delta_c / \\sigma(M) \\) is the peak height,
-    - \\( \\delta_c \\) is the critical overdensity for collapse (rescaled by growth factor),
-    - \\( \\xi_{\\mathrm{mm}}(r) \\) is the linear matter correlation function,
-    - \\( \\bar{\\rho}_m(a) \\) is the mean matter density at scale factor \\( a \\),
-    - \\( f_{\\mathrm{excl}}(r, R) = 1 - \\exp\\left[-\\alpha_{\\mathrm{excl}} \\cdot (r / R)\\right] \\) 
-      suppresses the profile at small radii,
-    - \\( k_{\\mathrm{cut}}(r) = [1 + \\exp(2(r - r_{\\mathrm{cutoff}}))]^{-1} \\) imposes an 
+    - \\( f_{\\mathrm{cga}} \\) is the central galaxy stellar fraction (see `_get_star_frac`),
+    - \\( M_{\\mathrm{tot}} \\) is the total mass, obtained by integrating the `DarkMatter` profile,
+    - \\( R_{\\mathrm{cga}} = \\epsilon_{\\mathrm{cga}} R \\), with \\( R \\) the halo radius,
+    - \\( N = \\int 4\\pi r^2 \\, r^{-2} e^{-r/R_{\\mathrm{cga}}} dr \\) is the normalization,
+    - \\( k_{\\mathrm{cut}}(r) = [1 + \\exp(2(r - r_{\\mathrm{cutoff}}))]^{-1} \\) imposes an
       exponential cutoff at large radii to ensure convergence in Fourier space.
 
     Notes
     -----
-    - The two-halo term is valid only when the cosmology object's matter power spectrum is linear.
-      An assertion enforces this requirement.
-    - If `xi_mm` is not provided at initialization, it is computed using 
-      `pyccl.correlation_3d`.
+    - The FFTLog padding is set to extreme values to prevent ringing in the profiles.
     - Scalar and vector inputs for mass and radius are supported and mirrored in the output shape.
-
-    See also
-    --------
-    Sheth & Tormen (1999), https://arxiv.org/abs/astro-ph/9901122
-    `Schneider25Profiles` base class for interface and shared attributes.
 
     Examples
     --------
-    >>> profile = TwoHalo(**parameters)
-    >>> cosmo = ...  # cosmology with linear power spectrum
+    >>> profile = Stars(**parameters)
+    >>> cosmo = ...  # cosmology object
     >>> r = np.logspace(-2, 1, 100)
     >>> M = 1e14
     >>> a = 0.5
-    >>> rho_2h = profile.real(cosmo, r, M, a)
+    >>> rho_cga = profile.real(cosmo, r, M, a)
     """
 
     
@@ -471,7 +460,7 @@ class Stars(Schneider25Profiles):
         R_cga  = self.epsilon_cga * R[:, None]
 
         r_integral = np.geomspace(self.r_min_int, self.r_max_int, self.r_steps)
-        DM    = DarkMatter(**self.model_params); setattr(DM, 'cutoff', 1e3) #Set large cutoff just for normalization calculation
+        DM    = DarkMatter(**self.model_params, mass_def = self.mass_def, c_M_relation = self._c_M_relation); setattr(DM, 'cutoff', 1e3) #Set large cutoff just for normalization calculation
         rho   = DM.real(cosmo, r_integral, M_use, a)
         M_tot = np.trapz(4*np.pi*r_integral**2 * rho, r_integral, axis = -1)
         M_tot = np.atleast_1d(M_tot)[:, None]
@@ -581,7 +570,7 @@ class HotGas(Schneider25Profiles):
 
         del u_integral, v_integral, prof_integral
 
-        DM    = DarkMatter(**self.model_params); setattr(DM, 'cutoff', 1e3) #Set large cutoff just for normalization calculation
+        DM    = DarkMatter(**self.model_params, mass_def = self.mass_def, c_M_relation = self._c_M_relation); setattr(DM, 'cutoff', 1e3) #Set large cutoff just for normalization calculation
         rho   = DM.real(cosmo, r_integral, M_use, a)
         M_tot = np.trapz(4*np.pi*r_integral**2 * rho, r_integral, axis = -1)
         M_tot = np.atleast_1d(M_tot)[:, None]
@@ -619,17 +608,21 @@ class InnerGas(Schneider25Profiles):
     where:
     - \\( f_{\\mathrm{iga}} \\) is the inner gas fraction computed from the baryon budget,
     - \\( M_{\\mathrm{tot}} \\) is the total halo mass obtained by integrating a `DarkMatter` profile,
-    - \\( N \\) is a normalization factor ensuring mass conservation over the integration range,
+    - \\( N = \\int_{r_{\\mathrm{min, iga}}} 4\\pi r^2 \\, r^{-3} e^{-r/R} \\, dr \\) is the normalization factor,
     - \\( R \\) is the halo radius from the mass definition,
-    - \\( k_{\\mathrm{cut}}(r) = [1 + \\exp(2(r - r_{\\mathrm{cutoff}}))]^{-1} \\) is an exponential cutoff 
+    - \\( k_{\\mathrm{cut}}(r) = [1 + \\exp(2(r - r_{\\mathrm{cutoff}}))]^{-1} \\) is an exponential cutoff
       applied at large radii for numerical stability.
+    - The profile is set to zero below \\( r_{\\mathrm{min, iga}} \\).
 
     Notes
     -----
-    - The inner gas fraction \\( f_{\\mathrm{iga}} \\) is computed using `_get_gas_frac()`, 
+    - The inner gas fraction \\( f_{\\mathrm{iga}} \\) is computed using `_get_gas_frac()`,
       which also returns the hot gas component.
-    - The profile normalization is computed numerically over a wide radial range to match the 
-      total inner gas mass.
+    - Note that the normalization integrand, \\( r^{-3} e^{-r/R} \\), is steeper than the profile shape,
+      \\( r^{-2} e^{-r/R} \\). This follows the reference implementation this class was validated
+      against. As a consequence, the mass in this component is not exactly
+      \\( f_{\\mathrm{iga}} M_{\\mathrm{tot}} \\); the total mass of the halo is still conserved
+      by the renormalization in `DarkMatterBaryon`.
     - Scalar and array inputs for both radius and halo mass are supported.
     """
 
@@ -658,7 +651,7 @@ class InnerGas(Schneider25Profiles):
         prof_integral = np.where(r_integral < self.r_min_iga, 0, prof_integral)
         Normalization = np.trapz(4 * np.pi * r_integral**2 * prof_integral, r_integral, axis = -1)[:, None]
 
-        DM    = DarkMatter(**self.model_params); setattr(DM, 'cutoff', 1e3) #Set large cutoff just for normalization calculation
+        DM    = DarkMatter(**self.model_params, mass_def = self.mass_def, c_M_relation = self._c_M_relation); setattr(DM, 'cutoff', 1e3) #Set large cutoff just for normalization calculation
         rho   = DM.real(cosmo, r_integral, M_use, a)
         M_tot = np.trapz(4*np.pi*r_integral**2 * rho, r_integral, axis = -1)
         M_tot = np.atleast_1d(M_tot)[:, None]
@@ -677,26 +670,20 @@ class InnerGas(Schneider25Profiles):
         return prof
 
 
-class Gas(Schneider25Profiles):
+class Gas(WrappedProfile, Schneider25Profiles):
     """
     Convenience class for combining gas components in halos.
 
-    The `Gas` class provides a unified interface for modeling the total gas profile in halos. 
+    The `Gas` class provides a unified interface for modeling the total gas profile in halos.
     It combines contributions from the following components:
     - `HotGas`: Represents the hot gas component within halos.
     - `InnerGas`: Represents gas in the inner core of the halo. Generally not a notable fraction of the gas
 
-    This class simplifies calculations by leveraging the logic and methods of these individual 
+    This class simplifies calculations by leveraging the logic and methods of these individual
     gas components and combining their profiles into a single representation.
     """
 
     def __init__(self, **kwargs): self.myprof = HotGas(**kwargs) + InnerGas(**kwargs)
-    def __getattr__(self, name):  return getattr(self.myprof, name)
-    
-    #Need to explicitly set these two methods (to enable pickling)
-    #since otherwise the getattr call above leads to infinite recursions.
-    def __getstate__(self): return self.__dict__.copy()    
-    def __setstate__(self, state): return self.__dict__.update(state)
 
 
 class CollisionlessMatter(Schneider25Profiles):
