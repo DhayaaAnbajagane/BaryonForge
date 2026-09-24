@@ -273,7 +273,7 @@ class Truncation(BaseBFGProfiles):
         M_use = np.atleast_1d(M)
         R     = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
         
-        prof  = r_use[None, :] < R[:, None] * self.epsilon_trunc
+        prof  = (r_use[None, :] < R[:, None] * self.epsilon_trunc).astype(float) #Float, so it supports arithmetic (eg. negation)
         
         #Handle dimensions so input dimensions are mirrored in the output
         if np.ndim(r) == 0: prof = np.squeeze(prof, axis=-1)

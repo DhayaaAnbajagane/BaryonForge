@@ -7,7 +7,7 @@ contracts implemented by the shared wrappers and utilities.
 Test index:
     test_identity_and_zero_profiles_preserve_all_public_shapes: checks identity and zero shapes.
     test_projection_handles_scalar_radius_with_multiple_masses: checks scalar-radius projection shapes.
-    test_truncation_is_zero_at_the_boundary: checks truncation boundary behavior.
+    test_truncation_is_zero_at_the_boundary: checks truncation boundary behavior and mask arithmetic.
     test_profile_arithmetic_matches_analytic_values: checks profile arithmetic results.
     test_comoving_conversion_and_mass_integration_are_shape_safe: checks conversion and mass integration.
     test_simple_array_cache_supports_arrays_and_lru_behavior: checks array cache eviction.
@@ -172,6 +172,12 @@ def test_truncation_is_zero_at_the_boundary(cosmo):
     np.testing.assert_array_equal(below, np.ones(2))
     np.testing.assert_array_equal(at_boundary, np.zeros(2))
     np.testing.assert_array_equal(above, np.zeros(2))
+
+    # Masks must support arithmetic, eg. an annulus between two truncation radii
+    outer = bfg.Profiles.misc.Truncation(epsilon_trunc=2, mass_def=ccl.halos.massdef.MassDef200c)
+    radii = np.array([0.5, 1.5, 2.5]) * boundary[1]
+    np.testing.assert_array_equal((outer - profile).real(cosmo, radii, masses[1], scale_factor), [0, 1, 0])
+    np.testing.assert_array_equal((-profile).real(cosmo, radii, masses[1], scale_factor), [-1, 0, 0])
 
 
 def test_profile_arithmetic_matches_analytic_values():

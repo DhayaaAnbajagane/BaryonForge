@@ -9,6 +9,8 @@ Test index:
     test_model_modules_support_star_imports: checks every model module's ``__all__``.
     test_wrapper_profiles_have_string_representations: checks repr of convenience classes.
     test_shocked_gas_preserves_input_shapes: checks ShockedGas output shapes.
+    test_composite_profiles_preserve_input_shapes: checks scalar/array shapes of composite profiles.
+    test_mead_diffuse_fourier_profiles_preserve_input_shapes: checks scalar/array k for the Mead diffuse terms.
     test_lss_classes_use_their_own_model_fractions: checks Mead/Arico LSS classes use their own fractions.
 """
 
@@ -154,6 +156,41 @@ def test_shocked_gas_preserves_input_shapes(cosmo):
     assert shocked.real(cosmo, radii, 1.0e14, 0.8).shape == (3,)
     assert shocked.real(cosmo, 0.5, np.array([1.0e13, 1.0e14]), 0.8).shape == (2,)
     assert np.ndim(shocked.real(cosmo, 0.5, 1.0e14, 0.8)) == 0
+
+
+def _composite_profiles():
+    mead = _fast(bfg.Profiles.Mead20.Params_TAGN_7p6_All)
+    return {
+        "S19 DarkMatterBaryon": bfg.Profiles.Schneider19.DarkMatterBaryon(**_fast(bpar_S19)),
+        "S25 DarkMatterBaryon": bfg.Profiles.Schneider25.DarkMatterBaryon(**_fast(bpar_S25)),
+        "S19 SatelliteStars": bfg.Profiles.Schneider19.SatelliteStars(**_fast(bpar_S19)),
+        "S25 SatelliteStars": bfg.Profiles.Schneider25.SatelliteStars(**_fast(bpar_S25)),
+        "A20 SatelliteStars": bfg.Profiles.Arico20.SatelliteStars(**_fast(bpar_A20)),
+        "M20 Pressure": bfg.Profiles.Mead20.Pressure(**mead),
+        "ThermalSZ": bfg.Profiles.ThermalSZ(pressure=bfg.Profiles.Mead20.Pressure(**mead), **mead),
+    }
+
+
+@pytest.mark.parametrize("name", list(_composite_profiles().keys()))
+def test_composite_profiles_preserve_input_shapes(cosmo, name):
+    profile = _composite_profiles()[name]
+    radii, masses = np.array([0.05, 0.5]), np.array([1.0e13, 1.0e14, 1.0e15])
+    assert profile.real(cosmo, 0.5, masses, 0.8).shape == (3,)
+    assert profile.real(cosmo, radii, 1.0e14, 0.8).shape == (2,)
+    assert np.ndim(profile.real(cosmo, 0.5, 1.0e14, 0.8)) == 0
+    np.testing.assert_allclose(profile.real(cosmo, 0.5, masses, 0.8), profile.real(cosmo, radii, masses, 0.8)[:, 1])
+
+
+def test_mead_diffuse_fourier_profiles_preserve_input_shapes(cosmo):
+    mead = _fast(bfg.Profiles.Mead20.Params_TAGN_7p6_All)
+    masses, k = np.array([1.0e13, 1.0e14]), np.array([0.1, 1.0])
+    for profile in (bfg.Profiles.Mead20.GasAddDiffuse(**mead), bfg.Profiles.Mead20.PressureAddDiffuse(**mead)):
+        assert profile.fourier(cosmo, 1.0, masses, 0.8).shape == (2,)
+        assert profile.fourier(cosmo, k, 1.0e14, 0.8).shape == (2,)
+        assert np.ndim(profile.fourier(cosmo, 1.0, 1.0e14, 0.8)) == 0
+        # FFTLog output depends slightly on the requested k range, hence the tolerance
+        np.testing.assert_allclose(profile.fourier(cosmo, 1.0, masses, 0.8), profile.fourier(cosmo, k, masses, 0.8)[:, 1],
+                                   rtol=1e-2)
 
 
 def test_lss_classes_use_their_own_model_fractions(cosmo):

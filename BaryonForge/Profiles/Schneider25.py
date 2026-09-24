@@ -926,17 +926,18 @@ class SatelliteStars(CollisionlessMatter):
     
     def _real(self, cosmo, r, M, a):
 
+        r_use = np.atleast_1d(r)
         M_use = np.atleast_1d(M)
 
         f_sga  = self.get_f_star_sat(M_use, a, cosmo)[:, None]
         f_clm  = 1 - cosmo.cosmo.params.Omega_b/cosmo.cosmo.params.Omega_m + f_sga
-        
-        if np.ndim(M) == 0: 
-            f_clm = np.squeeze(f_clm, axis = 0)
-            f_sga = np.squeeze(f_sga, axis = 0)
 
-        prof   = super()._real(cosmo, r, M, a) * (f_sga/f_clm)
-        
+        #Evaluate on 1D arrays so the (M, r) shapes line up, then mirror the input dimensions
+        prof   = super()._real(cosmo, r_use, M_use, a) * (f_sga/f_clm)
+
+        if np.ndim(r) == 0: prof = np.squeeze(prof, axis=-1)
+        if np.ndim(M) == 0: prof = np.squeeze(prof, axis=0)
+
         return prof
 
 
@@ -1092,9 +1093,12 @@ class DarkMatterBaryon(Schneider25Profiles):
         if np.ndim(Factor) == 1:
             Factor = Factor[:, None]
 
-        prof = (self.CollisionlessMatter.real(cosmo, r, M, a) * Factor +
-                self.Stars.real(cosmo, r, M, a) * Factor +
-                self.Gas.real(cosmo, r, M, a) * Factor +
-                self.TwoHalo.real(cosmo, r, M, a))
+        #Evaluate on a 1D radius array so Factor (one row per mass) lines up, then squeeze
+        prof = (self.CollisionlessMatter.real(cosmo, r_use, M, a) * Factor +
+                self.Stars.real(cosmo, r_use, M, a) * Factor +
+                self.Gas.real(cosmo, r_use, M, a) * Factor +
+                self.TwoHalo.real(cosmo, r_use, M, a))
+
+        if np.ndim(r) == 0: prof = np.squeeze(prof, axis=-1)
 
         return prof

@@ -979,15 +979,21 @@ class SatelliteStars(CollisionlessMatter):
 
     def _real(self, cosmo, r, M, a):
 
-        f_sg   = self.get_f_star_sat(np.atleast_1d(M), a, cosmo)
+        r_use  = np.atleast_1d(r)
+        M_use  = np.atleast_1d(M)
+
+        f_sg   = self.get_f_star_sat(M_use, a, cosmo)
         f_dm   = 1 - cosmo.cosmo.params.Omega_b/cosmo.cosmo.params.Omega_m
         f_clm  = f_dm + f_sg
-        factor = f_sg / f_clm
+        factor = (f_sg / f_clm)[:, None]
 
-        if len(factor) > 1:
-            factor = factor[:, None]
+        #Evaluate on 1D arrays so the (M, r) shapes line up, then mirror the input dimensions
+        prof   = super()._real(cosmo, r_use, M_use, a) * factor
 
-        return super()._real(cosmo, r, M, a) * factor
+        if np.ndim(r) == 0: prof = np.squeeze(prof, axis=-1)
+        if np.ndim(M) == 0: prof = np.squeeze(prof, axis=0)
+
+        return prof
 
 
 class DarkMatterOnly(DarkMatter):

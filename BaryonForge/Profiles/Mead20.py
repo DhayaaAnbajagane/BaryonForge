@@ -591,11 +591,13 @@ class GasAddDiffuse(MeadProfiles):
     
     def _fourier(self, cosmo, k, M, a):
 
+        k_use = np.atleast_1d(k)
         M_use = np.atleast_1d(M)
         f_ej  = self._get_gas_frac(M_use, a, cosmo)[1][:, None]
-        prof  = self.BG.fourier(cosmo, k, M, a) + f_ej * M_use[:, None]
+        prof  = self.BG.fourier(cosmo, k_use, M_use, a) + f_ej * M_use[:, None]
 
-        #Handle dimensions for just the mass part
+        #Handle dimensions so input dimensions are mirrored in the output
+        if np.ndim(k) == 0: prof = np.squeeze(prof, axis=-1)
         if np.ndim(M) == 0: prof = np.squeeze(prof, axis=0)
 
         return prof
@@ -1030,13 +1032,13 @@ class Pressure(MeadProfiles):
         R = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
 
         #The first "bound" component
-        T    = self.Temperature.real(cosmo, r_use, M, a)
-        n    = self.BoundGas.real(cosmo, r_use, M, a) / (self.mean_molecular_weight * m_p) / (Mpc_to_m * m_to_cm)**3
+        T    = self.Temperature.real(cosmo, r, M, a)
+        n    = self.BoundGas.real(cosmo, r, M, a) / (self.mean_molecular_weight * m_p) / (Mpc_to_m * m_to_cm)**3
         P1   = T * n * kb_cgs
 
         #The second, "ejected" component
         T    = self.T_w * np.exp(self.nu_T_w * z)
-        n    = self.EjectedGas.real(cosmo, r_use, M, a) / (self.mean_molecular_weight * m_p) / (Mpc_to_m * m_to_cm)**3
+        n    = self.EjectedGas.real(cosmo, r, M, a) / (self.mean_molecular_weight * m_p) / (Mpc_to_m * m_to_cm)**3
         P2   = T * n * kb_cgs
 
         prof = P1 + P2
@@ -1112,11 +1114,12 @@ class PressureAddDiffuse(MeadProfiles):
 
     def _fourier(self, cosmo, k, M, a):
 
+        k_use = np.atleast_1d(k)
         M_use = np.atleast_1d(M)
         z     = 1/a - 1
-        
-        #The first "bound" component
-        P1   = self.Pressure.fourier(cosmo, k, M, a)
+
+        #The first "bound" component. Evaluated on 1D arrays, so it is always (M, k)
+        P1   = self.Pressure.fourier(cosmo, k_use, M_use, a)
 
         #The second, "ejected" component
         f_ej = self._get_gas_frac(M_use, a, cosmo)[1][:, None]

@@ -7,6 +7,7 @@ needed; no full tabulated profile is generated here.
 
 Test index:
     test_pressure_temperature_and_dmb_construct: checks pressure/temperature wiring.
+    test_temperature_rejects_pressure_keyword: checks Temperature only takes ``thermalpressure``.
 """
 
 import pytest
@@ -145,3 +146,11 @@ def test_pressure_temperature_and_dmb_construct(name, factory):
     assert temperature is not None, name
     assert pressure.mass_def == temperature.mass_def
     assert isinstance(dmb.TwoHalo, bfg.Profiles.misc.Zeros)
+
+
+def test_temperature_rejects_pressure_keyword():
+    """``pressure=`` would otherwise be swallowed by **kwargs and silently replaced by a default."""
+    pressure, temperature, _ = _schneider19()
+    assert temperature.Pressure is pressure
+    with pytest.raises(TypeError, match="thermalpressure"):
+        thermo.Temperature(pressure=pressure, gasnumberdensity=temperature.GasNumberDensity)

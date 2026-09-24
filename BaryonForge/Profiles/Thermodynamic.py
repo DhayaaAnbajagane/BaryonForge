@@ -567,11 +567,12 @@ class Temperature(BaseThermodynamicProfile):
 
     Parameters
     ----------
-    pressure : Pressure, optional
-        An instance of the `Pressure` class defining the thermal gas pressure profile. 
+    thermalpressure : Pressure, optional
+        An instance of the `Pressure` class defining the thermal gas pressure profile.
         If non-thermal pressure is relevant for your problem, it must be included in this
         profile; see `Pressure` or `NonThermalFrac` for more details.
-        If this parameter is not provided, a default `Pressure` object is created using `kwargs`.
+        If this parameter is not provided, a default thermal pressure,
+        ``Pressure(**kwargs) * (1 - NonThermalFrac(**kwargs))``, is created.
     gasnumberdensity : GasNumberDensity, optional
         An instance of the `GasNumberDensity` class defining the gas number density profile. 
         If not provided, a default `GasNumberDensity` object is created using `kwargs`.
@@ -598,7 +599,12 @@ class Temperature(BaseThermodynamicProfile):
     """
     
     def __init__(self, thermalpressure = None, gasnumberdensity = None, **kwargs):
-        
+
+        #Unknown keywords are otherwise swallowed by **kwargs, which would silently replace
+        #the user's pressure with a default one.
+        if 'pressure' in kwargs:
+            raise TypeError("Temperature takes the pressure profile as `thermalpressure = ...`, not `pressure = ...`")
+
         self.Pressure = thermalpressure
         self.GasNumberDensity = gasnumberdensity
         
@@ -797,10 +803,10 @@ class ThermalSZ(BaseThermodynamicProfile):
         R     = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
 
         #Now a series of units changes to the projected profile.
-        #Pass M (not M_use) so a scalar mass stays scalar in the output, the same way
-        #Emissivity and XrayCounts do it. Otherwise _projected_realspace adds a second
+        #Pass r and M (not r_use and M_use) so scalar inputs stay scalar in the output, the
+        #same way Emissivity and XrayCounts do it. Otherwise _projected_realspace adds a second
         #mass axis on top of the one the inner profile kept.
-        prof  = self.Pressure.real(cosmo, r_use, M, a)         #generate profile in comoving volume units (Temp. part is in physical)
+        prof  = self.Pressure.real(cosmo, r, M, a)         #generate profile in comoving volume units (Temp. part is in physical)
         prof  = prof * (Mpc_to_m * 1e2)                        #Line-of-sight integral is done in Mpc, we want cm
         prof  = prof * sigma_T_cgs/(m_e_cgs*c_cgs**2)          #Convert to SZ.
         prof  = prof * self.Pgas_to_Pe(cosmo, r_use, M, a)     #Then convert from gas pressure to electron pressure
@@ -1074,8 +1080,8 @@ class Emissivity(BaseThermodynamicProfile):
 
         R   = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
 
-        T   = self.Temperature.real(cosmo, r_use, M, a)
-        Z   = self.Metallicity.real(cosmo, r_use, M, a)
+        T   = self.Temperature.real(cosmo, r, M, a)
+        Z   = self.Metallicity.real(cosmo, r, M, a)
         E   = self.EmissivityTable(T, Z, a)
         
         prof = E #Just renaming for simplicity
@@ -1171,9 +1177,9 @@ class XrayCounts(BaseThermodynamicProfile):
 
         R = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
 
-        ne  = self.ElectronNumberDensity.real(cosmo, r_use, M, a)
-        nH  = self.HydrogenNumberDensity.real(cosmo, r_use, M, a)
-        J   = self.Emissivity.real(cosmo, r_use, M, a)
+        ne  = self.ElectronNumberDensity.real(cosmo, r, M, a)
+        nH  = self.HydrogenNumberDensity.real(cosmo, r, M, a)
+        J   = self.Emissivity.real(cosmo, r, M, a)
         
         prof = ne * nH * J
         
@@ -1278,8 +1284,8 @@ class XraySkyCounts(BaseThermodynamicProfile):
         R     = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
 
         #Now a series of units changes to the projected profile.
-        #Pass M (not M_use) so a scalar mass stays scalar; see the note in ThermalSZ._real
-        prof  = self.XrayCounts.real(cosmo, r_use, M, a)     #generate profile
+        #Pass r and M (not r_use and M_use) so scalar inputs stay scalar; see the note in ThermalSZ._real
+        prof  = self.XrayCounts.real(cosmo, r, M, a)     #generate profile
         prof  = prof * (Mpc_to_m * m_to_cm)                  #Line-of-sight integral is done in Mpc, we want cm
         prof  = prof * a**3                                  #Cosmic dimming causes a 1/(1 + z)^3 factor (we use counts, not energy, 
                                                              #so one factor is missing)
