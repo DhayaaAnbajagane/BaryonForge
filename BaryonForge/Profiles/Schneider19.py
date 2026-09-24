@@ -1,9 +1,10 @@
 import numpy as np
 import pyccl as ccl
-from operator import add, mul, sub, truediv, pow, neg, pos, abs
 import warnings
 
 from scipy import interpolate, integrate
+#Not used here, but this is the package's first import and must load `utils` before `Base`
+#(Base -> utils -> Pixel -> Base would otherwise be a circular import). Keep it first.
 from ..utils.Tabulate import _set_parameter
 from .Base import BaseBFGProfiles, hyper_params
 

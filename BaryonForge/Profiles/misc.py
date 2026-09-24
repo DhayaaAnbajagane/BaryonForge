@@ -1,12 +1,10 @@
 import numpy as np
 import pyccl as ccl
-from operator import add, mul, sub, truediv, pow, neg, pos, abs
+from operator import add, mul, sub, truediv, neg, pos, abs
 from .Base import BaseBFGProfiles, hyper_params
-from scipy import interpolate
 from ..utils.Tabulate import _set_parameter, _get_parameter
 from ..utils.misc import combine_fftpars
-from pyccl.pyutils import resample_array, _fftlog_transform
-fftlog = _fftlog_transform
+from pyccl.pyutils import resample_array, _fftlog_transform as fftlog
 
 __all__ = ['Truncation', 'Identity', 'Zeros', 'ComovingToPhysical', 'Mdelta_to_Mtot', 'CombinedProfile']
 

@@ -1,10 +1,8 @@
 
 import numpy as np
-import pyccl as ccl
 from tqdm import tqdm
 from scipy import interpolate, integrate
 import warnings
-import copy
 from itertools import product
 
 from ..utils.Tabulate import _set_parameter, _record_parameters, _restore_parameters

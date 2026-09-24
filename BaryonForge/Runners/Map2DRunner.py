@@ -194,9 +194,9 @@ class DefaultRunnerGrid(object):
         An object that generates profiles or displacements. For example, see `Baryonification2D` or `Pressure`
     
     use_ellipticity : bool, optional
-        A flag indicating whether to use ellipticity in calculations. Default is False. 
-        If set to True, a NotImplementedError is raised, as this mode has not yet been 
-        implemented for curved, full-sky baryonification.
+        A flag indicating whether to use ellipticity in calculations. Default is False.
+        Requires the 'q_ell' (axis ratio) and 'A_ell' (major-axis direction) catalog columns.
+        Only supported for 2D maps.
     
     mass_def : object, optional
         An instance of a mass definition object from the CCL (Core Cosmology Library), specifying 
@@ -248,7 +248,7 @@ class DefaultRunnerGrid(object):
     Raises
     ------
     AssertionError
-        If `use_ellipticity` is True and required columns ('q_ell', 'c_ell', 'A_ell') are missing in the 
+        If `use_ellipticity` is True and required columns ('q_ell', 'A_ell') are missing in the
         `HaloNDCatalog`.
     NotImplementedError
         If attempting to use the 3D ellipticity method, which is not yet verified.
@@ -276,7 +276,6 @@ class DefaultRunnerGrid(object):
             names = HaloNDCatalog.cat.dtype.names
             
             assert 'q_ell' in names, "The 'q_ell' column is missing, but you set use_ellipticity = True"
-            if not GriddedMap.is2D: assert 'c_ell' in names, "The 'c_ell' column is missing, but you set use_ellipticity = True"
             assert 'A_ell' in names, "The 'A_ell' column is missing, but you set use_ellipticity = True"
     
     
@@ -342,15 +341,6 @@ class DefaultRunnerGrid(object):
         elif len(A) == 3:
             
             raise NotImplementedError("This method has not yet been verified. Use 2D ellipticity method instead")
-
-            v = np.cross(A, ref)
-            c = np.dot(A, ref)
-            s = np.linalg.norm(v)
-            kmat = np.array([[0, -v[2], v[1]], 
-                             [v[2], 0, -v[0]], 
-                             [-v[1], v[0], 0]])
-
-            Rmat = np.eye(3) + kmat + np.dot(kmat, kmat) * ((1 - c) / (s ** 2))
 
         return Rmat
         
@@ -499,9 +489,8 @@ class BaryonifyGrid(DefaultRunnerGrid):
             
             if self.use_ellipticity:
                 q_j = self.HaloNDCatalog.cat['q_ell'][j]
-                A_j = self.HaloNDCatalog.cat['A_ell'][j]
-                A_j = A_j/np.sqrt(np.sum(A_j**2))
-            
+                A_j = self.HaloNDCatalog.cat['A_ell'][j] #Normalized in build_Rmat
+
             res    = self.GriddedMap.res
             Nsize  = 2 * R_q / res
             Nsize  = int(Nsize // 2)*2 #Force it to be even
@@ -582,15 +571,7 @@ class BaryonifyGrid(DefaultRunnerGrid):
                 if self.use_ellipticity:
 
                     raise NotImplementedError("Currently not able to ellipticities with 3D maps.")
-                    # assert q_j > 0, "The axis ratio in halo %d is zero" % j
 
-                    # Rmat = self.build_Rmat(A_j, np.array([0., 1., 0.]))
-                    # x_grid_ell, y_grid_ell, z_grid_ell = (self.coord_array(x_grid + dx, y_grid + dy, z_grid + dz) @ Rmat).T
-                    # r_grid = np.sqrt(x_grid_ell**2/ar_j**2 + 
-                    #                  y_grid_ell**2/br_j**2 +
-                    #                  z_grid_ell**2/cr_j**2).reshape(x_grid_ell.shape)
-
-                
                 #Compute the (comoving) displacement needed
                 #The 1/res makes sure the offset is in units of pixel widths.
                 #In regrid_pixels_3D, columns 0, 1, 2 of pix_offsets shift axes 1, 0, 2 of the map.
@@ -604,11 +585,11 @@ class BaryonifyGrid(DefaultRunnerGrid):
         N = orig_map.shape[0]
         x = np.arange(N)
         
-         #Need to split  2D vs 3D since we have separate numba functions for each
+        #Need to split 2D vs 3D since we have separate numba functions for each.
+        #(pix_offsets are already finite, since each halo's offsets were cleaned above.)
         if self.GriddedMap.is2D:
             x_grid, y_grid = np.meshgrid(x, x, indexing = 'xy')
-        
-            pix_offsets = np.where(np.isfinite(pix_offsets), pix_offsets, 0)
+
             pix_offsets[:, 0] += x_grid.flatten()
             pix_offsets[:, 1] += y_grid.flatten()
             
@@ -617,8 +598,7 @@ class BaryonifyGrid(DefaultRunnerGrid):
             
         else:
             x_grid, y_grid, z_grid = np.meshgrid(x, x, x, indexing = 'xy')
-        
-            pix_offsets = np.where(np.isfinite(pix_offsets), pix_offsets, 0)
+
             pix_offsets[:, 0] += x_grid.flatten()
             pix_offsets[:, 1] += y_grid.flatten()
             pix_offsets[:, 2] += z_grid.flatten()
@@ -749,9 +729,8 @@ class PaintProfilesGrid(DefaultRunnerGrid):
 
             if self.use_ellipticity:
                 q_j = self.HaloNDCatalog.cat['q_ell'][j]
-                A_j = self.HaloNDCatalog.cat['A_ell'][j]
-                A_j = A_j/np.sqrt(np.sum(A_j**2))
-            
+                A_j = self.HaloNDCatalog.cat['A_ell'][j] #Normalized in build_Rmat
+
             res    = self.GriddedMap.res
             Nsize  = 2 * self.epsilon_max * R_j / res
             Nsize  = int(Nsize // 2)*2 #Force it to be even
@@ -815,14 +794,6 @@ class PaintProfilesGrid(DefaultRunnerGrid):
                 if self.use_ellipticity:
 
                     raise ValueError("use_ellipticity is not implemented for 3D maps")
-
-                    # assert q_j > 0, "The axis ratio in halo %d is zero" % j
-
-                    # Rmat = self.build_Rmat(A_j, np.array([0., 1., 0.]))
-                    # x_grid_ell, y_grid_ell, z_grid_ell = (self.coord_array(x_grid + dx, y_grid + dy, z_grid + dz) @ Rmat).T
-                    # r_grid = np.sqrt(x_grid_ell**2/ar_j**2 +
-                    #                  y_grid_ell**2/br_j**2 +
-                    #                  z_grid_ell**2/cr_j**2).reshape(x_grid_ell.shape)
 
             #A halo can sit exactly on a pixel center (r = 0), where profiles/projections are ill-defined.
             #Use a tiny floor on the radius. Use `ConvolvedProfile` for a proper pixel-averaged value.
@@ -890,15 +861,10 @@ class PaintProfilesAnisGrid(PaintProfilesGrid):
                                      mass_def = self.mass_def, verbose = self.verbose).process()
         Mtot_map = Mtot_map.flatten() #Put it back in 1D array
         
-        #The Mtot_map is painted without the pixel size, so it is a surface density (2D) or a density (3D).
-        #The uniform background must be added in the same units: a density times the projection length (2D),
-        #or just the density (3D).
-        if self.GriddedMap.is2D:
-            dL = (2 * _get_parameter(self.Mtot_model, 'proj_cutoff')) #Factor of 2 since proj_cutoff == Lproj/2
-            rho_halos = np.average(Mtot_map) / dL
-        else:
-            dL = 1
-            rho_halos = np.average(Mtot_map)
+        #The Mtot_map is painted without the pixel size, so it is a surface density.
+        #The uniform background must be added in the same units: a density times the projection length.
+        dL = (2 * _get_parameter(self.Mtot_model, 'proj_cutoff')) #Factor of 2 since proj_cutoff == Lproj/2
+        rho_halos = np.average(Mtot_map) / dL
 
         #Now add the background contribution (we so far only have the halo contribution)
         #Force the background to be positive, incase the pasted density is larger than the box size.
@@ -920,100 +886,55 @@ class PaintProfilesAnisGrid(PaintProfilesGrid):
             M_j = self.HaloNDCatalog.cat['M'][j]
             x_j = self.HaloNDCatalog.cat['x'][j]
             y_j = self.HaloNDCatalog.cat['y'][j]
-            z_j = self.HaloNDCatalog.cat['z'][j] #THIS IS A CARTESIAN COORDINATE, NOT REDSHIFT
 
             o_j = {key : self.HaloNDCatalog.cat[key][j] for key in keys} #Other properties
-            
+
             a_j = 1/(1 + self.HaloNDCatalog.redshift)
             R_j = self.mass_def.get_radius(cosmo, M_j, a_j) / a_j #in comoving Mpc
-            
-            res    = self.GriddedMap.res
+
             Nsize  = 2 * self.epsilon_max * R_j / res
             Nsize  = int(Nsize // 2)*2 #Force it to be even
-            
-            if self.use_ellipticity:
-                q_j = self.HaloNDCatalog.cat['q_ell'][j]
-                A_j = self.HaloNDCatalog.cat['A_ell'][j]
-                A_j = A_j/np.sqrt(np.sum(A_j**2))
-            
-            Nsize = np.clip(Nsize, 2, 2*(bins.size//2)) #Even, at most the full box width. Can't skip small halos because we still must sum all contributions to a pixel
+            Nsize  = np.clip(Nsize, 2, 2*(bins.size//2)) #Even, at most the full box width. Can't skip small halos because we still must sum all contributions to a pixel
 
             #Pixel-center offsets (from the central pixel) of the cutout, matching pick_indices
             cutout_width = Nsize//2
             x = (np.arange(Nsize) - cutout_width) * res
 
-            if self.GriddedMap.is2D:
-                x_cen  = np.argmin(np.abs(bins - x_j))
-                y_cen  = np.argmin(np.abs(bins - y_j))
-                x_inds = self.pick_indices(x_cen, cutout_width, self.GriddedMap.Npix)
-                y_inds = self.pick_indices(y_cen, cutout_width, self.GriddedMap.Npix)
-                inds   = self.GriddedMap.inds[x_inds, :][:, y_inds].flatten()
+            x_cen  = np.argmin(np.abs(bins - x_j))
+            y_cen  = np.argmin(np.abs(bins - y_j))
+            x_inds = self.pick_indices(x_cen, cutout_width, self.GriddedMap.Npix)
+            y_inds = self.pick_indices(y_cen, cutout_width, self.GriddedMap.Npix)
+            inds   = self.GriddedMap.inds[x_inds, :][:, y_inds].flatten()
 
-                #Get offsets between halo position and pixel center
-                dx = bins[x_cen] - x_j
-                dy = bins[y_cen] - y_j
+            #Get offsets between halo position and pixel center
+            dx = bins[x_cen] - x_j
+            dy = bins[y_cen] - y_j
 
-                assert np.logical_and(np.abs(dx) <= res, np.abs(dy) <= res), "Halo offsets (%0.2f, %0.2f) are larger than res (%0.2f)" % (dx, dy, res)
+            assert np.logical_and(np.abs(dx) <= res, np.abs(dy) <= res), "Halo offsets (%0.2f, %0.2f) are larger than res (%0.2f)" % (dx, dy, res)
 
-                Paint  = self.model.projected
-                Tracer = self.Tracer_model.projected
+            #Axis 0 of the cutout follows the halo x-coordinate and axis 1 the y-coordinate
+            x_grid, y_grid = np.meshgrid(x + dx, x + dy, indexing = 'ij')
+            r_grid = np.sqrt(x_grid**2 + y_grid**2)
 
-                #Axis 0 of the cutout follows the halo x-coordinate and axis 1 the y-coordinate
-                x_grid, y_grid = np.meshgrid(x + dx, x + dy, indexing = 'ij')
-                r_grid = np.sqrt(x_grid**2 + y_grid**2)
+            #If ellipticity exists, then account for it
+            if self.use_ellipticity:
+                q_j = self.HaloNDCatalog.cat['q_ell'][j]
+                A_j = self.HaloNDCatalog.cat['A_ell'][j]
+                assert q_j > 0, "The axis ratio in halo %d is zero" % j
 
-                #If ellipticity exists, then account for it
-                if self.use_ellipticity:
-                    assert q_j > 0, "The axis ratio in halo %d is zero" % j
-
-                    Rmat = self.build_Rmat(A_j, q_j)
-                    x_grid_ell, y_grid_ell = (self.coord_array(x_grid, y_grid) @ Rmat).T
-                    r_grid = np.sqrt(x_grid_ell**2 + y_grid_ell**2).reshape(x_grid.shape)
-            
-            else:
-                
-                x_cen  = np.argmin(np.abs(bins - x_j))
-                y_cen  = np.argmin(np.abs(bins - y_j))
-                z_cen  = np.argmin(np.abs(bins - z_j))
-                x_inds = self.pick_indices(x_cen, cutout_width, self.GriddedMap.Npix)
-                y_inds = self.pick_indices(y_cen, cutout_width, self.GriddedMap.Npix)
-                z_inds = self.pick_indices(z_cen, cutout_width, self.GriddedMap.Npix)
-                inds   = self.GriddedMap.inds[x_inds, ...][:, y_inds, :][..., z_inds].flatten()
-
-                #Get offsets between halo position and pixel center
-                dx = bins[x_cen] - x_j
-                dy = bins[y_cen] - y_j
-                dz = bins[z_cen] - z_j
-
-                Paint  = self.model.real
-                Tracer = self.Tracer_model.real
-
-                #Axes 0, 1, 2 of the cutout follow the halo x, y, z coordinates
-                x_grid, y_grid, z_grid = np.meshgrid(x + dx, x + dy, x + dz, indexing = 'ij')
-                r_grid = np.sqrt(x_grid**2 + y_grid**2 + z_grid**2)
-
-                #If ellipticity exists, then account for it
-                if self.use_ellipticity:
-
-                    raise ValueError("use_ellipticity is not implemented for 3D maps")
-
-                    # assert q_j > 0, "The axis ratio in halo %d is zero" % j
-
-                    # Rmat = self.build_Rmat(A_j, np.array([0., 1., 0.]))
-                    # x_grid_ell, y_grid_ell, z_grid_ell = (self.coord_array(x_grid + dx, y_grid + dy, z_grid + dz) @ Rmat).T
-                    # r_grid = np.sqrt(x_grid_ell**2/ar_j**2 + 
-                    #                  y_grid_ell**2/br_j**2 +
-                    #                  z_grid_ell**2/cr_j**2).reshape(x_grid_ell.shape)
+                Rmat = self.build_Rmat(A_j, q_j)
+                x_grid_ell, y_grid_ell = (self.coord_array(x_grid, y_grid) @ Rmat).T
+                r_grid = np.sqrt(x_grid_ell**2 + y_grid_ell**2).reshape(x_grid.shape)
 
             #Tiny floor on the radius to avoid r = 0 (see PaintProfilesGrid)
             r_eval   = np.clip(r_grid.flatten(), res * 1e-3, None)
-            Painting = Paint(cosmo,  r_eval, M_j, a_j, **o_j)
-            Canvas   = Tracer(cosmo, r_eval, M_j, a_j, **o_j)
-            Canvas   = np.where(np.isfinite(Canvas) & np.invert(np.isnan(Canvas)), Canvas, 0)
+            Painting = self.model.projected(cosmo, r_eval, M_j, a_j, **o_j)
+            Canvas   = self.Tracer_model.projected(cosmo, r_eval, M_j, a_j, **o_j)
+            Canvas   = np.where(np.isfinite(Canvas), Canvas, 0)
             Mfrac    = np.divide(Canvas, Mtot_map[inds], out = np.zeros_like(Canvas), where = Mtot_map[inds] > 0)
             Mfrac   *= orig_map_flattened[inds]
-                        
-            mask = np.isfinite(Painting) & np.invert(np.isnan(Painting)) #Remove parts of map that have irregular values
+
+            mask = np.isfinite(Painting) #Remove parts of map that have irregular values
             mask = mask & (r_grid.flatten() < R_j*self.epsilon_max)
             if mask.sum() == 0: continue
                 
@@ -1030,10 +951,10 @@ class PaintProfilesAnisGrid(PaintProfilesGrid):
         new_map += self.background_val * self.global_tracer_fraction * Mfrac
         new_map  = new_map.reshape(orig_map.shape)
 
-        #Add a factor of the map pixel area/volume if requested by the user.
+        #Add a factor of the map pixel area if requested by the user.
         #This helps convert a density map to mass map (for example).
-        if self.include_pixel_size: 
-            new_map *= np.power(self.GriddedMap.res, 2 if self.GriddedMap.is2D else 3)
+        if self.include_pixel_size:
+            new_map *= self.GriddedMap.res**2
 
         
         return new_map    

@@ -1,7 +1,7 @@
 import numpy as np
 import pyccl as ccl
 import warnings
-from ..utils.constants import (Msun_to_Kg, Mpc_to_m, G, Y, Pth_to_Pe)
+from ..utils.constants import (Msun_to_Kg, Mpc_to_m, G, Pth_to_Pe)
 
 
 __all__ = ['Pressure', 'ElectronPressure', 'GasDensity']

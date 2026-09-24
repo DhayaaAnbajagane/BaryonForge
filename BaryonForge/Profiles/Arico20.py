@@ -4,7 +4,7 @@ import warnings
 
 from scipy import interpolate, special, integrate
 from ..utils import safe_Pchip_minimize
-from .misc import Zeros, Truncation, WrappedProfile
+from .misc import Truncation, WrappedProfile
 from . import Schneider19 as S19, Base
 from .Thermodynamic import (G, Msun_to_Kg, Mpc_to_m, kb_cgs, m_p, m_to_cm)
 

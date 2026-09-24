@@ -3,16 +3,15 @@ import pyccl as ccl
 from scipy import interpolate, integrate
 import warnings
 
-from .Base import BaseBFGProfiles, hyper_params
+from .Base import BaseBFGProfiles
 from .Schneider19 import Gas, DarkMatterBaryon, TwoHalo
 from ..utils.constants import (G, Msun_to_Kg, Mpc_to_m, Pth_to_Pe, m_p, m_to_cm, kb_cgs, sigma_T_cgs, c_cgs, m_e_cgs, X)
-from ..utils.Tabulate import _set_parameter, _get_parameter
-from ..utils.Xray import EmissivityTable
+from ..utils.Tabulate import _set_parameter
 from .Schneider19 import model_params as S19_mp
 from .Schneider25 import model_params as S25_mp
 from .Arico20     import model_params as A20_mp
 from .Mead20      import model_params as M20_mp
-from . import Schneider19 as S19, Schneider25 as S25, Arico20 as A20, Mead20 as M20
+from . import Schneider25 as S25, Arico20 as A20
 
 model_params = list({*S19_mp, *S25_mp, *A20_mp, *M20_mp})
 

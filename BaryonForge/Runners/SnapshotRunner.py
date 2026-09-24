@@ -3,7 +3,6 @@ import pyccl as ccl
 from scipy.spatial import KDTree 
 from tqdm import tqdm
 from ..utils import ParamTabulatedProfile
-from ..utils.Tabulate import _get_parameter
 from ..utils.misc import _default_mass_def
 from ..Profiles.BaryonCorrection import BaryonificationClass
 

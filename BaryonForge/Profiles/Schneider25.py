@@ -12,7 +12,6 @@ import pyccl as ccl
 import warnings
 
 from scipy import interpolate, integrate
-from . import Schneider19 as S19
 from .Base import BaseBFGProfiles, hyper_params
 from .misc import WrappedProfile
 

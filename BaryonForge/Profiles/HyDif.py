@@ -1,5 +1,4 @@
 import numpy as np
-import pyccl as ccl
 
 from .Base import BaseBFGProfiles, hyper_params
 
