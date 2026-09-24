@@ -290,9 +290,8 @@ class DefaultRunnerGrid(object):
         Parameters
         ----------
         A : ndarray
-            A 1D array giving the orientation (x, y) of the ellipse. It is normalized within the method.
-            Note that, with this transformation, the painted/displaced profile is *compressed* along `A`,
-            i.e. `A` is the direction of the ellipse's minor axis (and the major axis is perpendicular to it).
+            A 1D array giving the direction (x, y) of the ellipse's major axis. It is normalized within the method.
+            The painted/displaced profile is elongated along `A` and compressed perpendicular to it.
 
         q : float
             The axis ratio (minor/major) of the ellipse, used to compute the shear transformation.
@@ -319,8 +318,10 @@ class DefaultRunnerGrid(object):
 
             #The 2D rotation is done using routines implemented in the galsim Shear class.
             #Use the signed angle of A (arccos would map A = (cos t, -sin t) onto (cos t, sin t)).
+            #The transformation compresses the profile along beta, so beta is the minor axis,
+            #perpendicular to the major axis A.
 
-            beta = np.arctan2(A[1], A[0])
+            beta = np.arctan2(A[1], A[0]) + np.pi/2
             eta  = -np.log(q) 
             
             if eta > 1e-4:

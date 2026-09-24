@@ -231,6 +231,6 @@ def test_elliptical_painting_orientation(cosmology_parameters, angle):
     Q = np.array([[(w*dx*dx).sum(), (w*dx*dy).sum()], [(w*dx*dy).sum(), (w*dy*dy).sum()]])
     evals, evecs = np.linalg.eigh(Q)
     assert np.sqrt(evals[0] / evals[1]) == pytest.approx(0.5, rel=1e-2)
-    # The profile is compressed along A_ell (the minor axis, see DefaultRunnerGrid.build_Rmat)
-    minor = evecs[:, 0]
-    assert abs(np.dot(minor, [np.cos(theta), np.sin(theta)])) == pytest.approx(1, abs=1e-3)
+    # A_ell is the major axis, see DefaultRunnerGrid.build_Rmat
+    major = evecs[:, 1]
+    assert abs(np.dot(major, [np.cos(theta), np.sin(theta)])) == pytest.approx(1, abs=1e-3)
