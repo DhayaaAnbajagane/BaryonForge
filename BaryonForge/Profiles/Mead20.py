@@ -1111,6 +1111,9 @@ class PressureAddDiffuse(MeadProfiles):
             if isinstance(getattr(self, k), (ccl.halos.profiles.HaloProfile,)):
                 getattr(self, k).update_precision_fftlog(**kwargs)
 
+    #The real-space profile comes from the Fourier one, as in GasAddDiffuse. Needed by projected().
+    def _real(self, cosmo, r, M, a): return self._fftlog_wrap(cosmo, r, M, a, fourier_out=False)
+
 
     def _fourier(self, cosmo, k, M, a):
 

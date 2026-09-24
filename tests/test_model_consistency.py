@@ -10,7 +10,7 @@ Test index:
     test_wrapper_profiles_have_string_representations: checks repr of convenience classes.
     test_shocked_gas_preserves_input_shapes: checks ShockedGas output shapes.
     test_composite_profiles_preserve_input_shapes: checks scalar/array shapes of composite profiles.
-    test_mead_diffuse_fourier_profiles_preserve_input_shapes: checks scalar/array k for the Mead diffuse terms.
+    test_mead_diffuse_fourier_profiles_preserve_input_shapes: checks scalar/array k and projection of the Mead diffuse terms.
     test_lss_classes_use_their_own_model_fractions: checks Mead/Arico LSS classes use their own fractions.
 """
 
@@ -188,6 +188,8 @@ def test_mead_diffuse_fourier_profiles_preserve_input_shapes(cosmo):
         assert profile.fourier(cosmo, 1.0, masses, 0.8).shape == (2,)
         assert profile.fourier(cosmo, k, 1.0e14, 0.8).shape == (2,)
         assert np.ndim(profile.fourier(cosmo, 1.0, 1.0e14, 0.8)) == 0
+        # The real-space profile (from FFTLog) must also be usable for projection
+        assert np.all(np.isfinite(profile.projected(cosmo, np.array([0.1, 1.0]), masses, 0.8)))
         # FFTLog output depends slightly on the requested k range, hence the tolerance
         np.testing.assert_allclose(profile.fourier(cosmo, 1.0, masses, 0.8), profile.fourier(cosmo, k, masses, 0.8)[:, 1],
                                    rtol=1e-2)
