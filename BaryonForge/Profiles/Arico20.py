@@ -298,8 +298,6 @@ class DarkMatter(AricoProfiles):
         r_use = np.atleast_1d(r)
         M_use = np.atleast_1d(M)
 
-        z = 1/a - 1
-
         if (self.cdelta is None) and (self.c_M_relation is None):
             c_M_relation = ccl.halos.concentration.ConcentrationDiemer15(mass_def = self.mass_def) #Use the diemer calibration
         elif self.c_M_relation is not None:
@@ -388,7 +386,6 @@ class Stars(AricoProfiles):
         M_use = np.atleast_1d(M)
 
         R     = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
-        z     = 1/a - 1
 
         f_cga = self.get_f_star_cen(M_use, a, cosmo)[:, None]
         R_h   = self.epsilon_h * R[:, None]
@@ -454,8 +451,6 @@ class BoundGasUntruncated(AricoProfiles):
 
         r_use = np.atleast_1d(r)
         M_use = np.atleast_1d(M)
-
-        z = 1/a - 1
 
         R = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
 
@@ -597,7 +592,6 @@ class EjectedGas(AricoProfiles):
         r_use = np.atleast_1d(r)
         M_use = np.atleast_1d(M)
 
-        z = 1/a - 1
         R = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
 
         f_eg = self._get_gas_frac(M_use, a, cosmo)[2][:, None]
@@ -658,8 +652,6 @@ class ReaccretedGas(AricoProfiles):
 
         r_use = np.atleast_1d(r)
         M_use = np.atleast_1d(M)
-
-        z = 1/a - 1
 
         R = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
 
@@ -769,8 +761,6 @@ class ModifiedDarkMatter(AricoProfiles):
         r_use = np.atleast_1d(r)
         M_use = np.atleast_1d(M)
 
-        z = 1/a - 1
-
         if (self.cdelta is None) and (self.c_M_relation is None):
             c_M_relation = ccl.halos.concentration.ConcentrationDiemer15(mass_def = self.mass_def) #Use the diemer calibration
         elif self.c_M_relation is not None:
@@ -851,7 +841,6 @@ class CollisionlessMatter(AricoProfiles):
         if np.max(r) > self.r_max_int: 
             warnings.warn(f"Increase integral upper limit, r_max_int ({self.r_max_int}) < maximum radius ({np.max(r)})", UserWarning)
 
-        z = 1/a - 1
         R = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
 
         f_sg   = self.get_f_star_sat(M_use, a, cosmo)[:, None]
@@ -1128,8 +1117,6 @@ class Pressure(AricoProfiles):
         r_use = np.atleast_1d(r)
         M_use = np.atleast_1d(M)
 
-        z = 1/a - 1
-
         R = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
 
         if (self.cdelta is None) and (self.c_M_relation is None):
@@ -1219,8 +1206,6 @@ class NonThermalFrac(AricoProfiles):
 
         z = 1/a - 1
 
-        R = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
-        
         #They define the model with R200m, so gotta use that redefinition here.
         mdef  = ccl.halos.massdef.MassDef(200, 'matter')
         cnvrt = ccl.halos.mass_translator(mass_in = self.mass_def, mass_out = mdef, concentration = 'Diemer15')
@@ -1388,7 +1373,6 @@ class BoundGasDeprecated(AricoProfiles):
         r_use = np.atleast_1d(r)
         M_use = np.atleast_1d(M)
 
-        z = 1/a - 1
         R = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
 
         f_cg  = self.get_f_star_cen(M_use, a, cosmo)

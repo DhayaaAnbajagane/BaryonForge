@@ -514,8 +514,6 @@ class BaryonifyGrid(DefaultRunnerGrid):
 
             if self.GriddedMap.is2D:
 
-                shape = (Nsize, Nsize)
-
                 x_cen  = np.argmin(np.abs(bins - x_j))
                 y_cen  = np.argmin(np.abs(bins - y_j))
                 x_inds = self.pick_indices(x_cen, cutout_width, self.GriddedMap.Npix)
@@ -558,7 +556,6 @@ class BaryonifyGrid(DefaultRunnerGrid):
 
 
             else:
-                shape = (Nsize, Nsize, Nsize)
 
                 x_cen  = np.argmin(np.abs(bins - x_j))
                 y_cen  = np.argmin(np.abs(bins - y_j))
@@ -729,7 +726,6 @@ class PaintProfilesGrid(DefaultRunnerGrid):
         orig_map = self.GriddedMap.map
         new_map  = np.zeros(orig_map.size, dtype = np.float64)
         
-        grid = self.GriddedMap.grid
         bins = self.GriddedMap.bins
         keys = vars(self.model).get('p_keys', []) #Check if model has property keys
 
@@ -795,7 +791,6 @@ class PaintProfilesGrid(DefaultRunnerGrid):
 
             else:
 
-                shape  = (Nsize, Nsize, Nsize)
                 x_cen  = np.argmin(np.abs(bins - x_j))
                 y_cen  = np.argmin(np.abs(bins - y_j))
                 z_cen  = np.argmin(np.abs(bins - z_j))
@@ -883,7 +878,6 @@ class PaintProfilesAnisGrid(PaintProfilesGrid):
 
         orig_map_flattened = orig_map.flatten()
         
-        grid = self.GriddedMap.grid
         bins = self.GriddedMap.bins
         res  = self.GriddedMap.res
         keys = vars(self.model).get('p_keys', []) #Check if model has property keys
@@ -978,7 +972,6 @@ class PaintProfilesAnisGrid(PaintProfilesGrid):
             
             else:
                 
-                shape  = (Nsize, Nsize, Nsize)
                 x_cen  = np.argmin(np.abs(bins - x_j))
                 y_cen  = np.argmin(np.abs(bins - y_j))
                 z_cen  = np.argmin(np.abs(bins - z_j))

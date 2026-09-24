@@ -199,8 +199,6 @@ class DarkMatter(MeadProfiles):
         r_use = np.atleast_1d(r)
         M_use = np.atleast_1d(M)
 
-        z = 1/a - 1
-
         if (self.cdelta is None) and (self.c_M_relation is None):
             #Use the Duffy08 calibration following Equation 33 in https://arxiv.org/pdf/2005.00009
             c_M_relation = ccl.halos.concentration.ConcentrationDuffy08(mass_def = self.mass_def)
@@ -514,7 +512,6 @@ class EjectedGas(MeadProfiles):
         r_use = np.atleast_1d(r)
         M_use = np.atleast_1d(M)
 
-        z = 1/a - 1
         R = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
 
         f_bar = cosmo.cosmo.params.Omega_b/cosmo.cosmo.params.Omega_m
@@ -648,8 +645,6 @@ class CollisionlessMatter(MeadProfiles):
 
         r_use = np.atleast_1d(r)
         M_use = np.atleast_1d(M)
-
-        z = 1/a - 1
 
         if (self.cdelta is None) and (self.c_M_relation is None):
             #Use the Duffy08 calibration following Equation 33 in https://arxiv.org/pdf/2005.00009
@@ -897,7 +892,6 @@ class Temperature(MeadProfiles):
         r_use = np.atleast_1d(r)
         M_use = np.atleast_1d(M)
 
-        z = 1/a - 1
         R = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
         
         if (self.cdelta is None) and (self.c_M_relation is None):
@@ -1024,12 +1018,7 @@ class Pressure(MeadProfiles):
 
     def _real(self, cosmo, r, M, a):
 
-        r_use = np.atleast_1d(r)
-        M_use = np.atleast_1d(M)
-
         z = 1/a - 1
-
-        R = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
 
         #The first "bound" component
         T    = self.Temperature.real(cosmo, r, M, a)

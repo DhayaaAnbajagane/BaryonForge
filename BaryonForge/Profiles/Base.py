@@ -270,8 +270,6 @@ class BaseBFGProfiles(ccl.halos.profiles.HaloProfile):
         r_use = np.atleast_1d(r)
         M_use = np.atleast_1d(M)
 
-        z = 1/a - 1
-
         R = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
 
         #Integral limits. Use the smallest *positive* radius, so r = 0 (eg. a halo exactly

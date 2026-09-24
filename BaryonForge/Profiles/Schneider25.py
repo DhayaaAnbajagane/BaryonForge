@@ -306,8 +306,6 @@ class DarkMatter(Schneider25Profiles):
         r_use = np.atleast_1d(r)
         M_use = np.atleast_1d(M)
 
-        z = 1/a - 1
-
         if (self.cdelta is None) and (self.c_M_relation is None):
             c_M_relation = ccl.halos.concentration.ConcentrationDiemer15(mass_def = self.mass_def) #Use the diemer calibration
         elif self.c_M_relation is not None:
@@ -399,8 +397,6 @@ class TwoHalo(Schneider25Profiles):
 
         R   = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
 
-        z = 1/a - 1
-
         if self.xi_mm is None:
             xi_mm   = ccl.correlation_3d(cosmo, r = r_use, a = a)
         else:
@@ -480,8 +476,6 @@ class Stars(Schneider25Profiles):
 
         r_use = np.atleast_1d(r)
         M_use = np.atleast_1d(M)
-
-        z = 1/a - 1
 
         R   = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
 
@@ -653,7 +647,6 @@ class InnerGas(Schneider25Profiles):
         r_use = np.atleast_1d(r)
         M_use = np.atleast_1d(M)
 
-        z = 1/a - 1
         h = cosmo['h']
         R = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
 
@@ -840,10 +833,7 @@ class CollisionlessMatter(Schneider25Profiles):
         #Radius boundary is very large, I found that worked best without throwing edgecases
         #especially when doing FFTlog transforms
         r_integral = np.geomspace(self.r_min_int, self.r_max_int, self.r_steps)
-        safe_range = (r_integral > 2 * np.min(r_integral) ) & (r_integral < 1/2 * np.max(r_integral) )
         
-        z = 1/a - 1
-
         R = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
 
         f_cga, f_sga  = self.get_f_star_cen(M_use, a, cosmo), self.get_f_star_sat(M_use, a, cosmo)
@@ -976,13 +966,6 @@ class DarkMatterOnly(Schneider25Profiles):
         
     def _real(self, cosmo, r, M, a):
 
-        r_use = np.atleast_1d(r)
-        M_use = np.atleast_1d(M)
-
-        z = 1/a - 1
-
-        R = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
-
         prof = (self.DarkMatter.real(cosmo, r, M, a) +
                 self.TwoHalo.real(cosmo, r, M, a)
                )
@@ -1068,11 +1051,6 @@ class DarkMatterBaryon(Schneider25Profiles):
     def _real(self, cosmo, r, M, a):
 
         r_use = np.atleast_1d(r)
-        M_use = np.atleast_1d(M)
-
-        z = 1/a - 1
-
-        R = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
 
         #Need DMO for normalization
         #Makes sure that M_DMO(<r) = M_DMB(<r) for the limit r --> infinity

@@ -264,8 +264,6 @@ class DarkMatter(SchneiderProfiles):
         r_use = np.atleast_1d(r)
         M_use = np.atleast_1d(M)
 
-        z = 1/a - 1
-
         if (self.cdelta is None) and (self.c_M_relation is None):
             c_M_relation = ccl.halos.concentration.ConcentrationDiemer15(mass_def = self.mass_def) #Use the diemer calibration
         elif self.c_M_relation is not None:
@@ -369,10 +367,6 @@ class TwoHalo(SchneiderProfiles):
 
         r_use = np.atleast_1d(r)
         M_use = np.atleast_1d(M)
-
-        R   = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
-
-        z = 1/a - 1
 
         if self.xi_mm is None:
             xi_mm   = ccl.correlation_3d(cosmo, r = r_use, a = a)
@@ -666,8 +660,6 @@ class ShockedGas(Gas):
         r_use = np.atleast_1d(r)
         M_use = np.atleast_1d(M)
 
-        z = 1/a - 1
-
         R = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
 
         #Minimum is 0.25 since a factor of 4x drop is the maximum possible for a shock
@@ -839,13 +831,6 @@ class CollisionlessMatter(SchneiderProfiles):
         #especially when doing FFTlog transforms
         r_integral = np.geomspace(self.r_min_int, self.r_max_int, self.r_steps)
         safe_range = (r_integral > 2 * np.min(r_integral) ) & (r_integral < 1/2 * np.max(r_integral) )
-        
-        z = 1/a - 1
-
-        R = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
-
-        eta_cga = self.eta + self.eta_delta
-        tau_cga = self.tau + self.tau_delta
         
         f_sga  = self.get_f_star_sat(M_use, a, cosmo)[:, None]
         f_clm  = 1 - cosmo.cosmo.params.Omega_b/cosmo.cosmo.params.Omega_m + f_sga
@@ -1019,13 +1004,6 @@ class DarkMatterOnly(SchneiderProfiles):
         
     def _real(self, cosmo, r, M, a):
 
-        r_use = np.atleast_1d(r)
-        M_use = np.atleast_1d(M)
-
-        z = 1/a - 1
-
-        R = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
-
         prof = (self.DarkMatter.real(cosmo, r, M, a) +
                 self.TwoHalo.real(cosmo, r, M, a)
                )
@@ -1127,11 +1105,6 @@ class DarkMatterBaryon(SchneiderProfiles):
     def _real(self, cosmo, r, M, a):
 
         r_use = np.atleast_1d(r)
-        M_use = np.atleast_1d(M)
-
-        z = 1/a - 1
-
-        R = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
 
         #Need DMO for normalization
         #Makes sure that M_DMO(<r) = M_DMB(<r) for the limit r --> infinity

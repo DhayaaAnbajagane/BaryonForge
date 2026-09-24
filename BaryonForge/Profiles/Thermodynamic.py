@@ -232,9 +232,6 @@ class Pressure(BaseThermodynamicProfile):
         r_use = np.atleast_1d(r)
         M_use = np.atleast_1d(M)
 
-        z = 1/a - 1
-        R = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
-
         r_integral = np.geomspace(self.r_min_int, self.r_max_int, self.r_steps)
         rho_total  = self.DarkMatterBaryon.real(cosmo, r_integral, M_use, a)
         rho_gas    = self.Gas.real(cosmo, r_integral, M_use, a)
@@ -405,10 +402,6 @@ class NonThermalFracGreen20(BaseThermodynamicProfile):
         
         r_use = np.atleast_1d(r)
         M_use = np.atleast_1d(M)
-
-        z = 1/a - 1
-
-        R = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
 
         
         #They define the model with R200m, so gotta use that redefinition here.
@@ -806,10 +799,6 @@ class ThermalSZ(BaseThermodynamicProfile):
     def _real(self, cosmo, r, M, a):
         
         r_use = np.atleast_1d(r)
-        M_use = np.atleast_1d(M)
-
-        z     = 1/a - 1
-        R     = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
 
         #Now a series of units changes to the projected profile.
         #Pass r and M (not r_use and M_use) so scalar inputs stay scalar in the output, the
@@ -1082,13 +1071,6 @@ class Emissivity(BaseThermodynamicProfile):
     
     def _real(self, cosmo, r, M, a):
         
-        r_use = np.atleast_1d(r)
-        M_use = np.atleast_1d(M)
-
-        z = 1/a - 1
-
-        R   = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
-
         T   = self.Temperature.real(cosmo, r, M, a)
         Z   = self.Metallicity.real(cosmo, r, M, a)
         E   = self.EmissivityTable(T, Z, a)
@@ -1178,13 +1160,6 @@ class XrayCounts(BaseThermodynamicProfile):
         
     
     def _real(self, cosmo, r, M, a):
-
-        r_use = np.atleast_1d(r)
-        M_use = np.atleast_1d(M)
-
-        z = 1/a - 1
-
-        R = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
 
         ne  = self.ElectronNumberDensity.real(cosmo, r, M, a)
         nH  = self.HydrogenNumberDensity.real(cosmo, r, M, a)
@@ -1286,12 +1261,6 @@ class XraySkyCounts(BaseThermodynamicProfile):
     
     def _real(self, cosmo, r, M, a):
         
-        r_use = np.atleast_1d(r)
-        M_use = np.atleast_1d(M)
-
-        z     = 1/a - 1
-        R     = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
-
         #Now a series of units changes to the projected profile.
         #Pass r and M (not r_use and M_use) so scalar inputs stay scalar; see the note in ThermalSZ._real
         prof  = self.XrayCounts.real(cosmo, r, M, a)     #generate profile

@@ -308,7 +308,6 @@ class TabulatedProfile(ccl.halos.profiles.HaloProfile):
         M_range  = np.geomspace(M_min, M_max, N_samples_Mass)
         r        = np.geomspace(R_min, R_max, N_samples_R)
         z_range  = np.linspace(z_min, z_max, N_samples_z) if z_linear_sampling else np.geomspace(z_min, z_max, N_samples_z)
-        dlnr     = np.log(r[1]) - np.log(r[0])
 
         interp3D = np.zeros([z_range.size, M_range.size, r.size])
         interp2D = np.zeros([z_range.size, M_range.size, r.size])
@@ -366,8 +365,6 @@ class TabulatedProfile(ccl.halos.profiles.HaloProfile):
         
         r_use = np.atleast_1d(r)
         M_use = np.atleast_1d(M)
-        a_use = np.atleast_1d(a)
-        z_use = 1/a_use - 1
         
         prof  = np.zeros([M_use.size, r_use.size])
         empty = np.ones_like(r_use)
@@ -611,7 +608,6 @@ class ParamTabulatedProfile(object):
         M_range  = np.geomspace(M_min, M_max, N_samples_Mass)
         r        = np.geomspace(R_min, R_max, N_samples_R)
         z_range  = np.linspace(z_min, z_max, N_samples_z) if z_linear_sampling else np.geomspace(z_min, z_max, N_samples_z)
-        dlnr     = np.log(r[1]) - np.log(r[0])
 
         other_params = {k : np.atleast_1d(np.asarray(v, dtype = float)) for k, v in other_params.items()} #Allow lists/tuples
         p_keys   = list(other_params.keys()); setattr(self, 'p_keys', p_keys)
@@ -694,8 +690,6 @@ class ParamTabulatedProfile(object):
         
         r_use = np.atleast_1d(r)
         M_use = np.atleast_1d(M)
-        a_use = np.atleast_1d(a)
-        z_use = 1/a_use - 1
         
         prof  = np.zeros([M_use.size, r_use.size])
         empty = np.ones_like(r_use)
@@ -816,7 +810,6 @@ class TabulatedCorrelation3D(object):
         
         
         r    = np.geomspace(self.R_range[0], self.R_range[1], self.N_samples)
-        dlnr = np.log(r[1]) - np.log(r[0])
         z_range  = np.linspace(z_min, z_max, N_samples_z)
         
         interp3D = np.zeros([z_range.size, r.size]) + np.NaN
@@ -842,8 +835,6 @@ class TabulatedCorrelation3D(object):
     def __call__(self, r, a):
         
         r_use = np.atleast_1d(r)
-        a_use = np.atleast_1d(a)
-        z_use = 1/a_use - 1
         
         empty = np.ones_like(r_use)
         z_in  = np.log(1/a)*empty #This is log(1 + z)

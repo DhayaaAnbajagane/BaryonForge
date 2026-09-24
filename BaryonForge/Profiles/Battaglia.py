@@ -152,7 +152,6 @@ class Pressure(ccl.halos.profiles.HaloProfile):
         #Cosmological parameters
         Omega_m  = cosmo.cosmo.params.Omega_m
         Omega_b  = cosmo.cosmo.params.Omega_b
-        Omega_g  = cosmo.cosmo.params.Omega_g
         h        = cosmo.cosmo.params.h
 
         #We start with critical density in physical coordinates, in Msun/Mpc^3
