@@ -2,6 +2,7 @@
 
 Test index:
     test_schneider25_normalization_follows_mass_definition: checks S25 gas normalization for 500c.
+    test_schneider25_follows_the_validated_model: checks S25 truncation, relaxation and inner-gas mass.
     test_arico_bound_gas_truncates_at_its_own_radius: checks the A20 truncation mass definition.
     test_arico_modified_dark_matter_matches_at_boundary: checks the A20 DM/bound-gas matching at R.
     test_battaglia_warns_on_inconsistent_mass_definition: checks the Battaglia mass_def warning.
@@ -60,6 +61,30 @@ def test_schneider25_normalization_follows_mass_definition(cosmo):
     total_mass = np.trapz(4 * np.pi * radii**2 * dark_matter.real(cosmo, radii, masses, scale_factor), radii)
 
     np.testing.assert_allclose(gas_mass, f_hga * total_mass, rtol=2e-2)
+
+
+def test_schneider25_follows_the_validated_model(cosmo):
+    """Pins features of the S25 model cross-checked against the reference code (example 15)."""
+    model = bfg.Profiles.Schneider25.DarkMatter(**_fast(bpar_S25))
+    masses = np.geomspace(1e12, 1e15, 4)
+
+    # Truncation radius parameter shrinks with peak height: epsilon0 - epsilon1 * nu
+    assert np.all(np.diff(model._get_dm_eps(masses, 0.8, cosmo)) < 0)
+
+    # Relaxation amplitudes evolve linearly with redshift: q_i + nu_qi * z
+    relaxed = bfg.Profiles.Schneider25.CollisionlessMatter(**_fast(bpar_S25))
+    q0, q1, q2 = relaxed._get_Qis(masses, 0.5, cosmo)
+    assert (q0, q1, q2) == pytest.approx((bpar_S25["q0"], bpar_S25["q1"] + bpar_S25["nu_q1"], bpar_S25["q2"]))
+
+    # The inner gas contains exactly f_iga times the total mass over the integration range
+    inner_gas = bfg.Profiles.Schneider25.InnerGas(**{**_fast(bpar_S25), "r_steps": 4000})
+    radii = np.geomspace(inner_gas.r_min_int, inner_gas.r_max_int, 4000)
+    gas_mass = np.trapz(4 * np.pi * radii**2 * inner_gas.real(cosmo, radii, masses, 0.8), radii)
+    _, f_iga = inner_gas._get_gas_frac(masses, 0.8, cosmo)
+    dark_matter = bfg.Profiles.Schneider25.DarkMatter(**_fast(bpar_S25))
+    dark_matter.cutoff = 1e3
+    total_mass = np.trapz(4 * np.pi * radii**2 * dark_matter.real(cosmo, radii, masses, 0.8), radii)
+    np.testing.assert_allclose(gas_mass, f_iga * total_mass, rtol=2e-2)
 
 
 def test_arico_bound_gas_truncates_at_its_own_radius(cosmo):
