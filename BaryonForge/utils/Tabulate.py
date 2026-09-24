@@ -92,9 +92,9 @@ def _get_parameter(obj, key):
     
     Notes
     -----
-    - This function checks attributes of the given object. The first attribute that matches the specified `key`,
-      will have its value pulled and returned. If an attribute is an instance of `HaloProfile`, the function calls itself
-      recursively to check for the key in that profile and pull the values.
+    - This function checks attributes of the given object. If the object itself has the attribute `key`, its value
+      is returned. Otherwise, for every attribute that is an instance of `HaloProfile`, the function calls itself
+      recursively to check for the key in that profile, and returns the first value found.
     See Also
     --------
     `getattr` : Built-in function used to get the attribute of an object.
@@ -109,11 +109,14 @@ def _get_parameter_recursive(obj, key, seen):
     if id(obj) in seen: return _NOT_FOUND
     seen.add(id(obj))
 
+    #The object's own attribute takes precedence over those of its sub-profiles. Otherwise
+    #the alphabetical order of dir() decides, eg. DarkMatterBaryon.cutoff would be read from
+    #its CollisionlessMatter's sub-profiles (which have their cutoff lifted to 1000).
     obj_keys = dir(obj)
+    if key in obj_keys:
+        return getattr(obj, key)
     for k in obj_keys:
-        if k == key:
-            return getattr(obj, key)
-        elif isinstance(getattr(obj, k), (ccl.halos.profiles.HaloProfile,)):
+        if isinstance(getattr(obj, k), (ccl.halos.profiles.HaloProfile,)):
             #Keep searching if this sub-profile does not have the key
             res = _get_parameter_recursive(getattr(obj, k), key, seen)
             if res is not _NOT_FOUND: return res

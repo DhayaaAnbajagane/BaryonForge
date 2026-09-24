@@ -24,6 +24,7 @@ Test index:
     test_parameter_helpers_reach_nested_profiles: checks nested parameter helpers.
     test_fft_parameter_merging_and_pchip_edge_cases: checks numerical utility boundaries.
     test_get_parameter_searches_all_nested_profiles: checks nested lookup past unrelated profiles.
+    test_get_parameter_prefers_own_attributes: checks wrappers inherit the outer profile's cutoff.
     test_self_referencing_profiles_do_not_recurse_forever: checks tSZ wrappers of non-S19 pressures.
     test_wrapping_preserves_inner_fft_precision: checks wrappers keep custom FFTLog settings.
     test_comoving_to_physical_fourier_scaling: checks the scale-factor power of the Fourier profile.
@@ -40,6 +41,8 @@ Test index:
     test_simple_array_cache_returns_copies: checks cached outputs cannot be modified in place.
     test_truncated_fourier_matches_direct_transform: checks the Fourier transform of truncated profiles.
     test_projection_at_zero_radius: checks projected profiles at r = 0.
+    test_projection_resolves_the_cutoff_edge: checks background terms projected up to the 3D cutoff.
+    test_legacy_projection_is_retained: checks the original real-space projection is still available.
     test_concentration_classes_and_instances: checks c_M_relation accepts classes and instances.
     test_cached_profiles_in_halo_model: checks cached (HOD) profiles inside CCL halo-model calls.
 """
@@ -484,6 +487,19 @@ def test_get_parameter_searches_all_nested_profiles():
     assert _get_parameter(container, "not_a_parameter") is None
 
 
+def test_get_parameter_prefers_own_attributes():
+    # A sub-profile that sorts first alphabetically must not override the outer value
+    container = _Container(ParameterProfile(amplitude=3), LinearProfile(), cutoff=20)
+    container.Alpha.cutoff = 1000
+    assert _get_parameter(container, "cutoff") == 20
+
+    parameters = {**bpar_S19, "r_steps": 64, "cutoff": 20, "proj_cutoff": 20}
+    dark_matter_baryon = bfg.Profiles.Schneider19.DarkMatterBaryon(**parameters)
+    two_halo = bfg.Profiles.Schneider19.TwoHalo(**parameters)
+    assert (dark_matter_baryon - two_halo).cutoff == 20
+    assert ConvolvedProfile(dark_matter_baryon, HealPixel(64)).cutoff == 20
+
+
 def test_self_referencing_profiles_do_not_recurse_forever(cosmo):
     # Pressure models without a `prof4params` attribute make ThermalSZ point
     # `prof4params` at itself. Wrapping and setting parameters must still work.
@@ -789,6 +805,42 @@ def test_projection_at_zero_radius(cosmo):
     result = gas.projected(cosmo, np.array([0.0, 1e-4, 0.1]), 1.0e14, 0.8)
     assert np.all(np.isfinite(result))
     assert result[0] == pytest.approx(result[1], rel=1e-3)
+
+
+class _BackgroundWithEdge(BaseBFGProfiles):
+    """Constant density with the (0.5 Mpc wide) exponential cutoff used by the two-halo terms."""
+
+    def _real(self, cosmo, r, M, a):
+        r_use = np.atleast_1d(r)
+        m_use = np.atleast_1d(M)
+        result = np.ones((m_use.size, 1)) / (1 + np.exp(2 * (r_use[None, :] - self.cutoff)))
+        if np.ndim(r) == 0:
+            result = np.squeeze(result, axis=-1)
+        if np.ndim(M) == 0:
+            result = np.squeeze(result, axis=0)
+        return result
+
+
+def test_projection_resolves_the_cutoff_edge(cosmo):
+    # For terms with a mean-density background, the line-of-sight integral is set by the edge
+    # at the cutoff, so the result must not depend on how the grid falls relative to that edge
+    profile = _BackgroundWithEdge(cutoff=250, proj_cutoff=250)
+    radius = 16.0
+    l = np.linspace(0, 250, 500001)
+    direct = 2 * np.trapz(profile._real(cosmo, np.sqrt(l**2 + radius**2), 1.0e14, 0.8), l)
+
+    for radii in (np.geomspace(1e-3, 53.6, 10), np.geomspace(1e-3, 120, 10)):
+        radii = np.sort(np.append(radii, radius))
+        result = profile.projected(cosmo, radii, 1.0e14, 0.8)[radii == radius][0]
+        assert result == pytest.approx(direct, rel=1e-2)
+
+
+def test_legacy_projection_is_retained(cosmo):
+    parameters = {**bpar_S19, "r_steps": 64, "cutoff": 20, "proj_cutoff": 20}
+    gas = bfg.Profiles.Schneider19.Gas(**parameters)
+    radii = np.array([0.01, 0.03, 0.1])
+    legacy = gas._projected_realspace_legacy(cosmo, radii, 1.0e14, 0.8)
+    np.testing.assert_allclose(legacy, gas.projected(cosmo, radii, 1.0e14, 0.8), rtol=5e-2)
 
 
 def test_concentration_classes_and_instances(cosmo):

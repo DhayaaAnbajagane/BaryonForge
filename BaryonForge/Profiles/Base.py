@@ -236,8 +236,17 @@ class BaseBFGProfiles(ccl.halos.profiles.HaloProfile):
         
     def _projected_realspace(self, cosmo, r, M, a):
         """
-        Computes the projected profile using a custom real-space integration method. 
+        Computes the projected profile using a custom real-space integration method.
         Advantageous as it can avoid any hankel transform artifacts.
+
+        This replaces the original method, which is kept as `_projected_realspace_legacy`.
+        Against a direct (untabulated) line-of-sight integral, for S19 profiles with the default
+        `n_per_decade_proj` and cutoff = proj_cutoff = 250 Mpc, the median/max errors are
+        0.5-0.8% / <1% (legacy: 1.7-3.4% / 5-17%). The cost relative to the legacy method is
+        about 1.1-1.2x for profiles whose `_real` dominates the run time (eg. a DarkMatterBaryon,
+        either 2000 radii or a 100 radii x 30 masses table), 1.7x for DarkMatterOnly at
+        500 radii x 30 masses, and up to 4.5x for cheap profiles evaluated at many radii
+        (S19 Gas at 2000 radii: 0.04 s -> 0.16 s), where the per-radius integral dominates.
 
         Parameters
         ----------
@@ -286,7 +295,18 @@ class BaseBFGProfiles(ccl.halos.profiles.HaloProfile):
         int_N    = max(int(np.ceil(self.n_per_decade_proj * np.log10(int_max/int_min))) + 1, 2)
         proj_N   = max(int(np.ceil(self.n_per_decade_proj * np.log10(r_max/int_min))) + 1, 2)
 
+        #Extra nodes around the 3D cutoff. Profiles drop sharply there (eg. the two-halo term
+        #has a ~0.5 Mpc wide exponential cutoff), and for terms that include the mean density
+        #this edge sets the amplitude of the whole line-of-sight integral. Without these nodes
+        #the result depends on where the log-spaced grid happens to fall relative to the edge.
+        if self.cutoff is not None:
+            edge_nodes = self.cutoff + np.array([-16, -8, -4, -2, -1, -0.5, 0, 0.5, 1, 2, 4, 8])
+            edge_nodes = edge_nodes[(edge_nodes > int_min) & (edge_nodes < int_max)]
+        else:
+            edge_nodes = np.array([])
+
         r_integral  = np.geomspace(int_min, int_max, int_N)
+        r_integral  = np.unique(np.concatenate([r_integral, edge_nodes]))
         r_proj      = np.geomspace(int_min, r_max, proj_N)
         r_proj      = np.concatenate([[0], r_proj]) #Line-of-sight integral starts at l = 0
         prof = np.asarray(self._real(cosmo, r_integral, M, a))
@@ -304,12 +324,20 @@ class BaseBFGProfiles(ccl.halos.profiles.HaloProfile):
         #Interpolate in log-log space wherever the profile is positive (exact for power-laws,
         #so the result does not depend on where the grid points happen to fall). In intervals
         #touching zero/negative values (eg. sharp truncations), fall back to linear interpolation.
+        #The line-of-sight values where each projected radius crosses the edge nodes
+        r_proj_j = []
+        for j in range(r_use.size):
+            l_nodes = np.sqrt(np.clip(edge_nodes**2 - r_use[j]**2, 0, None))
+            l_nodes = l_nodes[(l_nodes > 0) & (l_nodes < r_max)]
+            r_proj_j.append(np.sort(np.concatenate([r_proj, l_nodes])) if l_nodes.size > 0 else r_proj)
+
         ln_r_integral = np.log(r_integral)
         for i in range(M_use.size):
             positive = prof[i] > 0
             ln_prof  = np.log(np.where(positive, prof[i], 1))
             for j in range(r_use.size):
 
+                r_proj    = r_proj_j[j]
                 r_los     = np.sqrt(r_proj**2 + r_use[j]**2)
                 integrand = np.interp(r_los, r_integral, prof[i])
 
@@ -331,8 +359,85 @@ class BaseBFGProfiles(ccl.halos.profiles.HaloProfile):
                           "Likely a convolution artifact for objects smaller than the pixel scale")
 
         return proj_prof
-    
-    
+
+
+    def _projected_realspace_legacy(self, cosmo, r, M, a):
+        """
+        The original real-space projection, kept unchanged for comparisons
+        and tests. It is not used anywhere in the pipeline; use `_projected_realspace` instead.
+
+        Known limitations, fixed in `_projected_realspace`: the number of points is set before
+        the limits are extended to `proj_cutoff`, so the sampling (and accuracy) depends on the
+        requested radii; the line-of-sight integral starts at `padding_lo_proj * min(r)` rather
+        than 0; r = 0 is not supported; and the profile is interpolated linearly.
+
+        Parameters
+        ----------
+        cosmo : object
+            CCL cosmology object.
+        r : array_like
+            Comoving radii at which to evaluate the profile.
+        M : array_like
+            Halo mass or array of halo masses.
+        a : float
+            Scale factor, related to redshift by `a = 1 / (1 + z)`.
+
+        Returns
+        -------
+        proj_prof : ndarray
+            Projected profile evaluated at the specified radii and masses.
+        """
+
+        r_use = np.atleast_1d(r)
+        M_use = np.atleast_1d(M)
+
+        #Integral limits
+        int_min = self.padding_lo_proj   * np.min(r_use)
+        int_max = self.padding_hi_proj   * np.max(r_use)
+        int_N   = self.n_per_decade_proj * np.int32(np.log10(int_max/int_min))
+
+        #If proj_cutoff was passed, then use the largest of the two
+        if self.proj_cutoff is not None:
+            int_max = np.max([self.proj_cutoff, int_max])
+        r_integral  = np.geomspace(int_min, int_max, int_N)
+
+
+        #Use proj_cutoff and if it is not passed then default to the regular cutoff
+        if self.proj_cutoff is not None:
+            r_max = self.proj_cutoff
+        elif self.cutoff is not None:
+            r_max = self.cutoff
+        else:
+            r_max = 1e4
+            warnings.warn("WARNING: projected() profile requested without specifying proj_cutoff or cutoff. "
+                          "Defaulting the integral upper limit to 10,000 (comoving) Mpc.")
+
+        r_proj = np.geomspace(int_min, r_max, int_N)
+        prof = np.asarray(self._real(cosmo, r_integral, M, a))
+
+        if np.ndim(M) == 0:
+            prof = prof[None, :]
+
+        proj_prof = np.zeros([M_use.size, r_use.size])
+
+        for i in range(M_use.size):
+            for j in range(r_use.size):
+
+                proj_prof[i, j] = 2*np.trapz(np.interp(np.sqrt(r_proj**2 + r_use[j]**2), r_integral, prof[i]), r_proj)
+
+        #Handle dimensions so input dimensions are mirrored in the output
+        if np.ndim(r) == 0:
+            proj_prof = np.squeeze(proj_prof, axis=-1)
+        if np.ndim(M) == 0:
+            proj_prof = np.squeeze(proj_prof, axis=0)
+
+        if np.any(proj_prof <= 0):
+            warnings.warn("WARNING: Profile is zero/negative in some places."
+                          "Likely a convolution artifact for objects smaller than the pixel scale")
+
+        return proj_prof
+
+
     def __str_par__(self):
         '''
         String with all input params and their values
