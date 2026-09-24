@@ -12,10 +12,12 @@ class Pressure(ccl.halos.profiles.HaloProfile):
     Class for implementing the Battaglia pressure profile using CCL's halo profile framework.
 
     This class computes the pressure profile of halos using the `Battaglia et al. (2012) <https://arxiv.org/pdf/1109.3711>`_ model. 
-    The model is based on numerical simulations and provides a way to calculate the electron 
-    pressure profile in galaxy clusters, which is useful for studying the thermal Sunyaev-Zel'dovich 
+    The model is based on numerical simulations and provides a way to calculate the thermal gas
+    pressure profile in galaxy clusters, which is useful for studying the thermal Sunyaev-Zel'dovich
     effect and other astrophysical phenomena. The final profile is in units of comoving
     volume. Use a factor of 1/a^3 (not 1/a^4) to convert to physical pressure.
+    This is the *gas* pressure; `ElectronPressure` gives the electron pressure. Pass this class
+    (not `ElectronPressure`) to `ThermalSZ`, which converts to electron pressure itself.
 
     Inherits from
     -------------
@@ -189,8 +191,9 @@ class ElectronPressure(Pressure):
     """
     Computes the electron pressure profile based on the Battaglia et al. (2012) model.
 
-    This class extends `BattagliaPressure` by scaling the gas pressure profile 
-    to electron pressure using a predefined conversion factor.
+    This class extends `BattagliaPressure` by scaling the gas pressure profile
+    to electron pressure using a predefined conversion factor. Do not pass this class to
+    `ThermalSZ`, which already applies the conversion (use `Pressure` there).
 
     Inherits from
     -------------

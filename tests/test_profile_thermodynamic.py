@@ -7,7 +7,7 @@ needed; no full tabulated profile is generated here.
 
 Test index:
     test_pressure_temperature_and_dmb_construct: checks pressure/temperature wiring.
-    test_temperature_rejects_pressure_keyword: checks Temperature only takes ``thermalpressure``.
+    test_temperature_rejects_pressure_keyword: checks Temperature and ThermalSZ only take ``thermalpressure``.
 """
 
 import pytest
@@ -154,3 +154,8 @@ def test_temperature_rejects_pressure_keyword():
     assert temperature.Pressure is pressure
     with pytest.raises(TypeError, match="thermalpressure"):
         thermo.Temperature(pressure=pressure, gasnumberdensity=temperature.GasNumberDensity)
+
+    # Same for ThermalSZ, whose input is also the thermal (gas) pressure
+    assert thermo.ThermalSZ(thermalpressure=pressure).Pressure is pressure
+    with pytest.raises(TypeError, match="thermalpressure"):
+        thermo.ThermalSZ(pressure=pressure)

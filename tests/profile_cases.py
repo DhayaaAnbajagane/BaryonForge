@@ -223,7 +223,7 @@ def _thermodynamic(name):
         return temperature
     if name == "thermal_sz":
         return bfg.Profiles.Thermodynamic.ThermalSZ(
-            pressure=pressure, **parameters
+            thermalpressure=pressure, **parameters
         )
     if name == "metallicity":
         return bfg.Profiles.Thermodynamic.Metallicity(

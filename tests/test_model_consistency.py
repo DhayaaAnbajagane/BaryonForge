@@ -167,7 +167,7 @@ def _composite_profiles():
         "S25 SatelliteStars": bfg.Profiles.Schneider25.SatelliteStars(**_fast(bpar_S25)),
         "A20 SatelliteStars": bfg.Profiles.Arico20.SatelliteStars(**_fast(bpar_A20)),
         "M20 Pressure": bfg.Profiles.Mead20.Pressure(**mead),
-        "ThermalSZ": bfg.Profiles.ThermalSZ(pressure=bfg.Profiles.Mead20.Pressure(**mead), **mead),
+        "ThermalSZ": bfg.Profiles.ThermalSZ(thermalpressure=bfg.Profiles.Mead20.Pressure(**mead), **mead),
     }
 
 

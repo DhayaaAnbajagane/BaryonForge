@@ -455,6 +455,7 @@ class ElectronPressure(Pressure):
     profile from the total gas pressure. The conversion factor is 
     \( P_{\\text{e}} = P_{\\text{th}} \\times P_{\\text{th-to-Pe}} \), where 
     \( P_{\\text{th-to-Pe}} = (4 - 2Y)/(8 - 5Y), with Y = 0.24\).
+    Do not pass this class to `ThermalSZ`, which already applies the conversion (use `Pressure` there).
 
 
     Inherits from
@@ -706,7 +707,7 @@ class ThermalSZ(BaseThermodynamicProfile):
     is represented by the Compton-y parameter, which is proportional to the line-of-sight 
     integral of the electron pressure.
 
-    In practice, this scale uses the `projected` method of the input `pressure` object.
+    In practice, this scale uses the `projected` method of the input `thermalpressure` object.
     It accounts for the right units, to provide a dimensionless compton-y parameter.
 
     Inherits from
@@ -715,8 +716,11 @@ class ThermalSZ(BaseThermodynamicProfile):
 
     Parameters
     ----------
-    pressure : Pressure, optional
-        An instance of the `Pressure` class defining the thermal gas pressure profile.
+    thermalpressure : Pressure, optional
+        The thermal *gas* pressure profile (eg. `Pressure`, or the model-specific pressure
+        classes of Arico20, Mead20 and Battaglia). Do *not* pass an electron pressure
+        (eg. `ElectronPressure`): the conversion from gas to electron pressure is applied
+        internally, via `Pgas_to_Pe`, so it would be applied twice.
         If not provided, a default `Pressure` object is created using `kwargs`. Pass the
         pressure in the usual BaryonForge comoving-volume convention (i.e. `P_phys * a^3`,
         which is what every `Pressure` class in the package returns). Do *not* pre-scale
@@ -770,9 +774,14 @@ class ThermalSZ(BaseThermodynamicProfile):
     """
     
     
-    def __init__(self, pressure = None, **kwargs):
-        
-        self.Pressure = pressure
+    def __init__(self, thermalpressure = None, **kwargs):
+
+        #Named `thermalpressure` so it is clear an electron pressure must not be passed.
+        #Unknown keywords would otherwise be swallowed by **kwargs.
+        if 'pressure' in kwargs:
+            raise TypeError("ThermalSZ takes the thermal gas pressure as `thermalpressure = ...`, not `pressure = ...`")
+
+        self.Pressure = thermalpressure
         if self.Pressure is None: self.Pressure = Pressure(**kwargs)
 
         super().__init__(**kwargs)
