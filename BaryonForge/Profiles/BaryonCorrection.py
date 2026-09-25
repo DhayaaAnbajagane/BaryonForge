@@ -137,6 +137,44 @@ class BaryonificationClass(object):
         raise NotImplementedError("Implement a get_masses() method first")
 
 
+    def _enclosed_mass(self, density, r, M, a, prefactor, power):
+        """
+        Enclosed mass, `prefactor * int density(r') r'^power dln r'`, evaluated at radii `r`.
+        Used by `get_masses` with `density = model.real, 4pi, 3` (3D) or
+        `density = model.projected, 2pi, 2` (2D). The output has shape (len(M), len(r)),
+        or (len(r),) if M is a scalar.
+        """
+
+        #Make sure the min/max does not mess up the integral
+        #Adding some 20% buffer just in case
+        r_min = np.min([np.min(r), self.r_min_int])
+        r_max = np.max([np.max(r), self.r_max_int])
+        r_int = np.geomspace(r_min/1.2, r_max*1.2, self.N_int)
+
+        dlnr  = np.log(r_int[1]/r_int[0])
+        rho   = density(self.cosmo, r_int, M, a)
+        rho   = np.where(rho < 0, 0, rho) #Enforce non-zero densities
+
+        if np.ndim(M) == 0: rho = rho[None, :]
+
+        intgd = prefactor*r_int**power * rho * dlnr
+        M_enc = integrate.cumulative_simpson(intgd, axis = -1, initial = 0) + intgd[:, [0]]
+        lnr   = np.log(r)
+
+        M_f   = np.zeros([M_enc.shape[0], r.size])
+
+        #Remove datapoints in profile where rho == 0 and then just interpolate
+        #across them. This helps deal with ringing profiles due to
+        #fourier space issues, where profile could go negative sometimes
+        for M_i in range(M_enc.shape[0]):
+            Mask     = (rho[M_i] > 0) & (np.isfinite(M_enc[M_i])) #Keep only finite points, and ones with increasing density
+            M_f[M_i] = np.exp( interpolate.PchipInterpolator(np.log(r_int)[Mask], np.log(M_enc[M_i])[Mask], extrapolate = False)(lnr) )
+
+        if np.ndim(M) == 0: M_f = np.squeeze(M_f, axis = 0)
+
+        return M_f
+
+
     def setup_interpolator(self, 
                            z_min = 1e-2, z_max = 5, N_samples_z = 30, z_linear_sampling = False, 
                            M_min = 1e12, M_max = 1e16, N_samples_Mass = 30, 
@@ -405,12 +443,8 @@ class BaryonificationClass(object):
             
             #If Rdelta sampling, the sample in r/Rdelta not r.
             #The table would have been constructed appropriately
-            if not self.Rdelta_sampling:
-                p_in     = tuple([z_in, M_in, r_in] + k_in)
-                displ[i] = table(p_in)
-            else:
-                p_in     = tuple([z_in, M_in, r_in - np.log(R)] + k_in)
-                displ[i] = table(p_in)
+            r_tab_in = r_in - np.log(R) if self.Rdelta_sampling else r_in
+            displ[i] = table(tuple([z_in, M_in, r_tab_in] + k_in))
             
             inside   = (r < self.epsilon_max*R)
             displ[i] = np.where(inside, displ[i], 0) #Set large-scale displacements to 0
@@ -556,35 +590,8 @@ class Baryonification3D(BaryonificationClass):
         >>> a = 0.8  # Scale factor corresponding to redshift z
         >>> mass_profile = baryon_model.get_masses(baryon_model.DMO, r, M, a)
         """
-        
-        #Make sure the min/max does not mess up the integral
-        #Adding some 20% buffer just in case
-        r_min = np.min([np.min(r), self.r_min_int])
-        r_max = np.max([np.max(r), self.r_max_int])
-        r_int = np.geomspace(r_min/1.2, r_max*1.2, self.N_int)
-        
-        dlnr  = np.log(r_int[1]/r_int[0])
-        rho   = model.real(self.cosmo, r_int, M, a)
-        rho   = np.where(rho < 0, 0, rho) #Enforce non-zero densities
-        
-        if isinstance(M, (float, int) ): rho = rho[None, :]
-            
-        intgd = 4*np.pi*r_int**3 * rho * dlnr
-        M_enc = integrate.cumulative_simpson(intgd, axis = -1, initial = 0) + intgd[:, [0]]
-        lnr   = np.log(r)
-        
-        M_f   = np.zeros([M_enc.shape[0], r.size])
-        
-        #Remove datapoints in profile where rho == 0 and then just interpolate
-        #across them. This helps deal with ringing profiles due to 
-        #fourier space issues, where profile could go negative sometimes
-        for M_i in range(M_enc.shape[0]):
-            Mask     = (rho[M_i] > 0) & (np.isfinite(M_enc[M_i])) #Keep only finite points, and ones with increasing density
-            M_f[M_i] = np.exp( interpolate.PchipInterpolator(np.log(r_int)[Mask], np.log(M_enc[M_i])[Mask], extrapolate = False)(lnr) )
-        
-        if isinstance(M, (float, int) ): M_f = np.squeeze(M_f, axis = 0)
-            
-        return M_f
+
+        return self._enclosed_mass(model.real, r, M, a, 4*np.pi, 3)
 
 
 class Baryonification2D(BaryonificationClass):
@@ -672,32 +679,5 @@ class Baryonification2D(BaryonificationClass):
         >>> a = 0.5  # Scale factor corresponding to redshift z
         >>> mass_profile = baryon_model.get_masses(baryon_model.DMO, r, M, a)
         """
-        
-        #Make sure the min/max does not mess up the integral
-        #Adding some 20% buffer just in case
-        r_min = np.min([np.min(r), self.r_min_int])
-        r_max = np.max([np.max(r), self.r_max_int])
-        r_int = np.geomspace(r_min/1.2, r_max*1.2, self.N_int)
-        
 
-        dlnr  = np.log(r_int[1]/r_int[0])
-        Sigma = model.projected(self.cosmo, r_int, M, a) 
-        Sigma = np.where(Sigma < 0, 0, Sigma) #Enforce non-zero densities
-        
-        if isinstance(M, (float, int) ): Sigma = Sigma[None, :]
-        
-        intgd = 2*np.pi*r_int**2 * Sigma * dlnr
-        M_enc = integrate.cumulative_simpson(intgd, axis = -1, initial = 0) + intgd[:, [0]]
-        lnr   = np.log(r)
-        
-        M_f  = np.zeros([M_enc.shape[0], r.size])
-        #Remove datapoints in profile where Sigma == 0 and then just interpolate
-        #across them. This helps deal with ringing profiles due to 
-        #fourier space issues, where profile could go negative sometimes
-        for M_i in range(M_enc.shape[0]):
-            Mask     = (Sigma[M_i] > 0) & (np.isfinite(M_enc[M_i])) #Keep only finite points, and ones with increasing density
-            M_f[M_i] = np.exp( interpolate.PchipInterpolator(np.log(r_int)[Mask], np.log(M_enc[M_i])[Mask], extrapolate = False)(lnr) )
-        
-        if isinstance(M, (float, int) ): M_f = np.squeeze(M_f, axis = 0)
-            
-        return M_f
+        return self._enclosed_mass(model.projected, r, M, a, 2*np.pi, 2)

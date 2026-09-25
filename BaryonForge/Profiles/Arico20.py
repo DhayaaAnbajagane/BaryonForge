@@ -196,39 +196,29 @@ class AricoProfiles(Base.BaseBFGProfiles):
 
     def _get_gas_frac(self, M, a, cosmo):
         """
-        Compute the gas fraction as a function of halo mass and redshift.
+        Compute the bound, reaccreted and ejected gas fractions as a function of halo mass.
 
         Parameters
         ----------
         M : array_like
             Halo masses, in units of solar masses.
-        a : array_like
-            Redshift values corresponding to the input halo masses.
-        satellite : bool, optional
-            If True, modifies the stellar fraction parameters for satellite galaxies. 
-            Default is False.
+        a : float
+            Scale factor.
+        cosmo : ccl.Cosmology
+            Cosmology, used for the cosmic baryon fraction.
 
         Returns
         -------
-        fCG : array_like
-            The computed stellar fraction for each input halo mass and redshift.
+        f_bg, f_rg, f_eg : array_like
+            The bound, reaccreted and ejected gas fractions.
 
         Notes
         -----
-        - The model parameters are derived from the fitting functions in Behroozi et al. (2013) 
-        and include terms for redshift evolution and halo mass dependence.
-        - For satellite galaxies, all parameters are adjusted using a scaling factor, `alpha_sat`.
-        - The stellar fraction is computed as:
-
-        .. math::
-
-            f_{\\text{CG}} = \epsilon \\cdot \frac{M_1}{M} 
-            \\cdot 10^{g(x) - g(0)}
-
-        where:
-        - \( x = \log_{10}(M / M_1) \)
-        - \( g(x) \) is a complex function of \( x \), \(\alpha\), \(\delta\), and \(\gamma\).
-        - \(\epsilon\), \(M_1\), \(\alpha\), \(\delta\), and \(\gamma\) are redshift-dependent parameters.
+        With the gas fraction :math:`f_{\\rm gas} = f_{\\rm bar} - f_\\star`, the halo gas is
+        :math:`f_{\\rm hg} = f_{\\rm gas} / (1 + (M_c/M)^\\beta)` and the ejected gas is
+        :math:`f_{\\rm eg} = f_{\\rm gas} - f_{\\rm hg}`. The reaccreted gas is
+        :math:`f_{\\rm rg} = f_{\\rm eg} / (1 + (M_r/M)^{\\beta_r})`, capped at :math:`f_{\\rm hg}`,
+        and the bound gas is :math:`f_{\\rm bg} = f_{\\rm hg} - f_{\\rm rg}`.
         """
 
         f_cg  = self.get_f_star_cen(M, a, cosmo)
@@ -250,18 +240,6 @@ class AricoProfiles(Base.BaseBFGProfiles):
     def get_f_gas(self, M, a, cosmo):
         f = self._get_gas_frac(M, a, cosmo)
         return f[0] + f[1] + f[2]
-    
-
-    def __str_par__(self):
-        '''
-        String with all input params and their values
-        '''
-        
-        string = f"("
-        for m in self.model_param_names:
-            string += f"{m} = {self.__dict__[m]}, "
-        string = string[:-2] + ')'
-        return string
 
 
 class DarkMatter(AricoProfiles):
@@ -668,9 +646,6 @@ class ReaccretedGas(AricoProfiles):
         t3   = -2 * np.pi * (R_rg**2 + S_rg**2) * special.erf((R_rg - R) / (np.sqrt(2) * S_rg))
         Norm = t1 * S_rg + t2 + t3
 
-        arg   = (r_use[None, :] - self.cutoff)
-        arg   = np.where(arg > 30, np.inf, arg) #This is to prevent an overflow in the exponential
-        kfac  = 1/( 1 + np.exp(2*arg) ) #Extra exponential cutoff
         prof  = 1/np.sqrt(2*np.pi*S_rg**2) * np.exp(-np.power((r_use - R_rg)/S_rg, 2)/2)
         prof *= f_rg*M_use[:, None]/Norm
         prof  = np.where(r_use[None, :] <= R, prof, 0)
@@ -1223,8 +1198,7 @@ class NonThermalFrac(AricoProfiles):
         A, b, c, d, e, f = 0.495, 0.719, 1.417,-0.166, 0.265, -2.116 #Values from Green20
         A    = self.A_nt * np.power(1 + z, self.alpha_nt) #We override the "a" param alone for more flexibility.
         nth  = 1 - A * (1 + np.exp(-(x/b)**c)) * (nu_M/4.1)**(d/(1 + (x/e)**f))
-        nth  = np.clip(nth, 0, 1)
-        prof = nth #Rename just for consistency sake
+        prof = np.clip(nth, 0, 1)
         
         #Handle dimensions so input dimensions are mirrored in the output
         if np.ndim(r) == 0:

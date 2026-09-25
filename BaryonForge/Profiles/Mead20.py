@@ -120,8 +120,6 @@ class MeadProfiles(Base.BaseBFGProfiles):
     def get_f_star_sat(self, M_use, a, cosmo):
         return self._get_star_frac(M_use, a, cosmo)[2]  
 
-    def _get_gas_params(self): return self.M_0, self.beta
-
     def _get_gas_frac(self, M_use, a, cosmo):
 
         f_str = self.get_f_star(M_use, a, cosmo)
@@ -574,16 +572,6 @@ class GasAddDiffuse(MeadProfiles):
         super().__init__(**kwargs)
         self.BG = BoundGas(**kwargs)
 
-    def update_precision_fftlog(self, **kwargs):
-
-        super().update_precision_fftlog(**kwargs)
-
-        obj_keys = dir(self)
-    
-        for k in obj_keys:
-            if isinstance(getattr(self, k), (ccl.halos.profiles.HaloProfile,)):
-                getattr(self, k).update_precision_fftlog(**kwargs)
-
     def _real(self, cosmo, r, M, a): return self._fftlog_wrap(cosmo, r, M, a, fourier_out=False)
     
     def _fourier(self, cosmo, k, M, a):
@@ -779,40 +767,19 @@ class DarkMatterBaryon(MeadProfiles, S19.DarkMatterBaryon):
 
 class DarkMatterBaryonAddDiffuse(DarkMatterBaryon):
 
+    #Same as DarkMatterBaryon, but the default gas includes the diffuse (ejected) component
     def __init__(self, gas = None, stars = None, collisionlessmatter = None, darkmatter = None, **kwargs):
-        
-        self.Gas   = gas
-        self.Stars = stars
-        self.TwoHalo    = Zeros() #Should not add 2-halo in Mead method
-        self.DarkMatter = darkmatter
-        self.CollisionlessMatter = collisionlessmatter
-        
-        if self.Gas is None:        self.Gas        = GasAddDiffuse(**kwargs)        
-        if self.Stars is None:      self.Stars      = Stars(**kwargs)
-        if self.DarkMatter is None: self.DarkMatter = DarkMatter(**kwargs)
-        if self.CollisionlessMatter is None: self.CollisionlessMatter = CollisionlessMatter(**kwargs)
 
-        MeadProfiles.__init__(self, **kwargs)
+        if gas is None: gas = GasAddDiffuse(**kwargs)
+        super().__init__(gas, stars, collisionlessmatter, darkmatter, **kwargs)
 
 
-    def update_precision_fftlog(self, **kwargs):
-
-        super().update_precision_fftlog(**kwargs)
-
-        obj_keys = dir(self)
-    
-        for k in obj_keys:
-            if isinstance(getattr(self, k), (ccl.halos.profiles.HaloProfile,)):
-                getattr(self, k).update_precision_fftlog(**kwargs)
-
-                
     def _fourier(self, cosmo, k, M, a):
 
-        Factor = 1 #We'd normally compute this as an integral. Assume we defined profiles properly, so F = 1
-
-        prof = (self.CollisionlessMatter.fourier(cosmo, k, M, a) * Factor +
-                self.Stars.fourier(cosmo, k, M, a) * Factor +
-                self.Gas.fourier(cosmo, k, M, a) * Factor +
+        #No normalization factor is needed (unlike S19): the Mead profiles already add up to M
+        prof = (self.CollisionlessMatter.fourier(cosmo, k, M, a) +
+                self.Stars.fourier(cosmo, k, M, a) +
+                self.Gas.fourier(cosmo, k, M, a) +
                 self.TwoHalo.fourier(cosmo, k, M, a))
 
         return prof
@@ -1088,17 +1055,6 @@ class PressureAddDiffuse(MeadProfiles):
                           "Otherwise we will be double-counting the ejected gas. Set ejectedgas = Zeros() in Pressure profile class.")
 
         super().__init__(**kwargs)
-
-
-    def update_precision_fftlog(self, **kwargs):
-
-        super().update_precision_fftlog(**kwargs)
-
-        obj_keys = dir(self)
-    
-        for k in obj_keys:
-            if isinstance(getattr(self, k), (ccl.halos.profiles.HaloProfile,)):
-                getattr(self, k).update_precision_fftlog(**kwargs)
 
     #The real-space profile comes from the Fourier one, as in GasAddDiffuse. Needed by projected().
     def _real(self, cosmo, r, M, a): return self._fftlog_wrap(cosmo, r, M, a, fourier_out=False)

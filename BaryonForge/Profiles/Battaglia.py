@@ -85,10 +85,7 @@ class Pressure(ccl.halos.profiles.HaloProfile):
         if Model_def == '200_AGN':
             self.mdef = ccl.halos.massdef.MassDef(200, 'critical')
 
-        elif Model_def == '500_AGN':
-            self.mdef = ccl.halos.massdef.MassDef(500, 'critical')
-
-        elif Model_def == '500_SH':
+        elif Model_def in ('500_AGN', '500_SH'):
             self.mdef = ccl.halos.massdef.MassDef(500, 'critical')
 
         else:
