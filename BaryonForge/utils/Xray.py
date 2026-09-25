@@ -25,7 +25,7 @@ class EmissivityTable:
         If True, interpret the input points as a full Cartesian product grid
         and use RegularGridInterpolator after validating this.
         If False, use NearestNDInterpolator on the scattered points.
-    regular_method : str, optional
+    regular_grid_method : str, optional
         Interpolation method for RegularGridInterpolator. Default is "linear".
     pad_low_T : bool, optional
         Whether to pad the table so it can handle extremely low astrophysical

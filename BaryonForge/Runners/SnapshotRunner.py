@@ -121,17 +121,7 @@ class DefaultRunnerSnapshot(object):
             An array of distances computed for each pair of points, with periodicity accounted for.
         """
         
-        L = self.ParticleSnapshot.L
-        d = 0
-        
-        for dx in args:
-            
-            dx = np.where(dx > L/2,  dx - L, dx)
-            dx = np.where(dx < -L/2, dx + L, dx)
-            
-            d += dx**2
-            
-        return np.sqrt(d)
+        return np.sqrt(sum(self.enforce_periodicity(dx)**2 for dx in args))
     
     
     def enforce_periodicity(self, dx):
@@ -204,9 +194,9 @@ class BaryonifySnapshot(DefaultRunnerSnapshot):
                               matter_power_spectrum = 'linear')
         cosmo.compute_sigma()
 
-        L = self.ParticleSnapshot.L
-        is2D        = self.ParticleSnapshot.is2D
-        tot_offsets = np.zeros([len(self.ParticleSnapshot.cat), 2 if is2D else 3])
+        L    = self.ParticleSnapshot.L
+        axes = ['x', 'y'] if self.ParticleSnapshot.is2D else ['x', 'y', 'z']
+        tot_offsets = np.zeros([len(self.ParticleSnapshot.cat), len(axes)])
 
         keys = vars(self.model).get('p_keys', []) #Check if model has property keys
 
@@ -219,63 +209,32 @@ class BaryonifySnapshot(DefaultRunnerSnapshot):
         
         for j in tqdm(range(self.HaloNDCatalog.cat.size), desc = 'Baryonifying matter', disable = not self.verbose):
 
-            M_j = self.HaloNDCatalog.cat['M'][j]
-            x_j = self.HaloNDCatalog.cat['x'][j]
-            y_j = self.HaloNDCatalog.cat['y'][j]
-            z_j = self.HaloNDCatalog.cat['z'][j] #THIS IS A CARTESIAN COORDINATE, NOT REDSHIFT
-            o_j = {key : self.HaloNDCatalog.cat[key][j] for key in keys} #Other properties
-            
+            M_j   = self.HaloNDCatalog.cat['M'][j]
+            pos_j = [self.HaloNDCatalog.cat[ax][j] for ax in axes] #CARTESIAN COORDINATES (z is not redshift)
+            o_j   = {key : self.HaloNDCatalog.cat[key][j] for key in keys} #Other properties
+
             a_j = 1/(1 + self.HaloNDCatalog.redshift)
             R_j = self.mass_def.get_radius(cosmo, M_j, a_j) #in physical Mpc
             R_q = self.epsilon_max * R_j/a_j #The radius for querying points, in comoving coords
             R_q = np.clip(R_q, 0, L/2) #Can't query distances more than half box-size.
-            
-            if is2D:
-                
-                inds = self.tree.query_ball_point([x_j, y_j], R_q)
-                dx   = self.ParticleSnapshot.cat['x'][inds] - x_j
-                dy   = self.ParticleSnapshot.cat['y'][inds] - y_j
-                d    = self.compute_distance(dx, dy)
 
-                #A particle exactly at the halo center has no direction. Give it zero displacement.
-                with np.errstate(invalid = 'ignore', divide = 'ignore'):
-                    x_hat = np.where(d > 0, self.enforce_periodicity(dx)/d, 0)
-                    y_hat = np.where(d > 0, self.enforce_periodicity(dy)/d, 0)
+            inds = self.tree.query_ball_point(pos_j, R_q)
+            dxs  = [self.ParticleSnapshot.cat[ax][inds] - p for ax, p in zip(axes, pos_j)]
+            d    = self.compute_distance(*dxs)
 
-                #Compute the displacement needed
-                offset = self.model.displacement(d, M_j, a_j, **o_j)
-                offset = np.where(np.isfinite(offset), offset, 0)
-                tot_offsets[inds] += np.vstack([offset*x_hat, offset*y_hat]).T
-                
-            
-            else:
-                inds = self.tree.query_ball_point([x_j, y_j, z_j], R_q)
-                dx   = self.ParticleSnapshot.cat['x'][inds] - x_j
-                dy   = self.ParticleSnapshot.cat['y'][inds] - y_j
-                dz   = self.ParticleSnapshot.cat['z'][inds] - z_j
-                d    = self.compute_distance(dx, dy, dz)
+            #A particle exactly at the halo center has no direction. Give it zero displacement.
+            with np.errstate(invalid = 'ignore', divide = 'ignore'):
+                hats = [np.where(d > 0, self.enforce_periodicity(dx)/d, 0) for dx in dxs]
 
-                #A particle exactly at the halo center has no direction. Give it zero displacement.
-                with np.errstate(invalid = 'ignore', divide = 'ignore'):
-                    x_hat = np.where(d > 0, self.enforce_periodicity(dx)/d, 0)
-                    y_hat = np.where(d > 0, self.enforce_periodicity(dy)/d, 0)
-                    z_hat = np.where(d > 0, self.enforce_periodicity(dz)/d, 0)
+            #Compute the displacement needed
+            offset = self.model.displacement(d, M_j, a_j, **o_j)
+            offset = np.where(np.isfinite(offset), offset, 0)
+            tot_offsets[inds] += np.vstack([offset*h for h in hats]).T
 
-                #Compute the displacement needed
-                offset = self.model.displacement(d, M_j, a_j, **o_j)
-                offset = np.where(np.isfinite(offset), offset, 0)
-                tot_offsets[inds] += np.vstack([offset*x_hat, offset*y_hat, offset*z_hat]).T
-                
-            
         new_cat = self.ParticleSnapshot.cat.copy()
-        
-        new_cat['x'] += tot_offsets[:, 0]
-        new_cat['y'] += tot_offsets[:, 1]
-        
-        if not is2D: new_cat['z'] += tot_offsets[:, 2]
-            
-        for i in ['x', 'y'] + ([] if self.ParticleSnapshot.is2D else ['z']):
-            
-            new_cat[i]  = np.mod(new_cat[i], L) #Wrap into [0, L), so x == L maps to 0 (as periodic KDTrees expect)
+
+        #Apply the offsets, and wrap into [0, L), so x == L maps to 0 (as periodic KDTrees expect)
+        for i, ax in enumerate(axes):
+            new_cat[ax] = np.mod(new_cat[ax] + tot_offsets[:, i], L)
 
         return new_cat

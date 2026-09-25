@@ -65,7 +65,7 @@ class HaloLightConeCatalog(object):
     
     dec : array-like
         The declination values of the halos. Can be a list, numpy array, or tuple. Declination values 
-        exactly at the poles (±90 degrees) are slightly offset (by 1e-5 arcsec) to avoid singularities.
+        exactly at the poles (±90 degrees) are slightly offset (by 1e-8 degrees) to avoid singularities.
     
     M : array-like
         The mass values of the halos. Can be a list, numpy array, or tuple.
@@ -109,7 +109,7 @@ class HaloLightConeCatalog(object):
         cat    = np.zeros(ra.size, dtype)
 
         if np.any(np.abs(dec) == 90):
-            warnings.warn("Some halos found with declination exactly at the poles. Offsetting these by 4e-5 arcsec")
+            warnings.warn("Some halos found with declination exactly at the poles. Offsetting these by 1e-8 degrees")
             dec = np.clip(dec, -90 + 1e-8, 90 - 1e-8)
         
         cat['ra']  = ra

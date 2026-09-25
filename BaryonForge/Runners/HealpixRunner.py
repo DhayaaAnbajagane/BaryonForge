@@ -451,10 +451,6 @@ class PaintProfilesShell(DefaultRunner):
                    f"the other_params option.")
             assert isinstance(self.model, (ParamTabulatedProfile, BaryonificationClass)), txt
 
-
-        assert self.model is not None, "You must provide a model"
-        Baryons  = self.model
-
         for j in tqdm(range(self.HaloLightConeCatalog.cat.size), desc = 'Painting Profile', disable = not self.verbose):
 
             M_j = self.HaloLightConeCatalog.cat['M'][j]
@@ -482,7 +478,7 @@ class PaintProfilesShell(DefaultRunner):
             r_sep  = np.sqrt(np.sum(diff**2, axis = 1))
 
             #Compute the painted map
-            Paint  = Baryons.projected(cosmo, r_sep/a_j, M_j, a_j, **o_j)
+            Paint  = self.model.projected(cosmo, r_sep/a_j, M_j, a_j, **o_j)
             Paint  = np.where(np.isfinite(Paint), Paint, 0) #Set non-finite values to 0
             
             #Add the pixel area back to the maps if requested by user.

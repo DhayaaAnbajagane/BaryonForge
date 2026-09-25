@@ -366,7 +366,39 @@ class DefaultRunnerGrid(object):
 
         return np.vstack([a.flatten() for a in args]).T
 
-    
+
+    def pick_indices(self, center, width, Npix):
+        """
+        Selects and returns indices around a center point, accounting for periodic boundary conditions.
+
+        This method takes a central index and a width and returns an array of indices around the center,
+        wrapping around if the indices go beyond the boundaries of the grid. This is used to get
+        cutouts around a given halo.
+
+        Parameters
+        ----------
+        center : int
+            The central index around which indices are selected.
+
+        width : int
+            The half-width of the selection range. The method selects indices from `center - width` to `center + width - 1`.
+
+        Npix : int
+            The total number of pixels along one dimension of the grid. Used to wrap indices for periodic boundary conditions.
+
+        Returns
+        -------
+        inds : ndarray
+            An array of selected indices, wrapped around the boundaries if necessary.
+        """
+
+        inds = np.arange(center - width, center + width)
+        inds = np.where((inds) < 0,     inds + Npix, inds)
+        inds = np.where((inds) >= Npix, inds - Npix, inds)
+
+        return inds
+
+
 
 class BaryonifyGrid(DefaultRunnerGrid):
 
@@ -390,39 +422,7 @@ class BaryonifyGrid(DefaultRunnerGrid):
         accounting for periodic boundary conditions.
 
     """
-    
-    
-    def pick_indices(self, center, width, Npix):
-        """
-        Selects and returns indices around a center point, accounting for periodic boundary conditions.
 
-        This method takes a central index and a width and returns an array of indices around the center,
-        wrapping around if the indices go beyond the boundaries of the grid. This is used to get
-        cutouts around a given halo.
-
-        Parameters
-        ----------
-        center : int
-            The central index around which indices are selected.
-
-        width : int
-            The half-width of the selection range. The method selects indices from `center - width` to `center + width`.
-
-        Npix : int
-            The total number of pixels along one dimension of the grid. Used to wrap indices for periodic boundary conditions.
-
-        Returns
-        -------
-        inds : ndarray
-            An array of selected indices, wrapped around the boundaries if necessary.
-        """
-        
-        inds = np.arange(center - width, center + width)
-        inds = np.where((inds) < 0,     inds + Npix, inds)
-        inds = np.where((inds) >= Npix, inds - Npix, inds)
-        
-        return inds
-    
     def process(self):
         """
         Applies baryonification to the gridded map using the halo catalog.
@@ -635,38 +635,7 @@ class PaintProfilesGrid(DefaultRunnerGrid):
         accounting for periodic boundary conditions.
     """
 
-    
-    def pick_indices(self, center, width, Npix):
-        """
-        Selects and returns indices around a center point, accounting for periodic boundary conditions.
 
-        This method takes a central index and a width and returns an array of indices around the center,
-        wrapping around if the indices go beyond the boundaries of the grid.
-
-        Parameters
-        ----------
-        center : int
-            The central index around which indices are selected.
-
-        width : int
-            The half-width of the selection range. The method selects indices from `center - width` to `center + width`.
-
-        Npix : int
-            The total number of pixels along one dimension of the grid. Used to wrap indices for periodic boundary conditions.
-
-        Returns
-        -------
-        inds : ndarray
-            An array of selected indices, wrapped around the boundaries if necessary.
-        """
-        
-        inds = np.arange(center - width, center + width)
-        inds = np.where((inds) < 0,     inds + Npix, inds)
-        inds = np.where((inds) >= Npix, inds - Npix, inds)
-        
-        return inds
-    
-    
     def process(self):
         """
         Applies profile painting to the gridded map using the halo catalog.

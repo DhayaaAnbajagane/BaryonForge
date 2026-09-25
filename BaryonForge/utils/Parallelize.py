@@ -3,7 +3,7 @@ import numpy as np
 
 __all__ = ['SimpleParallel', 'SplitJoinParallel']
 
-from ..Runners import BaryonifyShell, BaryonifyGrid, BaryonifySnapshot, PaintProfilesAnisShell, DefaultRunner
+from ..Runners import BaryonifyShell, PaintProfilesAnisShell, DefaultRunner
 
 class SimpleParallel(object):
     """
@@ -208,7 +208,7 @@ class SplitJoinParallel(object):
         #The anisotropic painter normalizes by the total mass map of *all* halos, so it cannot be split either.
         #The splitting also relies on the HEALPix runner interface (HaloLightConeCatalog, LightconeShell).
         text = f"Runner of type {type(Runner)} is not supported for SplitJoinParallel."
-        assert not isinstance(Runner, (BaryonifyGrid, BaryonifyShell, BaryonifySnapshot, PaintProfilesAnisShell)), text
+        assert not isinstance(Runner, (BaryonifyShell, PaintProfilesAnisShell)), text
         assert isinstance(Runner, DefaultRunner), text + " Only HEALPix (lightcone shell) painting runners are supported."
 
         self.Runner = Runner

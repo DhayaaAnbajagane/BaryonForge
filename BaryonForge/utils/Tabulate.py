@@ -467,20 +467,17 @@ class ParamTabulatedProfile(object):
     
     cosmo : object
         A `ccl.Cosmology` object representing the cosmological parameters.
-    
-    mass_def : object, optional
-        A `ccl.halos.massdef.MassDef` object that defines the mass definition. Default is `MassDef(200, 'critical')`.
 
     Attributes
     ----------
     model : object
         The profile model used for generating tabulated profiles.
-    
+
     cosmo : object
         The cosmology instance used for the profile calculations.
-    
+
     mass_def : object
-        The mass definition used for the profile calculations.
+        The mass definition used for the profile calculations (taken from `model`).
     
     p_keys : list of str
         The list of parameter keys used in the profile model.

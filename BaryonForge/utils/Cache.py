@@ -58,7 +58,7 @@ class SimpleArrayCache:
     maxsize : int, optional
         Maximum number of cached entries to store. The cache evicts the
         least recently used (LRU) entry when the limit is exceeded.
-        Default is 64
+        Default is 32
 
     Notes
     -----
@@ -86,13 +86,8 @@ class SimpleArrayCache:
             if isinstance(a, (int, float, str)):
                 key.append(a)
 
-            elif isinstance(a, (list, tuple)):
-                a = np.array(a)
-                key.append(a.shape)
-                key.append(a.dtype.str)
-                key.append(a.tobytes())
-
-            elif isinstance(a, (np.ndarray)):
+            elif isinstance(a, (list, tuple, np.ndarray)):
+                a = np.asarray(a)
                 key.append(a.shape)
                 key.append(a.dtype.str)
                 key.append(a.tobytes())
