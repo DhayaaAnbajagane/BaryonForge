@@ -265,13 +265,7 @@ class DarkMatter(SchneiderProfiles):
         r_use = np.atleast_1d(r)
         M_use = np.atleast_1d(M)
 
-        if (self.cdelta is None) and (self.c_M_relation is None):
-            c_M_relation = ccl.halos.concentration.ConcentrationDiemer15(mass_def = self.mass_def) #Use the diemer calibration
-        elif self.c_M_relation is not None:
-            c_M_relation = self.c_M_relation
-        else:
-            assert self.cdelta is not None, "Either provide cdelta or a c_M_relation input"
-            c_M_relation = ccl.halos.concentration.ConcentrationConstant(self.cdelta, mass_def = self.mass_def)
+        c_M_relation = self._get_c_M_relation() #Diemer15 unless c_M_relation or cdelta is given
             
         c   = c_M_relation(cosmo, M_use, a)
         c   = np.where(np.isfinite(c), c, 1) #Set default to r_s = R200c if c200c broken (normally for low mass obj in some cosmologies)

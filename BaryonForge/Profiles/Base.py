@@ -506,6 +506,19 @@ class BaseBFGProfiles(ccl.halos.profiles.HaloProfile):
         return 1/( 1 + np.exp(2*arg) )
 
 
+    def _get_c_M_relation(self, default = ccl.halos.concentration.ConcentrationDiemer15):
+        """
+        The concentration-mass relation of the profile: `c_M_relation` if one was given, otherwise a
+        constant `cdelta` if one was given, otherwise the `default` relation (a CCL concentration class).
+        All use this profile's mass definition.
+        """
+
+        if self.c_M_relation is not None: return self.c_M_relation
+        if self.cdelta is not None:       return ccl.halos.concentration.ConcentrationConstant(self.cdelta, mass_def = self.mass_def)
+
+        return default(mass_def = self.mass_def)
+
+
     #Add routines for consistently changing input params across all profiles
     def set_parameter(self, key, value): 
         """

@@ -276,13 +276,7 @@ class DarkMatter(AricoProfiles):
         r_use = np.atleast_1d(r)
         M_use = np.atleast_1d(M)
 
-        if (self.cdelta is None) and (self.c_M_relation is None):
-            c_M_relation = ccl.halos.concentration.ConcentrationDiemer15(mass_def = self.mass_def) #Use the diemer calibration
-        elif self.c_M_relation is not None:
-            c_M_relation = self.c_M_relation
-        else:
-            assert self.cdelta is not None, "Either provide cdelta or a c_M_relation input"
-            c_M_relation = ccl.halos.concentration.ConcentrationConstant(self.cdelta, mass_def = self.mass_def)
+        c_M_relation = self._get_c_M_relation() #Diemer15 unless c_M_relation or cdelta is given
             
         c   = c_M_relation(cosmo, M_use, a)
         c   = np.where(np.isfinite(c), c, 1) #Set default to r_s = R200c if c200c broken (normally for low mass obj in some cosmologies)
@@ -441,13 +435,7 @@ class BoundGasUntruncated(AricoProfiles):
         v = r_use/R_ej
 
         #Now compute the large-scale behavior (which is an NFW profile)
-        if (self.cdelta is None) and (self.c_M_relation is None):
-            c_M_relation = ccl.halos.concentration.ConcentrationDiemer15(mass_def = self.mass_def) #Use the diemer calibration
-        elif self.c_M_relation is not None:
-            c_M_relation = self.c_M_relation
-        else:
-            assert self.cdelta is not None, "Either provide cdelta or a c_M_relation input"
-            c_M_relation = ccl.halos.concentration.ConcentrationConstant(self.cdelta, mass_def = self.mass_def)
+        c_M_relation = self._get_c_M_relation() #Diemer15 unless c_M_relation or cdelta is given
             
         c     = c_M_relation(cosmo, M_use, a)
         c     = np.where(np.isfinite(c), c, 1) #Set default to r_s = R200c if c200c broken (normally for low mass obj in some cosmologies)
@@ -730,13 +718,7 @@ class ModifiedDarkMatter(AricoProfiles):
         r_use = np.atleast_1d(r)
         M_use = np.atleast_1d(M)
 
-        if (self.cdelta is None) and (self.c_M_relation is None):
-            c_M_relation = ccl.halos.concentration.ConcentrationDiemer15(mass_def = self.mass_def) #Use the diemer calibration
-        elif self.c_M_relation is not None:
-            c_M_relation = self.c_M_relation
-        else:
-            assert self.cdelta is not None, "Either provide cdelta or a c_M_relation input"
-            c_M_relation = ccl.halos.concentration.ConcentrationConstant(self.cdelta, mass_def = self.mass_def)
+        c_M_relation = self._get_c_M_relation() #Diemer15 unless c_M_relation or cdelta is given
             
         c   = c_M_relation(cosmo, M_use, a)
         c   = np.where(np.isfinite(c), c, 1) #Set default to r_s = R200c if c200c broken (normally for low mass obj in some cosmologies)
@@ -1084,13 +1066,7 @@ class Pressure(AricoProfiles):
 
         R = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
 
-        if (self.cdelta is None) and (self.c_M_relation is None):
-            c_M_relation = ccl.halos.concentration.ConcentrationDiemer15(mass_def = self.mass_def) #Use the diemer calibration
-        elif self.c_M_relation is not None:
-            c_M_relation = self.c_M_relation
-        else:
-            assert self.cdelta is not None, "Either provide cdelta or a c_M_relation input"
-            c_M_relation = ccl.halos.concentration.ConcentrationConstant(self.cdelta, mass_def = self.mass_def)
+        c_M_relation = self._get_c_M_relation() #Diemer15 unless c_M_relation or cdelta is given
 
         #Get concentration values, and the effective equation of state, Gamma    
         c    = c_M_relation(cosmo, M_use, a)[:, None]
@@ -1342,13 +1318,7 @@ class BoundGasDeprecated(AricoProfiles):
         f_bg  = (f_bar - f_cg) / (1 + np.power(self.M_c/M_use, self.beta))
         f_bg  = f_bg[:, None]
         
-        if (self.cdelta is None) and (self.c_M_relation is None):
-            c_M_relation = ccl.halos.concentration.ConcentrationDiemer15(mass_def = self.mass_def) #Use the diemer calibration
-        elif self.c_M_relation is not None:
-            c_M_relation = self.c_M_relation
-        else:
-            assert self.cdelta is not None, "Either provide cdelta or a c_M_relation input"
-            c_M_relation = ccl.halos.concentration.ConcentrationConstant(self.cdelta, mass_def = self.mass_def)
+        c_M_relation = self._get_c_M_relation() #Diemer15 unless c_M_relation or cdelta is given
             
         c    = c_M_relation(cosmo, M_use, a)
         c    = np.where(np.isfinite(c), c, 1) #Set default to r_s = R200c if c200c broken (normally for low mass obj in some cosmologies)
