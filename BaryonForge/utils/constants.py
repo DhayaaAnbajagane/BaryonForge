@@ -1,4 +1,3 @@
-import numpy as np
 import pyccl as ccl
 
 #Define relevant physical constants

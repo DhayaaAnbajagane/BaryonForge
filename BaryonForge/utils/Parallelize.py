@@ -3,7 +3,7 @@ import numpy as np
 
 __all__ = ['SimpleParallel', 'SplitJoinParallel']
 
-from ..Runners import BaryonifyShell, BaryonifyGrid, BaryonifySnapshot
+from ..Runners import BaryonifyShell, PaintProfilesAnisShell, DefaultRunner
 
 class SimpleParallel(object):
     """
@@ -205,8 +205,11 @@ class SplitJoinParallel(object):
         
         #The SplitJoin runner only works when the final output can be linearly summed across different batches of halos.
         #A painting operation is an ideal use case, while Baryonification is not, so do an explicit check here.
+        #The anisotropic painter normalizes by the total mass map of *all* halos, so it cannot be split either.
+        #The splitting also relies on the HEALPix runner interface (HaloLightConeCatalog, LightconeShell).
         text = f"Runner of type {type(Runner)} is not supported for SplitJoinParallel."
-        assert not isinstance(Runner, (BaryonifyGrid, BaryonifyShell, BaryonifySnapshot)), text
+        assert not isinstance(Runner, (BaryonifyShell, PaintProfilesAnisShell)), text
+        assert isinstance(Runner, DefaultRunner), text + " Only HEALPix (lightcone shell) painting runners are supported."
 
         self.Runner = Runner
         self.seed   = seed
@@ -241,20 +244,21 @@ class SplitJoinParallel(object):
         mass_def = Runner.mass_def
         eps_max  = Runner.epsilon_max
         ellip    = Runner.use_ellipticity
+        pixsize  = Runner.include_pixel_size
         
         #Now split
         
         catalog   = HaloCat.cat
-        Nsplits   = self.njobs
         Ntotal    = len(catalog)
-        Npersplit = int(np.ceil(Ntotal/Nsplits))
+        Npersplit = int(np.ceil(Ntotal/self.njobs))
+        Nsplits   = int(np.ceil(Ntotal/Npersplit)) #Fewer splits than njobs if needed, so no split is empty
 
         #Randomize catalog ordering. This helps optimize the parallelization. Else if 
         #low redshift halos are all the start, then handful of processes will be overburdened 
         #while the rest are just sitting idle.
         HaloCat     = HaloCat[np.random.default_rng(self.seed).choice(Ntotal, size = Ntotal, replace = False)] 
         
-        empty_shell = type(Shell)(map = np.zeros_like(Shell.map), cosmo = cosmo)
+        empty_shell = type(Shell)(map = np.zeros_like(Shell.map), cosmo = cosmo, redshift = Shell.redshift)
         
         Runner_list = []
         for i in range(Nsplits):
@@ -268,7 +272,8 @@ class SplitJoinParallel(object):
             
             #Create a new Runner for just a subset of catalog. Has same model, map size etc.
             #Force verbose to be off as we don't want outputs for each subrun of parallel process.
-            New_Runner = type(Runner)(New_HaloCatalog, empty_shell, eps_max, model, ellip, mass_def, verbose = False)
+            New_Runner = type(Runner)(New_HaloCatalog, empty_shell, eps_max, model, ellip, mass_def,
+                                      include_pixel_size = pixsize, verbose = False)
             
             Runner_list.append(New_Runner)
         
@@ -300,8 +305,8 @@ class SplitJoinParallel(object):
 
         This method uses joblib's Parallel and delayed functions to run each Runner's `process()` method in parallel.
         The outputs are combined by summing them, which is appropriate if the contributions from each runner can
-        be linearly summed. This is ideal for any profile painting tasks, such as `PaintProfilesShell` or
-        `PaintProfilesGrid`.
+        be linearly summed. This is ideal for HEALPix profile painting tasks, such as `PaintProfilesShell`.
+        Grid runners (eg. `PaintProfilesGrid`) and `PaintProfilesAnisShell` are not supported.
 
         Returns
         -------

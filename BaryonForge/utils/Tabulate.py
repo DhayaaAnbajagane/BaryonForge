@@ -55,13 +55,61 @@ def _set_parameter(obj, key, value):
 
     """
 
+    _set_parameter_recursive(obj, key, value, set())
+
+
+def _set_parameter_recursive(obj, key, value, seen):
+
+    #Some profiles hold references to themselves (eg. prof4params = self)
+    #or share sub-profiles, so we track visited objects to avoid infinite recursion
+    if id(obj) in seen: return
+    seen.add(id(obj))
+
     obj_keys = dir(obj)
-    
+
     for k in obj_keys:
         if k == key:
             setattr(obj, key, value)
         elif isinstance(getattr(obj, k), (ccl.halos.profiles.HaloProfile,)):
-            _set_parameter(getattr(obj, k), key, value)
+            _set_parameter_recursive(getattr(obj, k), key, value, seen)
+
+
+def _record_parameters(obj, keys):
+    """
+    Records the current value of every attribute that `_set_parameter(obj, key, ...)` would modify,
+    for each key in `keys`. Pass the output to `_restore_parameters` to undo those modifications.
+
+    Returns
+    -------
+    records : list of (object, str, any)
+        The (sub-)profile, the attribute name, and its current value.
+    """
+
+    records = []
+    for key in keys: _record_parameter_recursive(obj, key, records, set())
+    return records
+
+
+def _record_parameter_recursive(obj, key, records, seen):
+
+    #Same traversal as _set_parameter_recursive
+    if id(obj) in seen: return
+    seen.add(id(obj))
+
+    for k in dir(obj):
+        if k == key:
+            records.append((obj, key, getattr(obj, key)))
+        elif isinstance(getattr(obj, k), (ccl.halos.profiles.HaloProfile,)):
+            _record_parameter_recursive(getattr(obj, k), key, records, seen)
+
+
+def _restore_parameters(records):
+    """Restores the attribute values saved by `_record_parameters`."""
+
+    for obj, key, value in records: setattr(obj, key, value)
+
+
+_NOT_FOUND = object()
 
 def _get_parameter(obj, key):
     """
@@ -79,21 +127,36 @@ def _get_parameter(obj, key):
     
     Notes
     -----
-    - This function checks attributes of the given object. The first attribute that matches the specified `key`,
-      will have its value pulled and returned. If an attribute is an instance of `HaloProfile`, the function calls itself
-      recursively to check for the key in that profile and pull the values.
+    - This function checks attributes of the given object. If the object itself has the attribute `key`, its value
+      is returned. Otherwise, for every attribute that is an instance of `HaloProfile`, the function calls itself
+      recursively to check for the key in that profile, and returns the first value found.
     See Also
     --------
     `getattr` : Built-in function used to get the attribute of an object.
     """
 
+    res = _get_parameter_recursive(obj, key, set())
+    return None if res is _NOT_FOUND else res
+
+
+def _get_parameter_recursive(obj, key, seen):
+
+    if id(obj) in seen: return _NOT_FOUND
+    seen.add(id(obj))
+
+    #The object's own attribute takes precedence over those of its sub-profiles. Otherwise
+    #the alphabetical order of dir() decides, eg. DarkMatterBaryon.cutoff would be read from
+    #its CollisionlessMatter's sub-profiles (which have their cutoff lifted to 1000).
     obj_keys = dir(obj)
-    res      = []
+    if key in obj_keys:
+        return getattr(obj, key)
     for k in obj_keys:
-        if k == key: 
-            return getattr(obj, key)
-        elif isinstance(getattr(obj, k), (ccl.halos.profiles.HaloProfile,)):
-            return _get_parameter(getattr(obj, k), key)
+        if isinstance(getattr(obj, k), (ccl.halos.profiles.HaloProfile,)):
+            #Keep searching if this sub-profile does not have the key
+            res = _get_parameter_recursive(getattr(obj, k), key, seen)
+            if res is not _NOT_FOUND: return res
+
+    return _NOT_FOUND
 
             
 class TabulatedProfile(ccl.halos.profiles.HaloProfile):
@@ -245,7 +308,6 @@ class TabulatedProfile(ccl.halos.profiles.HaloProfile):
         M_range  = np.geomspace(M_min, M_max, N_samples_Mass)
         r        = np.geomspace(R_min, R_max, N_samples_R)
         z_range  = np.linspace(z_min, z_max, N_samples_z) if z_linear_sampling else np.geomspace(z_min, z_max, N_samples_z)
-        dlnr     = np.log(r[1]) - np.log(r[0])
 
         interp3D = np.zeros([z_range.size, M_range.size, r.size])
         interp2D = np.zeros([z_range.size, M_range.size, r.size])
@@ -303,8 +365,6 @@ class TabulatedProfile(ccl.halos.profiles.HaloProfile):
         
         r_use = np.atleast_1d(r)
         M_use = np.atleast_1d(M)
-        a_use = np.atleast_1d(a)
-        z_use = 1/a_use - 1
         
         prof  = np.zeros([M_use.size, r_use.size])
         empty = np.ones_like(r_use)
@@ -407,20 +467,17 @@ class ParamTabulatedProfile(object):
     
     cosmo : object
         A `ccl.Cosmology` object representing the cosmological parameters.
-    
-    mass_def : object, optional
-        A `ccl.halos.massdef.MassDef` object that defines the mass definition. Default is `MassDef(200, 'critical')`.
 
     Attributes
     ----------
     model : object
         The profile model used for generating tabulated profiles.
-    
+
     cosmo : object
         The cosmology instance used for the profile calculations.
-    
+
     mass_def : object
-        The mass definition used for the profile calculations.
+        The mass definition used for the profile calculations (taken from `model`).
     
     p_keys : list of str
         The list of parameter keys used in the profile model.
@@ -537,7 +594,8 @@ class ParamTabulatedProfile(object):
         
         other_params : dict, optional
             A dictionary of other parameters to be tabulated. The keys are parameter names, and the values are
-            arrays of parameter values. Default is an empty dictionary.
+            arrays (or lists) of parameter values. Default is an empty dictionary. The model's parameters are
+            set to these values while tabulating, and restored to their original values afterwards.
         
         verbose : bool, optional
             If `True`, display a progress bar during the tabulation process. Default is `True`.
@@ -547,15 +605,18 @@ class ParamTabulatedProfile(object):
         M_range  = np.geomspace(M_min, M_max, N_samples_Mass)
         r        = np.geomspace(R_min, R_max, N_samples_R)
         z_range  = np.linspace(z_min, z_max, N_samples_z) if z_linear_sampling else np.geomspace(z_min, z_max, N_samples_z)
-        dlnr     = np.log(r[1]) - np.log(r[0])
 
+        other_params = {k : np.atleast_1d(np.asarray(v, dtype = float)) for k, v in other_params.items()} #Allow lists/tuples
         p_keys   = list(other_params.keys()); setattr(self, 'p_keys', p_keys)
         interp3D = np.zeros([z_range.size, M_range.size, r.size] + [other_params[k].size for k in p_keys]) + np.nan
         interp2D = np.zeros([z_range.size, M_range.size, r.size] + [other_params[k].size for k in p_keys]) + np.nan
 
         #If other_params is empty then iterator will be empty and the code still works fine
         iterator = [p for p in product(*[np.arange(other_params[k].size) for k in p_keys])]
-        
+
+        #The loop below changes the model's parameters. Save them, so the model is returned unchanged.
+        original_params = _record_parameters(self.model, p_keys)
+
         #Loop over params to build table
         with tqdm(total = interp3D.size//(M_range.size*r.size), desc = 'Building Table', disable = not verbose) as pbar:
             for j in range(z_range.size):                
@@ -573,7 +634,9 @@ class ParamTabulatedProfile(object):
                     interp3D[index] = self.model.real(self.cosmo, r, M_range, a_j)
                     interp2D[index] = self.model.projected(self.cosmo, r, M_range, a_j)
                     pbar.update(1)
-                    
+
+        _restore_parameters(original_params)
+
 
         input_grid_1 = tuple([np.log(1 + z_range), np.log(M_range), np.log(r)] + [other_params[k] for k in p_keys])
 
@@ -624,14 +687,15 @@ class ParamTabulatedProfile(object):
         
         r_use = np.atleast_1d(r)
         M_use = np.atleast_1d(M)
-        a_use = np.atleast_1d(a)
-        z_use = 1/a_use - 1
         
         prof  = np.zeros([M_use.size, r_use.size])
         empty = np.ones_like(r_use)
         z_in  = np.log(1/a)*empty #This is log(1 + z)
         r_in  = np.log(r_use)
-        k_in  = [kwargs[k] * empty for k in kwargs.keys()]
+        extra = [k for k in kwargs.keys() if k not in self.p_keys]
+        if len(extra) > 0:
+            raise ValueError(f"Parameters {extra} were passed, but the table was only built with {self.p_keys}.")
+        k_in  = [kwargs[k] * empty for k in self.p_keys] #Same order as the table axes, not the kwargs order
         
         for i in range(M_use.size):
             M_in  = np.log(M_use[i])*empty
@@ -743,7 +807,6 @@ class TabulatedCorrelation3D(object):
         
         
         r    = np.geomspace(self.R_range[0], self.R_range[1], self.N_samples)
-        dlnr = np.log(r[1]) - np.log(r[0])
         z_range  = np.linspace(z_min, z_max, N_samples_z)
         
         interp3D = np.zeros([z_range.size, r.size]) + np.NaN
@@ -753,7 +816,7 @@ class TabulatedCorrelation3D(object):
             for j in range(z_range.size):
                 
                 a = 1/(1 + z_range[j])
-                interp3D[j, :] = ccl.correlation_3d(self.cosmo, a, r)
+                interp3D[j, :] = ccl.correlation_3d(self.cosmo, r = r, a = a)
                 
                 pbar.update(1)
         
@@ -769,8 +832,6 @@ class TabulatedCorrelation3D(object):
     def __call__(self, r, a):
         
         r_use = np.atleast_1d(r)
-        a_use = np.atleast_1d(a)
-        z_use = 1/a_use - 1
         
         empty = np.ones_like(r_use)
         z_in  = np.log(1/a)*empty #This is log(1 + z)

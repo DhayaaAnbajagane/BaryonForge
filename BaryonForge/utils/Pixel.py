@@ -1,7 +1,7 @@
 import pyccl as ccl
 import numpy as np, healpy as hp
 from scipy import interpolate, special
-from .Tabulate import _set_parameter
+from .Tabulate import _get_parameter
 from ..Profiles.Base import BaseBFGProfiles
 
 __all__ = ['ConvolvedProfile', 'GridPixelApprox', 'HealPixel', 'NoPix']
@@ -74,8 +74,10 @@ class ConvolvedProfile(BaseBFGProfiles):
         
         self.isHarmonic = Pixel.isHarmonic
 
-        #We just set this to the same as the inputted profile.
-        BaseBFGProfiles.__init__(self, mass_def = Profile.mass_def)
+        #We just set this to the same as the inputted profile, including its cutoffs
+        cutoffs = {k : _get_parameter(Profile, k) for k in ['cutoff', 'proj_cutoff']}
+        cutoffs = {k : v for k, v in cutoffs.items() if v is not None}
+        BaseBFGProfiles.__init__(self, mass_def = Profile.mass_def, **cutoffs)
 
         self.update_precision_fftlog(**self.Profile.precision_fftlog.to_dict())
 
@@ -103,21 +105,16 @@ class ConvolvedProfile(BaseBFGProfiles):
             The attribute or method from the Profile object.
 
         """
-        
-        try:
-            return super().__getattribute__(name)
-        
-        except AttributeError:
-            return getattr(self.Profile, name)
+
+        #Python only calls __getattr__ once the normal lookup has failed
+        return getattr(self.Profile, name)
 
 
     #Need to explicitly set these two methods (to enable pickling)
     #since otherwise the getattr call above leads to infinite recursions.
-    def __getstate__(self): return self.__dict__.copy()    
+    def __getstate__(self): return self.__dict__.copy()
     def __setstate__(self, state): return self.__dict__.update(state)
 
-    def set_parameter(self, key, value): _set_parameter(self, key, value)
-    
     
     def _real(self, cosmo, r, M, a):
         """
@@ -304,9 +301,10 @@ class GridPixelApprox(object):
 
     Notes
     -----
-    - The `beam()` method uses the spherical Bessel function of the first kind (`spherical_jn`) to compute the beam function.
-    - The `real()` and `projected()` methods compute the effective radius from the given pixel size and use this
-      radius in the `beam()` function.
+    - The `beam()` method is the spherical (3D) tophat window, using the spherical Bessel function `spherical_jn`.
+      The `beam_2D()` method is the circular (2D) tophat window, using the Bessel function `j1`.
+    - The `real()` and `projected()` methods compute the volume- and area-equivalent radius from the given
+      pixel size and use this radius in the `beam()` and `beam_2D()` functions, respectively.
     """
     
     isHarmonic = False
@@ -326,47 +324,70 @@ class GridPixelApprox(object):
     
     def beam(self, k, R):
         """
-        Computes the beam function for given wavenumbers and a radius.
+        Computes the (3D) beam function of a spherical tophat, for given wavenumbers and a radius.
 
-        The beam function represents the response of a circular tophat window function and is derived from 
-        the spherical Bessel function of the first kind, \( j_1 \). The beam function \( B(k) \) is calculated 
-        as:
+        The beam function is the Fourier transform of a uniform sphere of radius \( R \), normalized
+        to unity at \( k = 0 \). It is given by the spherical Bessel function of the first kind, \( j_1 \):
 
         .. math::
 
-            B(k) = \\frac{3j_1(kr)}{kr}
-
-        where:
-        
-        - \( k \) is the wavenumber.
-        - \( r = 2R \) is the diameter of the pixel (not the radius).
-        - \( j_1 \) is the spherical Bessel function of the first kind of order one.
-
-        The factor of 2 in the radius calculation arises because the window function is defined for the 
-        diameter rather than the radius.
+            B(k) = \\frac{3j_1(kR)}{kR}
 
         Parameters
         ----------
         k : ndarray
             An array of wavenumbers at which to evaluate the beam function.
-        
+
         R : float
-            The effective radius of the pixel, which depends on the size of the grid's pixel.
+            The radius of the spherical tophat.
 
         Returns
         -------
         beam : ndarray
-            An array of the beam function values corresponding to the input wavenumbers. The output is 
-            calculated as \( \\frac{3j_1(kr)}{kr} \), with special handling to avoid division by zero when 
-            \( kr = 0 \).
+            An array of the beam function values corresponding to the input wavenumbers, with special
+            handling to avoid division by zero when \( kR = 0 \).
 
         """
-        
-        kr = k * (2*R) #Factor of 2 because the window function needs diameter, not radius
+
+        kr = k * R
 
         with np.errstate(invalid = 'ignore', divide = 'ignore'):
             beam = np.where(kr > 0, 3*special.spherical_jn(1, kr)/kr, 1)
-            
+
+        return beam
+
+
+    def beam_2D(self, k, R):
+        """
+        Computes the (2D) beam function of a circular tophat (a disc), for given wavenumbers and a radius.
+
+        The beam function is the 2D Fourier transform of a uniform disc of radius \( R \), normalized
+        to unity at \( k = 0 \). It is given by the Bessel function of the first kind, \( J_1 \):
+
+        .. math::
+
+            B(k) = \\frac{2J_1(kR)}{kR}
+
+        Parameters
+        ----------
+        k : ndarray
+            An array of wavenumbers at which to evaluate the beam function.
+
+        R : float
+            The radius of the disc.
+
+        Returns
+        -------
+        beam : ndarray
+            An array of the beam function values corresponding to the input wavenumbers, with special
+            handling to avoid division by zero when \( kR = 0 \).
+        """
+
+        kr = k * R
+
+        with np.errstate(invalid = 'ignore', divide = 'ignore'):
+            beam = np.where(kr > 0, 2*special.j1(kr)/kr, 1)
+
         return beam
         
         
@@ -413,9 +434,10 @@ class GridPixelApprox(object):
         """
         Computes the projected-space approximation of the pixel window function.
 
-        This method approximates the pixel window function using a circular tophat in projected space. 
-        The effective radius \( R \) is calculated based on the area-equivalent size of the grid's pixel, 
-        assuming a circular shape. The projected-space window function is then computed using this radius.
+        This method approximates the pixel window function using a circular tophat (a disc) in projected space.
+        The effective radius \( R \) is calculated based on the area-equivalent size of the grid's pixel,
+        assuming a circular shape. The projected-space window function is then computed using this radius,
+        and the 2D (disc) window function, \( 2J_1(kR)/(kR) \).
 
         The effective radius \( R \) is given by:
 
@@ -441,13 +463,13 @@ class GridPixelApprox(object):
         - This function approximates the projected-space window function by using a circular tophat model, 
         which simplifies the computation while capturing the essential behavior of the pixel's effect 
         in projected space.
-        - The beam function is calculated by calling the `self.beam()` method, which computes the response 
-        using the spherical Bessel function of the first kind.
+        - The beam function is calculated by calling the `self.beam_2D()` method, which computes the response
+        using the Bessel function of the first kind.
         """
-        
+
         R = np.sqrt(self.size**2 / np.pi)
-        
-        return self.beam(k, R)
+
+        return self.beam_2D(k, R)
             
             
 
@@ -527,8 +549,12 @@ class HealPixel(object):
         Returns a zero array for the real-space window function.
 
         This method indicates that the real-space representation of the HEALPix pixel window function
-        is not supported. It returns a zero array, which will propagate through calculations and help
-        to throw errors when attempting to use real-space profiles.
+        is not supported. It returns a zero array, so the `real()` and `fourier()` methods of a
+        `ConvolvedProfile` using this pixel are identically zero. Note that this does *not* raise an
+        informative error: downstream calculations silently use the zeros, or fail with unrelated
+        errors (eg. `Baryonification3D.setup_interpolator` raises a ValueError from its interpolator).
+        Only use the `projected()` method of profiles convolved with a `HealPixel`. Tabulating such
+        profiles (eg. `TabulatedProfile`) is fine, as long as only the projected table is used.
 
         Parameters
         ----------
@@ -542,7 +568,7 @@ class HealPixel(object):
         """
 
         #Can't use healpix pixel for real-space, so just make the beam 0.
-        #That way the real-space profile will also be 0 and throw errors. 
+        #That way the real-space profile will also be 0 (silently; see docstring).
         return np.zeros_like(k)
         
     
@@ -618,9 +644,6 @@ class NoPix(object):
     isHarmonic = False
     size = 0
 
-    def __init__(self):
-        pass
-        
     def real(self, k):
         return np.ones_like(k)
                 

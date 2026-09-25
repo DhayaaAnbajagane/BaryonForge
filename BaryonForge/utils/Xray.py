@@ -25,7 +25,7 @@ class EmissivityTable:
         If True, interpret the input points as a full Cartesian product grid
         and use RegularGridInterpolator after validating this.
         If False, use NearestNDInterpolator on the scattered points.
-    regular_method : str, optional
+    regular_grid_method : str, optional
         Interpolation method for RegularGridInterpolator. Default is "linear".
     pad_low_T : bool, optional
         Whether to pad the table so it can handle extremely low astrophysical
@@ -43,9 +43,10 @@ class EmissivityTable:
         self.regular_grid_method = regular_grid_method
         self.pad_low_T           = pad_low_T
 
-        T = T.ravel()
-        Z = Z.ravel()
-        a = a.ravel()
+        T = np.asarray(T, dtype = float).ravel()
+        Z = np.asarray(Z, dtype = float).ravel()
+        a = np.asarray(a, dtype = float).ravel()
+        emissivity = np.asarray(emissivity, dtype = float).ravel()
 
         assert T.size > 0, "T must not be empty."
         assert Z.size > 0, "Z must not be empty."
@@ -88,13 +89,24 @@ class EmissivityTable:
         if n_expected != n_points:
             raise ValueError(
                 "regular_grid=True was requested, but the input points do not "
-                "contain a full Cartesian product of the unique T, Z, and E values. "
+                "contain a full Cartesian product of the unique T, Z, and a values. "
                 f"Got {n_points} points, but expected "
                 f"{nT} * {nZ} * {na} = {n_expected}. "
                 "Please provide the entire set of grid points."
             )
 
-        return RegularGridInterpolator((uT, uZ, ua), emissivity, method=self.regular_grid_method, bounds_error=True, fill_value=None,)
+        #Place every input point at its location on the (T, Z, a) grid. This way the
+        #input points can be passed in any order (flat lists, or meshgrids of any indexing).
+        iT = np.searchsorted(uT, logT)
+        iZ = np.searchsorted(uZ, Z)
+        ia = np.searchsorted(ua, a)
+        values = np.full((nT, nZ, na), np.nan)
+        values[iT, iZ, ia] = emissivity
+
+        if np.any(np.isnan(values)):
+            raise ValueError("regular_grid=True was requested, but some (T, Z, a) grid points are duplicated/missing.")
+
+        return RegularGridInterpolator((uT, uZ, ua), values, method=self.regular_grid_method, bounds_error=True, fill_value=None,)
 
 
     def _assert_in_bounds(self, T, Z, a):
@@ -103,28 +115,34 @@ class EmissivityTable:
         assert np.all(a >= 0), "Query a values must be strictly non-negative."
 
         if self.pad_low_T:
-            mask = (T <= self.T_range[1]); assert np.all(mask), f"Some T values ({T[mask]}) are greater than maximum tabulated value {self.T_range[1]}."
+            mask = (T <= self.T_range[1]); assert np.all(mask), f"Some T values ({T[~mask]}) are greater than maximum tabulated value {self.T_range[1]}."
         else:
-            mask = (T >= self.T_range[0]) & (T <= self.T_range[1]); assert np.all(mask), f"Some T values ({T[mask]}) outside tabulated range {self.T_range}."
+            mask = (T >= self.T_range[0]) & (T <= self.T_range[1]); assert np.all(mask), f"Some T values ({T[~mask]}) outside tabulated range {self.T_range}."
 
-        mask = (Z >= self.Z_range[0]) & (Z <= self.Z_range[1]); assert np.all(mask), f"Some Z values ({Z[mask]}) outside tabulated range {self.Z_range}."
-        mask = (a >= self.a_range[0]) & (a <= self.a_range[1]); assert np.all(mask), f"Some a values ({a[mask]}) outside tabulated range {self.a_range}."
-        
-    
+        mask = (Z >= self.Z_range[0]) & (Z <= self.Z_range[1]); assert np.all(mask), f"Some Z values ({Z[~mask]}) outside tabulated range {self.Z_range}."
+        mask = (a >= self.a_range[0]) & (a <= self.a_range[1]); assert np.all(mask), f"Some a values ({a[~mask]}) outside tabulated range {self.a_range}."
+
+
 
     def __call__(self, T, Z, a):
+
+        #Flatten inputs so any shape (eg. (N_mass, N_radius)) is supported, and reshape at the end
+        shape = np.shape(T)
+        T = np.asarray(T, dtype = float).ravel()
+        Z = np.broadcast_to(np.asarray(Z, dtype = float), shape).ravel()
+        a = np.atleast_1d(a).astype(float)
 
         self._assert_in_bounds(T, Z, a)
 
         if self.pad_low_T:
             values = np.zeros_like(T)
             usage  = T >= self.T_range[0]
-            points = np.column_stack([np.log(T[usage]), Z[usage], a * np.ones(usage.sum())])
+            points = np.column_stack([np.log(T[usage]), Z[usage], a[0] * np.ones(usage.sum())])
             tmpout = self.interpolator(points)
             values[usage] = np.exp(tmpout) + self.sentinel_value
         else:
-            points = np.column_stack([np.log(T), Z, a * np.ones_like(Z)])
+            points = np.column_stack([np.log(T), Z, a[0] * np.ones_like(Z)])
             values = self.interpolator(points)
             values = np.exp(values) + self.sentinel_value
 
-        return values
+        return values.reshape(shape)

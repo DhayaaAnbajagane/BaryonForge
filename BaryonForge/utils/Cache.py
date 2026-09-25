@@ -1,8 +1,10 @@
 
+import copy
 import numpy as np
 import pyccl as ccl
 from collections import OrderedDict
 from ..Profiles.Base import BaseBFGProfiles
+from .Tabulate import _get_parameter
 
 __all__ = ['SimpleArrayCache', 'CachedProfile']
 
@@ -14,12 +16,17 @@ class _CachedFunction:
         self.cache = cache
         self.func = func
 
-    def __call__(self, *args):
-        if self.cache.contains(*args):
-            return self.cache.get(*args)
+    def __call__(self, *args, **kwargs):
+        #Keyword arguments (eg. CCL calls get_normalization(cosmo, a, hmc = hmc)) are part of the key
+        key = args + tuple(item for k in sorted(kwargs) for item in (k, kwargs[k]))
 
-        value = self.func(*args)
-        self.cache.set(value, *args)
+        #Always hand out copies, so that callers modifying the output in-place
+        #cannot corrupt the cached value
+        if self.cache.contains(*key):
+            return copy.deepcopy(self.cache.get(*key))
+
+        value = self.func(*args, **kwargs)
+        self.cache.set(copy.deepcopy(value), *key)
         return value
 
 
@@ -42,15 +49,16 @@ class SimpleArrayCache:
 
     When used as a decorator, the cache wraps a function of the form
     ``func(*args)`` and automatically caches its return value based
-    on these arguments. Repeated calls with identical inputs return the
-    cached result without re-evaluating the function.
+    on these arguments. Repeated calls with identical inputs return (a copy of)
+    the cached result without re-evaluating the function. Copies are returned so
+    that in-place modifications of the output cannot corrupt the cache.
 
     Parameters
     ----------
     maxsize : int, optional
         Maximum number of cached entries to store. The cache evicts the
         least recently used (LRU) entry when the limit is exceeded.
-        Default is 64
+        Default is 32
 
     Notes
     -----
@@ -78,13 +86,8 @@ class SimpleArrayCache:
             if isinstance(a, (int, float, str)):
                 key.append(a)
 
-            elif isinstance(a, (list, tuple)):
-                a = np.array(a)
-                key.append(a.shape)
-                key.append(a.dtype.str)
-                key.append(a.tobytes())
-
-            elif isinstance(a, (np.ndarray)):
+            elif isinstance(a, (list, tuple, np.ndarray)):
+                a = np.asarray(a)
                 key.append(a.shape)
                 key.append(a.dtype.str)
                 key.append(a.tobytes())
@@ -143,11 +146,18 @@ class CachedProfile(BaseBFGProfiles):
 
         for m in self.methods:
             setattr(self, m, SimpleArrayCache(self.maxsize)(getattr(self.Profile, m)))
-        
-        #We just set this to the same as the inputted profile.
-        super().__init__(mass_def = self.Profile.mass_def)
 
-        self.update_precision_fftlog(**self.Profile.precision_fftlog.to_dict())
+        #Profile methods that are not cached are forwarded to the input profile directly.
+        #Otherwise, they would be computed by this wrapper with its own (default) settings.
+        for m in ['real', 'projected', 'fourier']:
+            if m not in self.methods: setattr(self, m, getattr(self.Profile, m))
+
+        #We just set this to the same as the inputted profile.
+        cutoffs = {k : _get_parameter(self.Profile, k) for k in ['cutoff', 'proj_cutoff']}
+        cutoffs = {k : v for k, v in cutoffs.items() if v is not None}
+        super().__init__(mass_def = self.Profile.mass_def, **cutoffs)
+
+        ccl.halos.profiles.HaloProfile.update_precision_fftlog(self, **self.Profile.precision_fftlog.to_dict())
 
 
     def __getattr__(self, key):
@@ -187,7 +197,12 @@ class CachedHODProfile(CachedProfile, ccl.halos.profiles.hod.HaloProfileHOD):
         for m in self.methods:
             setattr(self, m, SimpleArrayCache(self.maxsize)(getattr(self.Profile, m)))
         
-        #We just set this to the same as the inputted profile.
-        ccl.halos.profiles.hod.HaloProfileHOD.__init__(self, mass_def = self.Profile.mass_def)
+        #BaseBFGProfiles.__init__ is not run for this class, so set the attributes its properties use
+        self._c_M_relation = None
+        self._use_fftlog_projection = False
 
-        self.update_precision_fftlog(**self.Profile.precision_fftlog.to_dict())
+        #We just set this to the same as the inputted profile (HOD profiles also need a concentration).
+        ccl.halos.profiles.hod.HaloProfileHOD.__init__(self, mass_def = self.Profile.mass_def,
+                                                       concentration = self.Profile.concentration)
+
+        ccl.halos.profiles.HaloProfile.update_precision_fftlog(self, **self.Profile.precision_fftlog.to_dict())

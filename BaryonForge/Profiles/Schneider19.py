@@ -1,9 +1,10 @@
 import numpy as np
 import pyccl as ccl
-from operator import add, mul, sub, truediv, pow, neg, pos, abs
 import warnings
 
 from scipy import interpolate, integrate
+#Not used here, but this is the package's first import and must load `utils` before `Base`
+#(Base -> utils -> Pixel -> Base would otherwise be a circular import). Keep it first.
 from ..utils.Tabulate import _set_parameter
 from .Base import BaseBFGProfiles, hyper_params
 
@@ -264,15 +265,7 @@ class DarkMatter(SchneiderProfiles):
         r_use = np.atleast_1d(r)
         M_use = np.atleast_1d(M)
 
-        z = 1/a - 1
-
-        if (self.cdelta is None) and (self.c_M_relation is None):
-            c_M_relation = ccl.halos.concentration.ConcentrationDiemer15(mass_def = self.mass_def) #Use the diemer calibration
-        elif self.c_M_relation is not None:
-            c_M_relation = self.c_M_relation
-        else:
-            assert self.cdelta is not None, "Either provide cdelta or a c_M_relation input"
-            c_M_relation = ccl.halos.concentration.ConcentrationConstant(self.cdelta, mass_def = self.mass_def)
+        c_M_relation = self._get_c_M_relation() #Diemer15 unless c_M_relation or cdelta is given
             
         c   = c_M_relation(cosmo, M_use, a)
         c   = np.where(np.isfinite(c), c, 1) #Set default to r_s = R200c if c200c broken (normally for low mass obj in some cosmologies)
@@ -287,7 +280,7 @@ class DarkMatter(SchneiderProfiles):
         #The analytic integral doesn't work since we have a truncation radii now.
         #We loop over every halo, instead of vectorizing, since the integral limits
         #now depend on the halo radius. 
-        Normalization = np.zeros_like(M_use)
+        Normalization = np.zeros(M_use.shape) #Float array, even if M is an integer
         for m_i in range(M_use.size):
             r_integral     = np.geomspace(self.r_min_int, R[m_i], self.r_steps)
             prof_integral  = 1/(r_integral/r_s[m_i] * (1 + r_integral/r_s[m_i])**2) * 1/(1 + (r_integral/r_t[m_i])**2)**2
@@ -296,9 +289,7 @@ class DarkMatter(SchneiderProfiles):
         rho_c = M_use/Normalization
         rho_c = rho_c[:, None]
 
-        arg  = (r_use[None, :] - self.cutoff)
-        arg  = np.where(arg > 30, np.inf, arg) #This is to prevent an overflow in the exponential
-        kfac = 1/( 1 + np.exp(2*arg) ) #Extra exponential cutoff
+        kfac = self._soft_cutoff(r_use[None, :]) #Extra exponential cutoff
         prof = rho_c/(r_use/r_s * (1 + r_use/r_s)**2) * 1/(1 + (r_use/r_t)**2)**2 * kfac
         
         #Handle dimensions so input dimensions are mirrored in the output
@@ -370,10 +361,6 @@ class TwoHalo(SchneiderProfiles):
         r_use = np.atleast_1d(r)
         M_use = np.atleast_1d(M)
 
-        R   = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
-
-        z = 1/a - 1
-
         if self.xi_mm is None:
             xi_mm   = ccl.correlation_3d(cosmo, r = r_use, a = a)
         else:
@@ -388,9 +375,7 @@ class TwoHalo(SchneiderProfiles):
         prof    = (1 + bias_M * xi_mm)*ccl.rho_x(cosmo, a, species = 'matter', is_comoving = True)
 
         #Need this truncation so the fourier space integral isnt infinity
-        arg  = (r_use[None, :] - self.cutoff)
-        arg  = np.where(arg > 30, np.inf, arg) #This is to prevent an overflow in the exponential
-        kfac = 1/( 1 + np.exp(2*arg) ) #Extra exponential cutoff
+        kfac = self._soft_cutoff(r_use[None, :]) #Extra exponential cutoff
         prof = prof * kfac
 
         #Handle dimensions so input dimensions are mirrored in the output
@@ -488,9 +473,7 @@ class Stars(SchneiderProfiles):
         M_tot = np.trapz(4*np.pi*r_integral**2 * rho, r_integral, axis = -1)
         M_tot = np.atleast_1d(M_tot)[:, None]
         
-        arg  = (r_use[None, :] - self.cutoff)
-        arg  = np.where(arg > 30, np.inf, arg) #This is to prevent an overflow in the exponential
-        kfac = 1/( 1 + np.exp(2*arg) ) #Extra exponential cutoff
+        kfac = self._soft_cutoff(r_use[None, :]) #Extra exponential cutoff
         prof = f_cga*M_tot / (4*np.pi**(3/2)*R_h) * 1/r_use**2 * np.exp(-(r_use/2/R_h)**2) * kfac
                 
         #Handle dimensions so input dimensions are mirrored in the output
@@ -596,9 +579,7 @@ class Gas(SchneiderProfiles):
         M_tot = np.trapz(4*np.pi*r_integral**2 * rho, r_integral, axis = -1)
         M_tot = np.atleast_1d(M_tot)[:, None]
         
-        arg   = (r_use[None, :] - self.cutoff)
-        arg   = np.where(arg > 30, np.inf, arg) #This is to prevent an overflow in the exponential
-        kfac  = 1/( 1 + np.exp(2*arg) ) #Extra exponential cutoff
+        kfac = self._soft_cutoff(r_use[None, :]) #Extra exponential cutoff
         prof  = 1/(1 + u)**beta / (1 + v**gamma)**( (delta - beta)/gamma ) * kfac
         prof *= f_gas*M_tot/Normalization
         
@@ -666,19 +647,15 @@ class ShockedGas(Gas):
         r_use = np.atleast_1d(r)
         M_use = np.atleast_1d(M)
 
-        z = 1/a - 1
-
         R = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
 
         #Minimum is 0.25 since a factor of 4x drop is the maximum possible for a shock
-        rho_gas = super()._real(cosmo, r, M, a)
+        #Evaluate with the array inputs so rho_gas always has shape (M, r)
+        rho_gas = super()._real(cosmo, r_use, M_use, a)
         g_arg   = 1/self.width_shock*(np.log(r_use) - np.log(self.epsilon_shock*R)[:, None])
         g_arg   = np.where(g_arg > 1e2, np.inf, g_arg) #To prevent overflows when doing exp
         factor  = (1 - 0.25)/(1 + np.exp(g_arg)) + 0.25
-        
-        #Get the right size for rho_gas
-        if M_use.size == 1: rho_gas = rho_gas[None, :]
-            
+
         prof = rho_gas * factor
         
         #Handle dimensions so input dimensions are mirrored in the output
@@ -842,13 +819,6 @@ class CollisionlessMatter(SchneiderProfiles):
         r_integral = np.geomspace(self.r_min_int, self.r_max_int, self.r_steps)
         safe_range = (r_integral > 2 * np.min(r_integral) ) & (r_integral < 1/2 * np.max(r_integral) )
         
-        z = 1/a - 1
-
-        R = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
-
-        eta_cga = self.eta + self.eta_delta
-        tau_cga = self.tau + self.tau_delta
-        
         f_sga  = self.get_f_star_sat(M_use, a, cosmo)[:, None]
         f_clm  = 1 - cosmo.cosmo.params.Omega_b/cosmo.cosmo.params.Omega_m + f_sga
         
@@ -901,7 +871,7 @@ class CollisionlessMatter(SchneiderProfiles):
                 #after two or three iterations.
                 if (counter >= self.max_iter) & (max_rel_diff > self.reltol): 
                     
-                    med_rel_diff = np.max(abs_diff[safe_range])
+                    med_rel_diff = np.median(abs_diff[safe_range])
                     warn_text = ("Profile of halo index %d did not converge after %d tries. " % (m_i, counter) +
                                  "Max_diff = %0.5f, Median_diff = %0.5f. Try increasing max_iter." % (max_rel_diff, med_rel_diff)
                                 )
@@ -916,9 +886,7 @@ class CollisionlessMatter(SchneiderProfiles):
         prof     = 1/(4*np.pi*r_use**2) * lin_der
         prof     = np.clip(prof, 0, None) #If prof < 0 due to interpolation errors, then force it to 0.
         
-        arg  = (r_use[None, :] - self.cutoff)
-        arg  = np.where(arg > 30, np.inf, arg) #This is to prevent an overflow in the exponential
-        kfac = 1/( 1 + np.exp(2*arg) ) #Extra exponential cutoff
+        kfac = self._soft_cutoff(r_use[None, :]) #Extra exponential cutoff
         prof = np.where(np.isfinite(prof), prof, 0) * kfac
 
         #Handle dimensions so input dimensions are mirrored in the output
@@ -942,17 +910,18 @@ class SatelliteStars(CollisionlessMatter):
     
     def _real(self, cosmo, r, M, a):
 
+        r_use = np.atleast_1d(r)
         M_use = np.atleast_1d(M)
 
         f_sga  = self.get_f_star_sat(M_use, a, cosmo)[:, None]
         f_clm  = 1 - cosmo.cosmo.params.Omega_b/cosmo.cosmo.params.Omega_m + f_sga
-        
-        if np.ndim(M) == 0: 
-            f_clm = np.squeeze(f_clm, axis = 0)
-            f_sga = np.squeeze(f_sga, axis = 0)
 
-        prof   = super()._real(cosmo, r, M, a) * (f_sga/f_clm)
-        
+        #Evaluate on 1D arrays so the (M, r) shapes line up, then mirror the input dimensions
+        prof   = super()._real(cosmo, r_use, M_use, a) * (f_sga/f_clm)
+
+        if np.ndim(r) == 0: prof = np.squeeze(prof, axis=-1)
+        if np.ndim(M) == 0: prof = np.squeeze(prof, axis=0)
+
         return prof
 
 
@@ -1019,13 +988,6 @@ class DarkMatterOnly(SchneiderProfiles):
         super().__init__(**kwargs)
         
     def _real(self, cosmo, r, M, a):
-
-        r_use = np.atleast_1d(r)
-        M_use = np.atleast_1d(M)
-
-        z = 1/a - 1
-
-        R = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
 
         prof = (self.DarkMatter.real(cosmo, r, M, a) +
                 self.TwoHalo.real(cosmo, r, M, a)
@@ -1128,11 +1090,6 @@ class DarkMatterBaryon(SchneiderProfiles):
     def _real(self, cosmo, r, M, a):
 
         r_use = np.atleast_1d(r)
-        M_use = np.atleast_1d(M)
-
-        z = 1/a - 1
-
-        R = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
 
         #Need DMO for normalization
         #Makes sure that M_DMO(<r) = M_DMB(<r) for the limit r --> infinity
@@ -1153,9 +1110,12 @@ class DarkMatterBaryon(SchneiderProfiles):
         if np.ndim(Factor) == 1:
             Factor = Factor[:, None]
 
-        prof = (self.CollisionlessMatter.real(cosmo, r, M, a) * Factor +
-                self.Stars.real(cosmo, r, M, a) * Factor +
-                self.Gas.real(cosmo, r, M, a) * Factor +
-                self.TwoHalo.real(cosmo, r, M, a))
+        #Evaluate on a 1D radius array so Factor (one row per mass) lines up, then squeeze
+        prof = (self.CollisionlessMatter.real(cosmo, r_use, M, a) * Factor +
+                self.Stars.real(cosmo, r_use, M, a) * Factor +
+                self.Gas.real(cosmo, r_use, M, a) * Factor +
+                self.TwoHalo.real(cosmo, r_use, M, a))
+
+        if np.ndim(r) == 0: prof = np.squeeze(prof, axis=-1)
 
         return prof

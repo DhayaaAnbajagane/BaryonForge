@@ -3,16 +3,15 @@ import pyccl as ccl
 from scipy import interpolate, integrate
 import warnings
 
-from .Base import BaseBFGProfiles, hyper_params
+from .Base import BaseBFGProfiles
 from .Schneider19 import Gas, DarkMatterBaryon, TwoHalo
 from ..utils.constants import (G, Msun_to_Kg, Mpc_to_m, Pth_to_Pe, m_p, m_to_cm, kb_cgs, sigma_T_cgs, c_cgs, m_e_cgs, X)
-from ..utils.Tabulate import _set_parameter, _get_parameter
-from ..utils.Xray import EmissivityTable
+from ..utils.Tabulate import _set_parameter
 from .Schneider19 import model_params as S19_mp
 from .Schneider25 import model_params as S25_mp
 from .Arico20     import model_params as A20_mp
 from .Mead20      import model_params as M20_mp
-from . import Schneider19 as S19, Schneider25 as S25, Arico20 as A20, Mead20 as M20
+from . import Schneider25 as S25, Arico20 as A20
 
 model_params = list({*S19_mp, *S25_mp, *A20_mp, *M20_mp})
 
@@ -41,42 +40,17 @@ class BaseThermodynamicProfile(BaseBFGProfiles):
         params : dict
             Dictionary of model parameters.
         """
-        
-        if hasattr(self, 'prof4params'):
-            params = {k:v for k,v in vars(self.prof4params).items() if k in self.model_param_names}
-        else:
-            params = {k:v for k,v in vars(self).items() if k in self.model_param_names}
-                  
-        return params
-    
 
-    @property
-    def hyper_params(self):
-        """
-        Returns a dictionary containing all hyper parameters oof the calculation and their current values.
+        #The parameters are read from the profile that holds them (eg. the Gas), if one is set
+        source = getattr(self, 'prof4params', self)
+        return {k:v for k,v in vars(source).items() if k in self.model_param_names}
 
-        Returns
-        -------
-        params : dict
-            Dictionary of hyper parameters.
-        """
-        
-        if hasattr(self, 'prof4params'):
-            params = {k:v for k,v in vars(self.prof4params).items() if k in self.hyper_param_names}
-        else:
-            params = {k:v for k,v in vars(self).items() if k in self.hyper_param_names}
-        
-        params['c_M_relation']          = self._c_M_relation #Swap this one specifically
-        params['use_fftlog_projection'] = self._use_fftlog_projection #This one isn't saved normally so do it here
-
-        return params
-    
 
 class Pressure(BaseThermodynamicProfile):
     """
     Class for computing the gas pressure profile in halos.
 
-    This class extends `SchneiderProfiles` to compute the gas pressure profile within halos 
+    This class extends `BaseThermodynamicProfile` to compute the gas pressure profile within halos
     under the assumption of hydrostatic equilibrium. The gas pressure is derived using a 
     total mass profile and a gas density profile. We define a pressure gradient from the
     assumption of hydrostatic equilibrium, and integrate to obtain the pressure.
@@ -84,10 +58,6 @@ class Pressure(BaseThermodynamicProfile):
     This gives only the *total gas pressure*. If you want the electron pressure
     see `ElectronPressure`, and if you want to only the thermal/non-thermal
     pressure see `NonThermalFrac`.
-
-    Inherits from
-    -------------
-    SchneiderProfiles : Base class for halo profiles.
 
     Parameters
     ----------
@@ -102,7 +72,7 @@ class Pressure(BaseThermodynamicProfile):
         An instance defining a model for non-thermal pressure contributions. Default is None.
     **kwargs
         Additional keyword arguments passed to initialize the `Gas`, `DarkMatterBaryon`, 
-        and other parameters from `SchneiderProfiles`.
+        and other parameters from `BaseThermodynamicProfile`.
 
     Notes
     -----
@@ -133,9 +103,7 @@ class Pressure(BaseThermodynamicProfile):
         Computes the gas pressure profile based on the given cosmology, radii, mass, 
         scale factor, and mass definition.
     """
-    
-    model_param_names = model_params
-    
+
     def __init__(self, gas = None, darkmatterbaryon = None, **kwargs):
 
         if isinstance(gas, S25.Gas):
@@ -232,9 +200,6 @@ class Pressure(BaseThermodynamicProfile):
         r_use = np.atleast_1d(r)
         M_use = np.atleast_1d(M)
 
-        z = 1/a - 1
-        R = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
-
         r_integral = np.geomspace(self.r_min_int, self.r_max_int, self.r_steps)
         rho_total  = self.DarkMatterBaryon.real(cosmo, r_integral, M_use, a)
         rho_gas    = self.Gas.real(cosmo, r_integral, M_use, a)
@@ -245,11 +210,7 @@ class Pressure(BaseThermodynamicProfile):
         M_total = integrate.cumulative_simpson(dV * rho_total, axis = -1, initial = 0) + dV[0] * rho_total[:, [0]]
 
         #Assuming hydrostatic equilibrium to get dP/dr = -G*M(<r)*rho(r)/r^2
-        dP_dr = - G * M_total * rho_gas / r_integral**2
-        
-        #Make it have the right shape that ccl expects (size(M), size(r)) 
-        if len(dP_dr.shape) < 2:
-            dP_dr = dP_dr[np.newaxis, :]
+        dP_dr = - G * M_total * rho_gas / r_integral**2 #Shape (M, r), since M_use is an array
 
         #integrate to get actual pressure, P(r). Boundary condition is P(r -> infty) = 0.
         #So we start from the boundary and integrate inwards. We reverse array once to
@@ -257,7 +218,7 @@ class Pressure(BaseThermodynamicProfile):
         #We use trapezoid rule here because simpson was causing odd oscillatory errors because
         #Some profiles have sharp transitions in their pressure/gas profiles (eg. Mead)
         intgr = (dP_dr * r_integral)[:, ::-1] * dlnr
-        prof  = -np.array([integrate.cumulative_trapezoid(intgr[i], initial = 0)[::-1] + intgr[i, 0] for i in range(intgr.shape[0])])
+        prof  = -(integrate.cumulative_trapezoid(intgr, axis = -1, initial = 0)[:, ::-1] + intgr[:, [0]])
         
         prof  = interpolate.PchipInterpolator(np.log(r_integral), np.log(prof + Pressure_at_infinity), axis = 1, extrapolate = False)
         prof  = np.exp(prof(np.log(r_use))) - Pressure_at_infinity
@@ -270,9 +231,7 @@ class Pressure(BaseThermodynamicProfile):
         prof  = prof / a
         
         #Now do cutoff
-        arg   = (r_use[None, :] - self.cutoff)
-        arg   = np.where(arg > 30, np.inf, arg) #This is to prevent an overflow in the exponential
-        kfac  = 1/( 1 + np.exp(2*arg) ) #Extra exponential cutoff
+        kfac = self._soft_cutoff(r_use[None, :]) #Extra exponential cutoff
         prof  = prof * kfac
         
 
@@ -289,7 +248,7 @@ class NonThermalFrac(BaseThermodynamicProfile):
     """
     Class for computing the non-thermal pressure fraction profile in halos.
 
-    This class extends `SchneiderProfiles` to compute the fraction of pressure that is 
+    This class extends `BaseThermodynamicProfile` to compute the fraction of pressure that is
     non-thermal within halos. The non-thermal fraction is modelled in a redshift, and radius
     dependent manner, following Equations 15/16 in `Pandey et. al 2025 <https://arxiv.org/pdf/2401.18072>`_. 
     This can model be applied to any profiles using simple multiplication of the initialized classes,
@@ -298,10 +257,6 @@ class NonThermalFrac(BaseThermodynamicProfile):
 
     The `real()` method of `ThermalPressure` will then account for non-thermal pressure
     effects as well.
-
-    Inherits from
-    -------------
-    SchneiderProfiles : Base class for halo profiles.
 
     Parameters
     ----------
@@ -312,7 +267,7 @@ class NonThermalFrac(BaseThermodynamicProfile):
     gamma_nt : float
         Parameter controlling the radial dependence of the non-thermal fraction.
     **kwargs
-        Additional keyword arguments passed to initialize other parameters from `SchneiderProfiles`.
+        Additional keyword arguments passed to initialize other parameters from `BaseThermodynamicProfile`.
 
     Notes
     -----
@@ -362,8 +317,7 @@ class NonThermalFrac(BaseThermodynamicProfile):
         f_max = 6**-self.gamma_nt/self.alpha_nt
         f_z   = np.min([(1 + z)**self.nu_nt, (f_max - 1)*np.tanh(self.nu_nt * z) + 1])
         f_nt  = self.alpha_nt * f_z * (r_use/R[:, None])**self.gamma_nt
-        f_nt  = np.clip(f_nt, 0, 1) #Enforce 0 < f_nt < 1
-        prof  = f_nt #Rename just for consistency sake
+        prof  = np.clip(f_nt, 0, 1) #Enforce 0 < f_nt < 1
         
         #Handle dimensions so input dimensions are mirrored in the output
         if np.ndim(r) == 0: prof = np.squeeze(prof, axis=-1)
@@ -406,25 +360,11 @@ class NonThermalFracGreen20(BaseThermodynamicProfile):
         r_use = np.atleast_1d(r)
         M_use = np.atleast_1d(M)
 
-        z = 1/a - 1
-
-        R = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
-
         
         #They define the model with R200m, so gotta use that redefinition here.
         mdef  = ccl.halos.massdef.MassDef(200, 'matter')
-        if self.c_M_relation is not None:
-            concentration = self.c_M_relation
-        elif self.cdelta is not None:
-            concentration = ccl.halos.concentration.ConcentrationConstant(
-                self.cdelta, mass_def=self.mass_def
-            )
-        else:
-            concentration = ccl.halos.concentration.ConcentrationDiemer15(
-                mass_def=self.mass_def
-            )
         cnvrt = ccl.halos.mass_translator(
-            mass_in=self.mass_def, mass_out=mdef, concentration=concentration
+            mass_in=self.mass_def, mass_out=mdef, concentration=self._get_c_M_relation()
         )
         M200m = cnvrt(cosmo, M_use, a)
         R200m = mdef.get_radius(cosmo, M200m, a)/a #in comoving distance
@@ -436,8 +376,7 @@ class NonThermalFracGreen20(BaseThermodynamicProfile):
         
         A, b, c, d, e, f = 0.495, 0.719, 1.417,-0.166, 0.265, -2.116
         nth  = 1 - A * (1 + np.exp(-(x/b)**c)) * (nu_M/4.1)**(d/(1 + (x/e)**f))
-        nth  = np.clip(nth, 0, 1)
-        prof = nth #Rename just for consistency sake
+        prof = np.clip(nth, 0, 1)
         
         #Handle dimensions so input dimensions are mirrored in the output
         if np.ndim(r) == 0: prof = np.squeeze(prof, axis=-1)
@@ -455,6 +394,7 @@ class ElectronPressure(Pressure):
     profile from the total gas pressure. The conversion factor is 
     \( P_{\\text{e}} = P_{\\text{th}} \\times P_{\\text{th-to-Pe}} \), where 
     \( P_{\\text{th-to-Pe}} = (4 - 2Y)/(8 - 5Y), with Y = 0.24\).
+    Do not pass this class to `ThermalSZ`, which already applies the conversion (use `Pressure` there).
 
 
     Inherits from
@@ -480,7 +420,7 @@ class GasNumberDensity(BaseThermodynamicProfile):
     """
     Class for computing the gas number density profile in halos.
 
-    This class extends `SchneiderProfiles` to compute the gas number density profile
+    This class extends `BaseThermodynamicProfile` to compute the gas number density profile
     within halos. The number density is derived from the gas density profile by dividing
     by the mean molecular weight and the mass of the proton, and then converting to
     CGS units.
@@ -490,21 +430,20 @@ class GasNumberDensity(BaseThermodynamicProfile):
     Mpc. Wrap in `ComovingToPhysical(..., factor = -3)` if you need the physical number
     density. See `BaseBFGProfiles` for the full convention.
 
-    Inherits from
-    -------------
-    SchneiderProfiles : Base class for halo profiles.
-
     Parameters
     ----------
     gas : Gas, optional
         An instance of the `Gas` class defining the gas density profile. If not provided, 
         a default `Gas` object is created using `kwargs`.
-    mean_molecular_weight : float, optional
-        Mean molecular weight of the gas. Default is 1.15, which is typical for ionized 
-        hydrogen with a small fraction of helium.
+    mean_molecular_weight : float
+        Mean mass per particle of the species being counted, in units of the proton mass.
+        Required (there is no default). The value sets which number density is returned:
+        about 0.59 for the total particle number density of an ionized H/He gas (use this
+        with the total gas `Pressure` to get a temperature), about 1.14 = 2/(1 + X) for the
+        electron number density, and 1/X ~ 1.32 for the hydrogen number density.
     **kwargs
-        Additional keyword arguments passed to initialize the `Gas` profile and other 
-        parameters from `SchneiderProfiles`.
+        Additional keyword arguments passed to initialize the `Gas` profile and other
+        parameters from `BaseThermodynamicProfile`.
 
     Notes
     -----
@@ -564,17 +503,18 @@ class Temperature(BaseThermodynamicProfile):
 
     Parameters
     ----------
-    pressure : Pressure, optional
-        An instance of the `Pressure` class defining the thermal gas pressure profile. 
+    thermalpressure : Pressure, optional
+        An instance of the `Pressure` class defining the thermal gas pressure profile.
         If non-thermal pressure is relevant for your problem, it must be included in this
         profile; see `Pressure` or `NonThermalFrac` for more details.
-        If this parameter is not provided, a default `Pressure` object is created using `kwargs`.
+        If this parameter is not provided, a default thermal pressure,
+        ``Pressure(**kwargs) * (1 - NonThermalFrac(**kwargs))``, is created.
     gasnumberdensity : GasNumberDensity, optional
         An instance of the `GasNumberDensity` class defining the gas number density profile. 
         If not provided, a default `GasNumberDensity` object is created using `kwargs`.
     **kwargs
         Additional keyword arguments passed to initialize the `Pressure`, `GasNumberDensity`, 
-        and other parameters from `SchneiderProfiles`.
+        and other parameters from `BaseThermodynamicProfile`.
 
     Notes
     -----
@@ -591,11 +531,16 @@ class Temperature(BaseThermodynamicProfile):
     where:
         - \( P(r) \) is the Thermal pressure profile of a species.
         - \( n(r) \) is the number density profile of a species.
-        - \( k_B \) is the Boltzmann constant (in eV).
+        - \( k_B \) is the Boltzmann constant (in erg/K), so the temperature is in Kelvin.
     """
     
     def __init__(self, thermalpressure = None, gasnumberdensity = None, **kwargs):
-        
+
+        #Unknown keywords are otherwise swallowed by **kwargs, which would silently replace
+        #the user's pressure with a default one.
+        if 'pressure' in kwargs:
+            raise TypeError("Temperature takes the pressure profile as `thermalpressure = ...`, not `pressure = ...`")
+
         self.Pressure = thermalpressure
         self.GasNumberDensity = gasnumberdensity
         
@@ -604,13 +549,8 @@ class Temperature(BaseThermodynamicProfile):
             
         super().__init__(**kwargs)
 
-        if hasattr(self.Pressure, 'prof4params'):
-            self.prof4params = self.Pressure.prof4params
-        elif hasattr(self.GasNumberDensity, 'prof4params'):
-            self.prof4params = self.GasNumberDensity.prof4params
-        else:
-            self.prof4params = self
-        
+        self.prof4params = getattr(self.Pressure, 'prof4params', getattr(self.GasNumberDensity, 'prof4params', self))
+
     
     def _real(self, cosmo, r, M, a):
         
@@ -642,7 +582,7 @@ class Temperature(BaseThermodynamicProfile):
         cosmo : Cosmology
             The cosmology object containing cosmological parameters.
         r : array_like
-            The projected radial distances at which to compute the profile, in units of Mpc/h.
+            The projected radial distances at which to compute the profile, in comoving Mpc.
         M : float
             The halo mass, in units of solar masses.
         a : float
@@ -651,7 +591,7 @@ class Temperature(BaseThermodynamicProfile):
         Returns
         -------
         prof : array_like
-            The projected average temperature profile, in units of eV.
+            The projected (density-weighted) average temperature profile, in Kelvin.
 
         Notes
         -----
@@ -664,7 +604,7 @@ class Temperature(BaseThermodynamicProfile):
         where:
             - \( P_{\text{proj}}(r) \) is the projected thermal pressure profile.
             - \( n_{\text{proj}}(r) \) is the projected number density profile.
-            - \( k_B \) is the Boltzmann constant (in eV).
+            - \( k_B \) is the Boltzmann constant (in erg/K), so the temperature is in Kelvin.
 
         Regions with zero gas density (\( n_{\text{proj}}(r) = 0 \)) are assigned a temperature of 0 
         to avoid division errors, as these regions lack gas to support a meaningful temperature.
@@ -691,23 +631,22 @@ class ThermalSZ(BaseThermodynamicProfile):
     """
     Class for computing the thermal Sunyaev-Zel'dovich (tSZ) effect profile in halos.
 
-    This class extends `SchneiderProfiles` to compute the tSZ effect, which is caused 
+    This class extends `BaseThermodynamicProfile` to compute the tSZ effect, which is caused
     by the inverse Compton scattering of cosmic microwave background (CMB) photons 
     off hot electrons in the intracluster medium of galaxy clusters. The tSZ effect 
     is represented by the Compton-y parameter, which is proportional to the line-of-sight 
     integral of the electron pressure.
 
-    In practice, this scale uses the `projected` method of the input `pressure` object.
+    In practice, this scale uses the `projected` method of the input `thermalpressure` object.
     It accounts for the right units, to provide a dimensionless compton-y parameter.
-
-    Inherits from
-    -------------
-    SchneiderProfiles : Base class for halo profiles.
 
     Parameters
     ----------
-    pressure : Pressure, optional
-        An instance of the `Pressure` class defining the thermal gas pressure profile.
+    thermalpressure : Pressure, optional
+        The thermal *gas* pressure profile (eg. `Pressure`, or the model-specific pressure
+        classes of Arico20, Mead20 and Battaglia). Do *not* pass an electron pressure
+        (eg. `ElectronPressure`): the conversion from gas to electron pressure is applied
+        internally, via `Pgas_to_Pe`, so it would be applied twice.
         If not provided, a default `Pressure` object is created using `kwargs`. Pass the
         pressure in the usual BaryonForge comoving-volume convention (i.e. `P_phys * a^3`,
         which is what every `Pressure` class in the package returns). Do *not* pre-scale
@@ -715,7 +654,7 @@ class ThermalSZ(BaseThermodynamicProfile):
 
     **kwargs
         Additional keyword arguments passed to initialize the `Pressure` profile and other
-        parameters from `SchneiderProfiles`.
+        parameters from `BaseThermodynamicProfile`.
 
     Notes
     -----
@@ -761,19 +700,21 @@ class ThermalSZ(BaseThermodynamicProfile):
     """
     
     
-    def __init__(self, pressure = None, **kwargs):
-        
-        self.Pressure = pressure
+    def __init__(self, thermalpressure = None, **kwargs):
+
+        #Named `thermalpressure` so it is clear an electron pressure must not be passed.
+        #Unknown keywords would otherwise be swallowed by **kwargs.
+        if 'pressure' in kwargs:
+            raise TypeError("ThermalSZ takes the thermal gas pressure as `thermalpressure = ...`, not `pressure = ...`")
+
+        self.Pressure = thermalpressure
         if self.Pressure is None: self.Pressure = Pressure(**kwargs)
 
         super().__init__(**kwargs)
 
-        if hasattr(self.Pressure, 'prof4params'):
-            self.prof4params = self.Pressure.prof4params
-        else:
-            self.prof4params = self
-        
-    
+        self.prof4params = getattr(self.Pressure, 'prof4params', self)
+
+
     def Pgas_to_Pe(self, cosmo, r, M, a):
         
         """
@@ -788,30 +729,20 @@ class ThermalSZ(BaseThermodynamicProfile):
     def _real(self, cosmo, r, M, a):
         
         r_use = np.atleast_1d(r)
-        M_use = np.atleast_1d(M)
-
-        z     = 1/a - 1
-        R     = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
 
         #Now a series of units changes to the projected profile.
-        #Pass M (not M_use) so a scalar mass stays scalar in the output, the same way
-        #Emissivity and XrayCounts do it. Otherwise _projected_realspace adds a second
+        #Pass r and M (not r_use and M_use) so scalar inputs stay scalar in the output, the
+        #same way Emissivity and XrayCounts do it. Otherwise _projected_realspace adds a second
         #mass axis on top of the one the inner profile kept.
-        prof  = self.Pressure.real(cosmo, r_use, M, a)         #generate profile in comoving volume units (Temp. part is in physical)
+        prof  = self.Pressure.real(cosmo, r, M, a)         #generate profile in comoving volume units (Temp. part is in physical)
         prof  = prof * (Mpc_to_m * 1e2)                        #Line-of-sight integral is done in Mpc, we want cm
         prof  = prof * sigma_T_cgs/(m_e_cgs*c_cgs**2)          #Convert to SZ.
         prof  = prof * self.Pgas_to_Pe(cosmo, r_use, M, a)     #Then convert from gas pressure to electron pressure
 
         return prof
 
-    #NOTE: there is deliberately no _projected() override here. The default
-    #real-space projection already does the right thing: it integrates _real over
-    #comoving Mpc, leaving the result on the comoving ladder. The remaining scale
-    #factors are supplied by wrapping this object in ComovingToPhysical(factor = -3),
-    #as described in the class docstring. An override would also be dead code in the
-    #default configuration, since BaseBFGProfiles.__init__ assigns the *instance*
-    #attribute self._projected = self._projected_realspace, which shadows any
-    #class-level _projected defined here.
+    #No _projected() override: the default real-space projection integrates _real over comoving Mpc,
+    #and the remaining scale factors come from ComovingToPhysical(factor = -3) (see the docstring).
 
 
 class Metallicity(BaseThermodynamicProfile):
@@ -972,10 +903,8 @@ class Metallicity(BaseThermodynamicProfile):
         Z_core, Z_out, theta_Z_core = self._get_Z_params(M_use, z)
 
         x = r_use/(theta_Z_core * R[:, None])
-        Z = Z_out + Z_core / (1 + x**self.gamma_Z_core)
+        prof = Z_out + Z_core / (1 + x**self.gamma_Z_core)
 
-        prof  = Z #Rename just for consistency sake
-        
         #Handle dimensions so input dimensions are mirrored in the output
         if np.ndim(r) == 0: prof = np.squeeze(prof, axis=-1)
         if np.ndim(M) == 0: prof = np.squeeze(prof, axis=0)
@@ -1056,27 +985,15 @@ class Emissivity(BaseThermodynamicProfile):
 
         super().__init__(**kwargs)
 
-        if hasattr(self.Temperature, 'prof4params'):
-            self.prof4params = self.Temperature.prof4params
-        else:
-            self.prof4params = self
-        
-    
+        self.prof4params = getattr(self.Temperature, 'prof4params', self)
+
+
     def _real(self, cosmo, r, M, a):
-        
-        r_use = np.atleast_1d(r)
-        M_use = np.atleast_1d(M)
 
-        z = 1/a - 1
+        T    = self.Temperature.real(cosmo, r, M, a)
+        Z    = self.Metallicity.real(cosmo, r, M, a)
+        prof = self.EmissivityTable(T, Z, a)
 
-        R   = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
-
-        T   = self.Temperature.real(cosmo, r_use, M, a)
-        Z   = self.Metallicity.real(cosmo, r_use, M, a)
-        E   = self.EmissivityTable(T, Z, a)
-        
-        prof = E #Just renaming for simplicity
-        
         return prof
     
 
@@ -1123,7 +1040,9 @@ class XrayCounts(BaseThermodynamicProfile):
     electronnumberdensity : BaseThermodynamicProfile, optional
         Electron number density profile object used to compute :math:`n_e(r)`.
         If not provided, a default `GasNumberDensity` profile is constructed
-        from ``kwargs``.
+        from ``kwargs``, using the ``mean_molecular_weight`` in ``kwargs``. In that case
+        ``mean_molecular_weight`` must be the *electron* value, ~2/(1 + X) ~ 1.14, not the
+        total mean molecular weight of the gas (~0.59), which would overestimate :math:`n_e` by ~2x.
     hydrogennumberdensity : BaseThermodynamicProfile, optional
         Hydrogen number density profile object used to compute
         :math:`n_{\\rm H}(r)`. If not provided, a default `GasNumberDensity`
@@ -1149,26 +1068,15 @@ class XrayCounts(BaseThermodynamicProfile):
 
         super().__init__(**kwargs)
 
-        if hasattr(self.ElectronNumberDensity, 'prof4params'):
-            self.prof4params = self.ElectronNumberDensity.prof4params
-        elif hasattr(self.HydrogenNumberDensity, 'prof4params'):
-            self.prof4params = self.HydrogenNumberDensity.prof4params
-        else:
-            self.prof4params = self
+        self.prof4params = getattr(self.ElectronNumberDensity, 'prof4params',
+                                   getattr(self.HydrogenNumberDensity, 'prof4params', self))
         
     
     def _real(self, cosmo, r, M, a):
 
-        r_use = np.atleast_1d(r)
-        M_use = np.atleast_1d(M)
-
-        z = 1/a - 1
-
-        R = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
-
-        ne  = self.ElectronNumberDensity.real(cosmo, r_use, M, a)
-        nH  = self.HydrogenNumberDensity.real(cosmo, r_use, M, a)
-        J   = self.Emissivity.real(cosmo, r_use, M, a)
+        ne  = self.ElectronNumberDensity.real(cosmo, r, M, a)
+        nH  = self.HydrogenNumberDensity.real(cosmo, r, M, a)
+        J   = self.Emissivity.real(cosmo, r, M, a)
         
         prof = ne * nH * J
         
@@ -1258,23 +1166,14 @@ class XraySkyCounts(BaseThermodynamicProfile):
 
         super().__init__(**kwargs)
 
-        if hasattr(self.XrayCounts, 'prof4params'):
-            self.prof4params = self.XrayCounts.prof4params
-        else:
-            self.prof4params = self
+        self.prof4params = getattr(self.XrayCounts, 'prof4params', self)
     
     
     def _real(self, cosmo, r, M, a):
         
-        r_use = np.atleast_1d(r)
-        M_use = np.atleast_1d(M)
-
-        z     = 1/a - 1
-        R     = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
-
         #Now a series of units changes to the projected profile.
-        #Pass M (not M_use) so a scalar mass stays scalar; see the note in ThermalSZ._real
-        prof  = self.XrayCounts.real(cosmo, r_use, M, a)     #generate profile
+        #Pass r and M (not r_use and M_use) so scalar inputs stay scalar; see the note in ThermalSZ._real
+        prof  = self.XrayCounts.real(cosmo, r, M, a)     #generate profile
         prof  = prof * (Mpc_to_m * m_to_cm)                  #Line-of-sight integral is done in Mpc, we want cm
         prof  = prof * a**3                                  #Cosmic dimming causes a 1/(1 + z)^3 factor (we use counts, not energy, 
                                                              #so one factor is missing)
@@ -1282,7 +1181,4 @@ class XraySkyCounts(BaseThermodynamicProfile):
 
         return prof
 
-    #NOTE: no _projected() override here, for the same reason as in ThermalSZ. The
-    #default real-space projection integrates _real over comoving Mpc, and the
-    #remaining scale factors come from wrapping this object in
-    #ComovingToPhysical(factor = -3). See the class docstring.
+    #No _projected() override, for the same reason as in ThermalSZ.

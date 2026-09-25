@@ -1,6 +1,3 @@
-import pyccl as ccl
-import numpy as np
-
 from pyccl.halos.halo_model import HMCalculator
 from pyccl import unlock_instance
 

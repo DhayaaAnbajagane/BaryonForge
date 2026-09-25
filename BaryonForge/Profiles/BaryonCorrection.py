@@ -1,14 +1,12 @@
 
 import numpy as np
-import pyccl as ccl
 from tqdm import tqdm
 from scipy import interpolate, integrate
 import warnings
-import copy
 from itertools import product
 
-from ..utils.Tabulate import _set_parameter
-from ..utils.misc     import destory_Pk
+from ..utils.Tabulate import _set_parameter, _record_parameters, _restore_parameters
+from ..utils.misc     import destory_Pk, _default_mass_def
 
 __all__ = ['BaryonificationClass', 'Baryonification3D', 'Baryonification2D']
 
@@ -31,7 +29,7 @@ class BaryonificationClass(object):
     epsilon_max : float, optional
         The maximum displacement factor for the mass profile, in units of halo radius. Default is 20.
     mass_def : object, optional
-        Mass definition object from CCL, default is `MassDef(200, 'critical')`.
+        Mass definition object from CCL. Default is None, in which case the mass definition of `DMO` is used.
 
     Notes
     -----
@@ -86,7 +84,7 @@ class BaryonificationClass(object):
     """
 
 
-    def __init__(self, DMO, DMB, cosmo, epsilon_max = 20, mass_def = ccl.halos.massdef.MassDef(200, 'critical'),
+    def __init__(self, DMO, DMB, cosmo, epsilon_max = 20, mass_def = None,
                  r_min_int = 1e-6, r_max_int = 1000, N_int = 500):
         
         self.DMO = DMO
@@ -103,7 +101,7 @@ class BaryonificationClass(object):
         
         self.cosmo       = cosmo #CCL cosmology instance
         self.epsilon_max = epsilon_max
-        self.mass_def    = mass_def
+        self.mass_def    = _default_mass_def(DMO) if mass_def is None else mass_def
 
 
         self.r_min_int   = r_min_int
@@ -137,6 +135,44 @@ class BaryonificationClass(object):
         """
 
         raise NotImplementedError("Implement a get_masses() method first")
+
+
+    def _enclosed_mass(self, density, r, M, a, prefactor, power):
+        """
+        Enclosed mass, `prefactor * int density(r') r'^power dln r'`, evaluated at radii `r`.
+        Used by `get_masses` with `density = model.real, 4pi, 3` (3D) or
+        `density = model.projected, 2pi, 2` (2D). The output has shape (len(M), len(r)),
+        or (len(r),) if M is a scalar.
+        """
+
+        #Make sure the min/max does not mess up the integral
+        #Adding some 20% buffer just in case
+        r_min = np.min([np.min(r), self.r_min_int])
+        r_max = np.max([np.max(r), self.r_max_int])
+        r_int = np.geomspace(r_min/1.2, r_max*1.2, self.N_int)
+
+        dlnr  = np.log(r_int[1]/r_int[0])
+        rho   = density(self.cosmo, r_int, M, a)
+        rho   = np.where(rho < 0, 0, rho) #Enforce non-zero densities
+
+        if np.ndim(M) == 0: rho = rho[None, :]
+
+        intgd = prefactor*r_int**power * rho * dlnr
+        M_enc = integrate.cumulative_simpson(intgd, axis = -1, initial = 0) + intgd[:, [0]]
+        lnr   = np.log(r)
+
+        M_f   = np.zeros([M_enc.shape[0], r.size])
+
+        #Remove datapoints in profile where rho == 0 and then just interpolate
+        #across them. This helps deal with ringing profiles due to
+        #fourier space issues, where profile could go negative sometimes
+        for M_i in range(M_enc.shape[0]):
+            Mask     = (rho[M_i] > 0) & (np.isfinite(M_enc[M_i])) #Keep only finite points, and ones with increasing density
+            M_f[M_i] = np.exp( interpolate.PchipInterpolator(np.log(r_int)[Mask], np.log(M_enc[M_i])[Mask], extrapolate = False)(lnr) )
+
+        if np.ndim(M) == 0: M_f = np.squeeze(M_f, axis = 0)
+
+        return M_f
 
 
     def setup_interpolator(self, 
@@ -187,8 +223,9 @@ class BaryonificationClass(object):
             for any models that have sharp features (eg. Arico20) as a function of Rdelta. The model is built
             the same, but the interpolation table is organized differently as as to improve accuracy for such models.
         other_params : dict, optional
-            Additional parameters for model customization. To be provided in the format `{key : [list-like of vals]}`. 
-            The default is an empty dictionary.
+            Additional parameters for model customization. To be provided in the format `{key : [list-like of vals]}`.
+            The default is an empty dictionary. The DMO/DMB parameters are set to these values while tabulating,
+            and restored to their original values afterwards.
         verbose : bool, optional
             If True, display progress information using `tqdm`. Default is True.
 
@@ -208,6 +245,7 @@ class BaryonificationClass(object):
         r        = np.geomspace(R_min, R_max, N_samples_R)
         z_range  = np.linspace(z_min, z_max, N_samples_z) if z_linear_sampling else np.geomspace(z_min, z_max, N_samples_z)
         a_range  = 1/(1 + z_range)
+        other_params = {k : np.atleast_1d(np.asarray(v, dtype = float)) for k, v in other_params.items()} #Allow lists/tuples
         p_keys   = list(other_params.keys()); setattr(self, 'p_keys', p_keys)
         d_interp = np.zeros([z_range.size, M_range.size, r.size] + [other_params[k].size for k in p_keys])
 
@@ -215,7 +253,10 @@ class BaryonificationClass(object):
         
         #If other_params is empty then iterator will be empty and the code still works fine
         iterator = [p for p in product(*[np.arange(other_params[k].size) for k in p_keys])]
-        
+
+        #The loop below changes the DMO/DMB parameters. Save them, so the profiles are returned unchanged.
+        original_params = _record_parameters(self.DMO, p_keys) + _record_parameters(self.DMB, p_keys)
+
         with tqdm(total = d_interp.size//(M_range.size*r.size), desc = 'Building Table', disable = not verbose) as pbar:
             for j in range(z_range.size):
                 
@@ -306,8 +347,10 @@ class BaryonificationClass(object):
                         #Build a custom index into the array
                         index = tuple([j, i, slice(None)] + list(c))
                         d_interp[index] = offset
-                            
+
                     pbar.update(1)
+
+        _restore_parameters(original_params)
 
 
         input_rad  = np.log(r) if not Rdelta_sampling else np.log(rdelta_range)
@@ -370,7 +413,7 @@ class BaryonificationClass(object):
         empty = np.ones_like(r_use)
         z_in  = np.log(1/a)*empty #This is log(1 + z)
         r_in  = np.log(r_use)
-        k_in  = [kwargs[k] * empty for k in kwargs.keys()]
+        k_in  = [kwargs[k] * empty for k in self.p_keys] #Same order as the table axes, not the kwargs order
 
         #Get the ranges we used as input, so we can check if requested
         #ranges are contained within the input/tabulated ranges.
@@ -400,12 +443,8 @@ class BaryonificationClass(object):
             
             #If Rdelta sampling, the sample in r/Rdelta not r.
             #The table would have been constructed appropriately
-            if not self.Rdelta_sampling:
-                p_in     = tuple([z_in, M_in, r_in] + k_in)
-                displ[i] = table(p_in)
-            else:
-                p_in     = tuple([z_in, M_in, r_in - np.log(R)] + k_in)
-                displ[i] = table(p_in)
+            r_tab_in = r_in - np.log(R) if self.Rdelta_sampling else r_in
+            displ[i] = table(tuple([z_in, M_in, r_tab_in] + k_in))
             
             inside   = (r < self.epsilon_max*R)
             displ[i] = np.where(inside, displ[i], 0) #Set large-scale displacements to 0
@@ -456,7 +495,11 @@ class BaryonificationClass(object):
             
         for k in self.p_keys:
             assert k in kwargs.keys(), "Need to provide %s as input into `displacement'. Table was built with this." % k
-        
+
+        extra = [k for k in kwargs.keys() if k not in self.p_keys]
+        if len(extra) > 0:
+            raise ValueError(f"Parameters {extra} were passed to `displacement', but the table was only built with {self.p_keys}.")
+
         return self._readout(r, M, a, **kwargs)
 
 
@@ -547,35 +590,8 @@ class Baryonification3D(BaryonificationClass):
         >>> a = 0.8  # Scale factor corresponding to redshift z
         >>> mass_profile = baryon_model.get_masses(baryon_model.DMO, r, M, a)
         """
-        
-        #Make sure the min/max does not mess up the integral
-        #Adding some 20% buffer just in case
-        r_min = np.min([np.min(r), self.r_min_int])
-        r_max = np.max([np.max(r), self.r_max_int])
-        r_int = np.geomspace(r_min/1.2, r_max*1.2, self.N_int)
-        
-        dlnr  = np.log(r_int[1]/r_int[0])
-        rho   = model.real(self.cosmo, r_int, M, a)
-        rho   = np.where(rho < 0, 0, rho) #Enforce non-zero densities
-        
-        if isinstance(M, (float, int) ): rho = rho[None, :]
-            
-        intgd = 4*np.pi*r_int**3 * rho * dlnr
-        M_enc = integrate.cumulative_simpson(intgd, axis = -1, initial = 0) + intgd[:, [0]]
-        lnr   = np.log(r)
-        
-        M_f   = np.zeros([M_enc.shape[0], r.size])
-        
-        #Remove datapoints in profile where rho == 0 and then just interpolate
-        #across them. This helps deal with ringing profiles due to 
-        #fourier space issues, where profile could go negative sometimes
-        for M_i in range(M_enc.shape[0]):
-            Mask     = (rho[M_i] > 0) & (np.isfinite(M_enc[M_i])) #Keep only finite points, and ones with increasing density
-            M_f[M_i] = np.exp( interpolate.PchipInterpolator(np.log(r_int)[Mask], np.log(M_enc[M_i])[Mask], extrapolate = False)(lnr) )
-        
-        if isinstance(M, (float, int) ): M_f = np.squeeze(M_f, axis = 0)
-            
-        return M_f
+
+        return self._enclosed_mass(model.real, r, M, a, 4*np.pi, 3)
 
 
 class Baryonification2D(BaryonificationClass):
@@ -663,32 +679,5 @@ class Baryonification2D(BaryonificationClass):
         >>> a = 0.5  # Scale factor corresponding to redshift z
         >>> mass_profile = baryon_model.get_masses(baryon_model.DMO, r, M, a)
         """
-        
-        #Make sure the min/max does not mess up the integral
-        #Adding some 20% buffer just in case
-        r_min = np.min([np.min(r), self.r_min_int])
-        r_max = np.max([np.max(r), self.r_max_int])
-        r_int = np.geomspace(r_min/1.2, r_max*1.2, self.N_int)
-        
 
-        dlnr  = np.log(r_int[1]/r_int[0])
-        Sigma = model.projected(self.cosmo, r_int, M, a) 
-        Sigma = np.where(Sigma < 0, 0, Sigma) #Enforce non-zero densities
-        
-        if isinstance(M, (float, int) ): Sigma = Sigma[None, :]
-        
-        intgd = 2*np.pi*r_int**2 * Sigma * dlnr
-        M_enc = integrate.cumulative_simpson(intgd, axis = -1, initial = 0) + intgd[:, [0]]
-        lnr   = np.log(r)
-        
-        M_f  = np.zeros([M_enc.shape[0], r.size])
-        #Remove datapoints in profile where Sigma == 0 and then just interpolate
-        #across them. This helps deal with ringing profiles due to 
-        #fourier space issues, where profile could go negative sometimes
-        for M_i in range(M_enc.shape[0]):
-            Mask     = (Sigma[M_i] > 0) & (np.isfinite(M_enc[M_i])) #Keep only finite points, and ones with increasing density
-            M_f[M_i] = np.exp( interpolate.PchipInterpolator(np.log(r_int)[Mask], np.log(M_enc[M_i])[Mask], extrapolate = False)(lnr) )
-        
-        if isinstance(M, (float, int) ): M_f = np.squeeze(M_f, axis = 0)
-            
-        return M_f
+        return self._enclosed_mass(model.projected, r, M, a, 2*np.pi, 2)

@@ -56,7 +56,7 @@ class BaseGenericConcentration(ccl.halos.halo_model_base.Concentration):
     M : array_like
         Halo masses *in the target mass definition* ``mass_def``. Must be
         broadcastable to a 1D array. Units must be consistent with your
-        pyCCL configuration (typically :math:`M_\odot/h`).
+        BaryonForge configuration (:math:`M_\odot`, no factors of h).
     a : float
         Scale factor :math:`a = 1/(1+z)`.
 
@@ -110,7 +110,7 @@ class BaseGenericConcentration(ccl.halos.halo_model_base.Concentration):
         cosmo : pyccl.Cosmology
             Cosmology object consumed by CCL.
         M : array_like of float
-            Halo masses (in :math:`M_\odot/h`) expressed in the **target** mass definition
+            Halo masses (in :math:`M_\odot`) expressed in the **target** mass definition
             ``self.mass_def``. Must satisfy
             ``self.M_in_lo < M.min()`` and ``M.max() < self.M_in_hi``.
         a : float

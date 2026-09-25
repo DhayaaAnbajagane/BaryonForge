@@ -7,9 +7,8 @@ import warnings
 
 from scipy import interpolate
 from tqdm import tqdm
-from ..utils import ParamTabulatedProfile
 from ..utils.Tabulate import _get_parameter
-from ..Profiles.BaryonCorrection import BaryonificationClass
+from ..utils.misc import _default_mass_def, _runner_cosmology, _check_p_keys
 
 __all__ = ['DefaultRunner', 'BaryonifyShell', 'PaintProfilesShell', 'PaintProfilesAnisShell',
            'regrid_pixels_hpix']
@@ -105,7 +104,7 @@ class DefaultRunner(object):
     
     mass_def : object, optional
         An instance of a mass definition object from the CCL (Core Cosmology Library), specifying 
-        the mass definition to be used. Default is `ccl.halos.massdef.MassDef(200, 'critical')`.
+        the mass definition to be used. Default is None, in which case the mass definition of `model` is used (or 200c, if `model` has none).
     
     verbose : bool, optional
         A flag to enable verbose output for logging or debugging purposes. Default is True.
@@ -164,7 +163,7 @@ class DefaultRunner(object):
     """
     
     def __init__(self, HaloLightConeCatalog, LightconeShell, epsilon_max, model, use_ellipticity = False,
-                 mass_def = ccl.halos.massdef.MassDef(200, 'critical'), include_pixel_size = False, verbose = True):
+                 mass_def = None, include_pixel_size = False, verbose = True):
 
         self.HaloLightConeCatalog = HaloLightConeCatalog
         self.LightconeShell       = LightconeShell
@@ -173,7 +172,7 @@ class DefaultRunner(object):
         
         
         self.epsilon_max = epsilon_max
-        self.mass_def    = mass_def
+        self.mass_def    = _default_mass_def(model) if mass_def is None else mass_def
         self.verbose     = verbose
         
         self.use_ellipticity    = use_ellipticity
@@ -205,11 +204,13 @@ class DefaultRunner(object):
             A 2x2 rotation matrix that rotates vector A to align with vector ref.
         """
 
-        A   /= np.linalg.norm(A)
-        ref /= np.linalg.norm(ref)
-    
-        ang  = np.arccos(np.dot(A, ref))
-        Rmat = np.array([[np.cos(ang), -np.sin(ang)], 
+        #Not in-place, so the inputs are not modified
+        A   = np.asarray(A,   dtype = float) / np.linalg.norm(A)
+        ref = np.asarray(ref, dtype = float) / np.linalg.norm(ref)
+
+        #Signed angle from A to ref (arccos alone cannot tell the rotation direction)
+        ang  = np.arctan2(A[0]*ref[1] - A[1]*ref[0], np.dot(A, ref))
+        Rmat = np.array([[np.cos(ang), -np.sin(ang)],
                          [np.sin(ang), np.cos(ang)]])
         
         return Rmat
@@ -283,12 +284,7 @@ class BaryonifyShell(DefaultRunner):
           new map with the original map.
         """
 
-        cosmo = ccl.Cosmology(Omega_c = self.cosmo['Omega_m'] - self.cosmo['Omega_b'],
-                              Omega_b = self.cosmo['Omega_b'], h   = self.cosmo['h'],
-                              sigma8  = self.cosmo['sigma8'],  n_s = self.cosmo['n_s'],
-                              w0      = self.cosmo['w0'],      wa  = self.cosmo['wa'],
-                              matter_power_spectrum = 'linear')
-        cosmo.compute_sigma()
+        cosmo = _runner_cosmology(self.cosmo)
 
         orig_map = self.LightconeShell.map
         NSIDE    = self.LightconeShell.NSIDE
@@ -307,14 +303,7 @@ class BaryonifyShell(DefaultRunner):
         assert np.max(self.HaloLightConeCatalog.cat['z']) <= 30, f"We assume max(z) = 30, but your catalog has max(z) = {np.max(self.HaloLightConeCatalog.cat['z'])}"
         
         
-        keys = vars(self.model).get('p_keys', []) #Check if model has property keys
-
-        if len(keys) > 0:
-            txt = (f"You asked to use {keys} properties in Baryonification. You must pass a ParamTabulatedProfile "
-                   f"pr BaryonificationClass as the model. You have passed {type(self.model)} instead. "
-                   f"If you did pass in a BaryonificationClass make sure you passed in addition params using "
-                   f"the other_params option.")
-            assert isinstance(self.model, (ParamTabulatedProfile, BaryonificationClass)), txt
+        keys = _check_p_keys(self.model) #Names of extra (tabulated) model parameters
         
         pix_offsets = np.zeros([orig_map.size, 3]) 
         
@@ -419,12 +408,7 @@ class PaintProfilesShell(DefaultRunner):
         - Non-finite profile values are set to zero before adding profiles to the map.
         """
 
-        cosmo = ccl.Cosmology(Omega_c = self.cosmo['Omega_m'] - self.cosmo['Omega_b'],
-                              Omega_b = self.cosmo['Omega_b'], h   = self.cosmo['h'],
-                              sigma8  = self.cosmo['sigma8'],  n_s = self.cosmo['n_s'],
-                              w0      = self.cosmo['w0'],      wa  = self.cosmo['wa'],
-                              matter_power_spectrum = 'linear')
-        cosmo.compute_sigma()
+        cosmo = _runner_cosmology(self.cosmo)
 
         orig_map = self.LightconeShell.map
         new_map  = np.zeros_like(orig_map).astype(np.float64)
@@ -439,18 +423,7 @@ class PaintProfilesShell(DefaultRunner):
         assert np.max(self.HaloLightConeCatalog.cat['z']) <= 30, f"We assume max(z) = 30, but your catalog has max(z) = {np.max(self.HaloLightConeCatalog.cat['z'])}"
         
         
-        keys = vars(self.model).get('p_keys', []) #Check if model has property keys
-
-        if len(keys) > 0:
-            txt = (f"You asked to use {keys} properties in Baryonification. You must pass a ParamTabulatedProfile "
-                   f"pr BaryonificationClass as the model. You have passed {type(self.model)} instead. "
-                   f"If you did pass in a BaryonificationClass make sure you passed in addition params using "
-                   f"the other_params option.")
-            assert isinstance(self.model, (ParamTabulatedProfile, BaryonificationClass)), txt
-
-
-        assert self.model is not None, "You must provide a model"
-        Baryons  = self.model
+        keys = _check_p_keys(self.model) #Names of extra (tabulated) model parameters
 
         for j in tqdm(range(self.HaloLightConeCatalog.cat.size), desc = 'Painting Profile', disable = not self.verbose):
 
@@ -467,15 +440,19 @@ class PaintProfilesShell(DefaultRunner):
             
             radius = R_j * self.epsilon_max / D_j
             pixind = hp.query_disc(self.LightconeShell.NSIDE, vec_j, radius, inclusive = False, nest = False)
+
+            #Halo is smaller than a pixel, so no pixel centers fall within the cutout. Skip it.
+            if pixind.size == 0: continue
+
             vec    = np.stack(hp.pix2vec(nside = NSIDE, ipix = pixind), axis = 1)
-            
+
             pos_j  = vec_j * D_j #We assume flat cosmologies, where D_a is the right distance to use here
             pos    = vec   * D_j
             diff   = pos - pos_j
             r_sep  = np.sqrt(np.sum(diff**2, axis = 1))
-            
+
             #Compute the painted map
-            Paint  = Baryons.projected(cosmo, r_sep/a_j, M_j, a_j, **o_j)
+            Paint  = self.model.projected(cosmo, r_sep/a_j, M_j, a_j, **o_j)
             Paint  = np.where(np.isfinite(Paint), Paint, 0) #Set non-finite values to 0
             
             #Add the pixel area back to the maps if requested by user.
@@ -508,7 +485,7 @@ class PaintProfilesAnisShell(DefaultRunner):
 
     def __init__(self, HaloLightConeCatalog, LightConeShell, epsilon_max, model, Tracer_model, Mtot_model, 
                  background_val, global_tracer_fraction, 
-                 mass_def = ccl.halos.massdef.MassDef(200, 'critical'), 
+                 mass_def = None, 
                  include_pixel_size = False, use_ellipticity = False, verbose = True):
         
         self.Tracer_model   = Tracer_model
@@ -544,12 +521,7 @@ class PaintProfilesAnisShell(DefaultRunner):
         - Non-finite profile values are set to zero before adding profiles to the map.
         """
 
-        cosmo = ccl.Cosmology(Omega_c = self.cosmo['Omega_m'] - self.cosmo['Omega_b'],
-                              Omega_b = self.cosmo['Omega_b'], h   = self.cosmo['h'],
-                              sigma8  = self.cosmo['sigma8'],  n_s = self.cosmo['n_s'],
-                              w0      = self.cosmo['w0'],      wa  = self.cosmo['wa'],
-                              matter_power_spectrum = 'linear')
-        cosmo.compute_sigma()
+        cosmo = _runner_cosmology(self.cosmo)
 
         orig_map = self.LightconeShell.map
         new_map  = np.zeros_like(orig_map).astype(np.float64)
@@ -561,14 +533,7 @@ class PaintProfilesAnisShell(DefaultRunner):
         z_t = np.linspace(0, z_m + 0.1, 1000)
         D_a = interpolate.CubicSpline(z_t, ccl.angular_diameter_distance(cosmo, 1/(1 + z_t)))
         
-        keys = vars(self.model).get('p_keys', []) #Check if model has property keys
-
-        if len(keys) > 0:
-            txt = (f"You asked to use {keys} properties in Baryonification. You must pass a ParamTabulatedProfile "
-                   f"pr BaryonificationClass as the model. You have passed {type(self.model)} instead. "
-                   f"If you did pass in a BaryonificationClass make sure you passed in addition params using "
-                   f"the other_params option.")
-            assert isinstance(self.model, (ParamTabulatedProfile, BaryonificationClass)), txt
+        keys = _check_p_keys(self.model) #Names of extra (tabulated) model parameters
 
         #First we need to generate a model for the total mass distribution, according to the mass model
         Mtot_map = PaintProfilesShell(HaloLightConeCatalog = self.HaloLightConeCatalog, 
@@ -578,9 +543,15 @@ class PaintProfilesAnisShell(DefaultRunner):
                                       include_pixel_size = True,
                                       mass_def = self.mass_def, verbose = self.verbose).process()
         
-        dL = (2 * _get_parameter(self.Mtot_model, 'proj_cutoff')) #Factor of 2 since proj_cutoff == Lproj/2
+        assert self.LightconeShell.redshift is not None, "The LightconeShell must have a redshift to use PaintProfilesAnisShell"
+
+        #Physical volume of the (conical) pixel, over the projection length centered on the shell.
+        #The projection length is comoving, so convert it to physical with the scale factor, since
+        #D_A and the painted masses (with include_pixel_size = True) are physical.
+        a_shell = 1/(1 + self.LightconeShell.redshift)
+        dL = (2 * _get_parameter(self.Mtot_model, 'proj_cutoff')) * a_shell #Factor of 2 since proj_cutoff == Lproj/2
         dD = D_a(self.LightconeShell.redshift)
-        dV = pixarea * ((dD + dL)**3 - dD**3)
+        dV = pixarea * ((dD + dL/2)**3 - np.clip(dD - dL/2, 0, None)**3) / 3
         rho_halos = np.sum(Mtot_map) / (dV * Mtot_map.size)
 
         #Now add the background contribution (we so far only have the halo contribution)
@@ -615,18 +586,23 @@ class PaintProfilesAnisShell(DefaultRunner):
             
             radius = R_j * self.epsilon_max / D_j
             pixind = hp.query_disc(self.LightconeShell.NSIDE, vec_j, radius, inclusive = False, nest = False)
+
+            #Halo is smaller than a pixel, so no pixel centers fall within the cutout. Skip it.
+            if pixind.size == 0: continue
+
             vec    = np.stack(hp.pix2vec(nside = NSIDE, ipix = pixind), axis = 1)
-            
+
             pos_j  = vec_j * D_j #We assume flat cosmologies, where D_a is the right distance to use here
             pos    = vec   * D_j
             diff   = pos - pos_j
             r_sep  = np.sqrt(np.sum(diff**2, axis = 1))
-            
+
             #Compute the painted map
             Painting = Paint(cosmo, r_sep/a_j, M_j, a_j, **o_j)
             Painting = np.where(np.isfinite(Painting), Painting, 0)
             Canvas   = Tracer(cosmo, r_sep/a_j, M_j, a_j, **o_j)
             Canvas   = np.where(np.isfinite(Canvas) & np.invert(np.isnan(Canvas)), Canvas, 0)
+            Canvas   = Canvas * (pixarea * D_j**2) #Tracer mass in pixel, same units as Mtot_map (painted with include_pixel_size = True)
             Mfrac    = np.divide(Canvas, Mtot_map[pixind], out = np.zeros_like(Canvas), where = Mtot_map[pixind] > 0)
             Mfrac   *= orig_map[pixind]
             
@@ -643,8 +619,11 @@ class PaintProfilesAnisShell(DefaultRunner):
         #Missing mass was assigned to uniform background. Here we account for that background's contribution
         Mfrac    = np.divide(dV * drho_m, Mtot_map, out = np.zeros_like(Mtot_map), where = Mtot_map > 0)
         Mfrac   *= orig_map
-        new_map += self.background_val * self.global_tracer_fraction * Mfrac
-        
-        new_map  = new_map.reshape(orig_map.shape)      
+        Bkg      = self.background_val * self.global_tracer_fraction * Mfrac
+        #Same pixel-size factor as the halo terms above, using the shell's distance
+        if self.include_pixel_size: Bkg = Bkg * (pixarea * dD**2)
+        new_map += Bkg
+
+        new_map  = new_map.reshape(orig_map.shape)
 
         return new_map

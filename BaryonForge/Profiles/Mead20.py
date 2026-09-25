@@ -4,7 +4,7 @@ import warnings
 
 from scipy import interpolate, special
 from ..utils import safe_Pchip_minimize
-from .misc import Zeros
+from .misc import Zeros, WrappedProfile
 from . import Schneider19 as S19, Arico20 as A20, Base
 from .Thermodynamic import (G, Msun_to_Kg, Mpc_to_m, kb_cgs, m_p, m_to_cm)
 
@@ -34,6 +34,7 @@ class MeadProfiles(Base.BaseBFGProfiles):
 
     #Define the new param names
     model_param_names = model_params
+    hyper_param_names = Base.hyper_params
 
 
     def _get_star_frac(self, M_use, a, cosmo):
@@ -119,8 +120,6 @@ class MeadProfiles(Base.BaseBFGProfiles):
     def get_f_star_sat(self, M_use, a, cosmo):
         return self._get_star_frac(M_use, a, cosmo)[2]  
 
-    def _get_gas_params(self): return self.M0, self.beta
-
     def _get_gas_frac(self, M_use, a, cosmo):
 
         f_str = self.get_f_star(M_use, a, cosmo)
@@ -198,16 +197,8 @@ class DarkMatter(MeadProfiles):
         r_use = np.atleast_1d(r)
         M_use = np.atleast_1d(M)
 
-        z = 1/a - 1
-
-        if (self.cdelta is None) and (self.c_M_relation is None):
-            #Use the Duffy08 calibration following Equation 33 in https://arxiv.org/pdf/2005.00009
-            c_M_relation = ccl.halos.concentration.ConcentrationDuffy08(mass_def = self.mass_def)
-        elif self.c_M_relation is not None:
-            c_M_relation = self.c_M_relation
-        else:
-            assert self.cdelta is not None, "Either provide cdelta or a c_M_relation input"
-            c_M_relation = ccl.halos.concentration.ConcentrationConstant(self.cdelta, mass_def = self.mass_def)
+        #Duffy08 by default, following Equation 33 in https://arxiv.org/pdf/2005.00009
+        c_M_relation = self._get_c_M_relation(ccl.halos.concentration.ConcentrationDuffy08)
 
         #No modification of DMO concentration here
         c   = c_M_relation(cosmo, M_use, a)
@@ -221,9 +212,7 @@ class DarkMatter(MeadProfiles):
         r_s, c, rho_c = r_s[:, None], c[:, None], rho_c[:, None]
         r_use, R      = r_use[None, :], R[:, None]
 
-        arg  = (r_use - self.cutoff)
-        arg  = np.where(arg > 30, np.inf, arg) #This is to prevent an overflow in the exponential
-        kfac = 1/( 1 + np.exp(2*arg) ) #Extra exponential cutoff
+        kfac = self._soft_cutoff(r_use) #Extra exponential cutoff
         prof = rho_c/(r_use/r_s * (1 + r_use/r_s)**2) * kfac
         prof = np.where(r_use <= R, prof, 0)
         
@@ -234,7 +223,7 @@ class DarkMatter(MeadProfiles):
         return prof
     
 
-class TwoHalo(S19.TwoHalo, MeadProfiles):
+class TwoHalo(MeadProfiles, S19.TwoHalo):
     __doc__ = S19.TwoHalo.__doc__.replace('Schneider', 'Mead')
 
 
@@ -317,26 +306,17 @@ class SatelliteStars(DarkMatter):
         return prof
 
 
-class Stars(MeadProfiles):
+class Stars(WrappedProfile, MeadProfiles):
     """
     Convenience class for combining central and satellite star components.
 
-    This class serves as a unified interface for gas profiles in halos, combining the contributions 
-    from the central galaxy (`CentralStars`) and satellite galaxies (`SatelliteStars`). It simplifies calculations where 
-    the total gas profile is required, leveraging the underlying logic and methods of the individual 
+    This class serves as a unified interface for star profiles in halos, combining the contributions
+    from the central galaxy (`CentralStars`) and satellite galaxies (`SatelliteStars`). It simplifies calculations where
+    the total star profile is required, leveraging the underlying logic and methods of the individual
     star components.
     """
 
     def __init__(self, **kwargs): self.myprof = CentralStars(**kwargs) + SatelliteStars(**kwargs)
-    def __getattr__(self, name):  return getattr(self.myprof, name)
-    
-    @property
-    def __dict__(self): return self.myprof.__dict__
-    
-    #Need to explicitly set these two methods (to enable pickling)
-    #since otherwise the getattr call above leads to infinite recursions.
-    def __getstate__(self): self.__dict__.copy()    
-    def __setstate__(self, state): self.__dict__.update(state)
 
 
 class DeltaStars(MeadProfiles):
@@ -433,14 +413,8 @@ class BoundGas(MeadProfiles):
         r_use = np.atleast_1d(r)
         M_use = np.atleast_1d(M)
 
-        if (self.cdelta is None) and (self.c_M_relation is None):
-            #Use the Duffy08 calibration following Equation 33 in https://arxiv.org/pdf/2005.00009
-            c_M_relation = ccl.halos.concentration.ConcentrationDuffy08(mass_def = self.mass_def)
-        elif self.c_M_relation is not None:
-            c_M_relation = self.c_M_relation
-        else:
-            assert self.cdelta is not None, "Either provide cdelta or a c_M_relation input"
-            c_M_relation = ccl.halos.concentration.ConcentrationConstant(self.cdelta, mass_def = self.mass_def)
+        #Duffy08 by default, following Equation 33 in https://arxiv.org/pdf/2005.00009
+        c_M_relation = self._get_c_M_relation(ccl.halos.concentration.ConcentrationDuffy08)
 
         z     = 1/a - 1
         c     = c_M_relation(cosmo, M_use, a)
@@ -459,7 +433,7 @@ class BoundGas(MeadProfiles):
         #Do normalization halo-by-halo, since we want custom radial ranges.
         #This way, we can handle sharp transition at R200c without needing
         #super fine resolution in the grid.
-        Normalization = np.ones_like(M_use)
+        Normalization = np.ones(M_use.shape) #Float array, even if M is an integer
         for m_i in range(M_use.shape[0]):
             r_integral    = np.geomspace(self.r_min_int, R[m_i], self.r_steps)
             x_integral    = r_integral/r_s[m_i]
@@ -469,9 +443,7 @@ class BoundGas(MeadProfiles):
         
         del prof_integral, x_integral
 
-        arg   = (r_use[None, :] - self.cutoff)
-        arg   = np.where(arg > 30, np.inf, arg) #This is to prevent an overflow in the exponential
-        kfac  = 1/( 1 + np.exp(2*arg) ) #Extra exponential cutoff
+        kfac = self._soft_cutoff(r_use[None, :]) #Extra exponential cutoff
         x_use = r_use / r_s
         prof  = np.power(np.log(1 + x_use) / x_use, 1/(Geff - 1))
         prof  = np.where(r_use[None, :] <= R[:, None], prof, 0)
@@ -522,7 +494,6 @@ class EjectedGas(MeadProfiles):
         r_use = np.atleast_1d(r)
         M_use = np.atleast_1d(M)
 
-        z = 1/a - 1
         R = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
 
         f_bar = cosmo.cosmo.params.Omega_b/cosmo.cosmo.params.Omega_m
@@ -546,9 +517,7 @@ class EjectedGas(MeadProfiles):
             else:
                 R_ej[i] = np.inf
         
-        arg   = (r_use[None, :] - self.cutoff)
-        arg   = np.where(arg > 30, np.inf, arg) #This is to prevent an overflow in the exponential
-        kfac  = 1/( 1 + np.exp(2*arg) ) #Extra exponential cutoff
+        kfac = self._soft_cutoff(r_use[None, :]) #Extra exponential cutoff
         prof  = f_ej * M_use[:, None] / np.power(2*np.pi*R_ej**2, 3/2) * np.exp(-np.power(r_use/R_ej, 2)/2) * kfac
 
         #Handle dimensions so input dimensions are mirrored in the output
@@ -558,23 +527,17 @@ class EjectedGas(MeadProfiles):
         return prof
 
 
-class Gas(MeadProfiles):
+class Gas(WrappedProfile, MeadProfiles):
     """
     Convenience class for combining bound and ejected gas components.
 
-    This class serves as a unified interface for gas profiles in halos, combining the contributions 
-    from bound gas (`BoundGas`) and ejected gas (`EjectedGas`). It simplifies calculations where 
-    the total gas profile is required, leveraging the underlying logic and methods of the individual 
+    This class serves as a unified interface for gas profiles in halos, combining the contributions
+    from bound gas (`BoundGas`) and ejected gas (`EjectedGas`). It simplifies calculations where
+    the total gas profile is required, leveraging the underlying logic and methods of the individual
     gas components.
     """
 
     def __init__(self, **kwargs): self.myprof = BoundGas(**kwargs) + EjectedGas(**kwargs)
-    def __getattr__(self, name):  return getattr(self.myprof, name)
-    
-    #Need to explicitly set these two methods (to enable pickling)
-    #since otherwise the getattr call above leads to infinite recursions.
-    def __getstate__(self): self.__dict__.copy()    
-    def __setstate__(self, state): self.__dict__.update(state)
 
 
 class GasAddDiffuse(MeadProfiles):
@@ -591,25 +554,17 @@ class GasAddDiffuse(MeadProfiles):
         super().__init__(**kwargs)
         self.BG = BoundGas(**kwargs)
 
-    def update_precision_fftlog(self, **kwargs):
-
-        super().update_precision_fftlog(**kwargs)
-
-        obj_keys = dir(self)
-    
-        for k in obj_keys:
-            if isinstance(getattr(self, k), (ccl.halos.profiles.HaloProfile,)):
-                getattr(self, k).update_precision_fftlog(**kwargs)
-
     def _real(self, cosmo, r, M, a): return self._fftlog_wrap(cosmo, r, M, a, fourier_out=False)
     
     def _fourier(self, cosmo, k, M, a):
 
+        k_use = np.atleast_1d(k)
         M_use = np.atleast_1d(M)
         f_ej  = self._get_gas_frac(M_use, a, cosmo)[1][:, None]
-        prof  = self.BG.fourier(cosmo, k, M, a) + f_ej * M_use[:, None]
+        prof  = self.BG.fourier(cosmo, k_use, M_use, a) + f_ej * M_use[:, None]
 
-        #Handle dimensions for just the mass part
+        #Handle dimensions so input dimensions are mirrored in the output
+        if np.ndim(k) == 0: prof = np.squeeze(prof, axis=-1)
         if np.ndim(M) == 0: prof = np.squeeze(prof, axis=0)
 
         return prof
@@ -661,16 +616,8 @@ class CollisionlessMatter(MeadProfiles):
         r_use = np.atleast_1d(r)
         M_use = np.atleast_1d(M)
 
-        z = 1/a - 1
-
-        if (self.cdelta is None) and (self.c_M_relation is None):
-            #Use the Duffy08 calibration following Equation 33 in https://arxiv.org/pdf/2005.00009
-            c_M_relation = ccl.halos.concentration.ConcentrationDuffy08(mass_def = self.mass_def)
-        elif self.c_M_relation is not None:
-            c_M_relation = self.c_M_relation
-        else:
-            assert self.cdelta is not None, "Either provide cdelta or a c_M_relation input"
-            c_M_relation = ccl.halos.concentration.ConcentrationConstant(self.cdelta, mass_def = self.mass_def)
+        #Duffy08 by default, following Equation 33 in https://arxiv.org/pdf/2005.00009
+        c_M_relation = self._get_c_M_relation(ccl.halos.concentration.ConcentrationDuffy08)
             
         c   = c_M_relation(cosmo, M_use, a)
         c   = self._modify_concentration(cosmo, c, M_use, a)
@@ -686,9 +633,7 @@ class CollisionlessMatter(MeadProfiles):
         r_s, c, rho_c = r_s[:, None], c[:, None], rho_c[:, None]
         r_use, R      = r_use[None, :], R[:, None]
 
-        arg  = (r_use - self.cutoff)
-        arg  = np.where(arg > 30, np.inf, arg) #This is to prevent an overflow in the exponential
-        kfac = 1/( 1 + np.exp(2*arg) ) #Extra exponential cutoff
+        kfac = self._soft_cutoff(r_use) #Extra exponential cutoff
         prof = rho_c/(r_use/r_s * (1 + r_use/r_s)**2) * kfac
         prof = np.where(r_use <= R, prof, 0)
         
@@ -707,7 +652,7 @@ class DarkMatterOnly(DarkMatter):
     """
 
 
-class DarkMatterBaryon(S19.DarkMatterBaryon, MeadProfiles):
+class DarkMatterBaryon(MeadProfiles, S19.DarkMatterBaryon):
 
     """
     Class representing a combined dark matter and baryonic matter profile.
@@ -796,46 +741,25 @@ class DarkMatterBaryon(S19.DarkMatterBaryon, MeadProfiles):
 
 class DarkMatterBaryonAddDiffuse(DarkMatterBaryon):
 
+    #Same as DarkMatterBaryon, but the default gas includes the diffuse (ejected) component
     def __init__(self, gas = None, stars = None, collisionlessmatter = None, darkmatter = None, **kwargs):
-        
-        self.Gas   = gas
-        self.Stars = stars
-        self.TwoHalo    = Zeros() #Should not add 2-halo in Mead method
-        self.DarkMatter = darkmatter
-        self.CollisionlessMatter = collisionlessmatter
-        
-        if self.Gas is None:        self.Gas        = GasAddDiffuse(**kwargs)        
-        if self.Stars is None:      self.Stars      = Stars(**kwargs)
-        if self.DarkMatter is None: self.DarkMatter = DarkMatter(**kwargs)
-        if self.CollisionlessMatter is None: self.CollisionlessMatter = CollisionlessMatter(**kwargs)
 
-        MeadProfiles.__init__(self, **kwargs)
+        if gas is None: gas = GasAddDiffuse(**kwargs)
+        super().__init__(gas, stars, collisionlessmatter, darkmatter, **kwargs)
 
 
-    def update_precision_fftlog(self, **kwargs):
-
-        super().update_precision_fftlog(**kwargs)
-
-        obj_keys = dir(self)
-    
-        for k in obj_keys:
-            if isinstance(getattr(self, k), (ccl.halos.profiles.HaloProfile,)):
-                getattr(self, k).update_precision_fftlog(**kwargs)
-
-                
     def _fourier(self, cosmo, k, M, a):
 
-        Factor = 1 #We'd normally compute this as an integral. Assume we defined profiles properly, so F = 1
-
-        prof = (self.CollisionlessMatter.fourier(cosmo, k, M, a) * Factor +
-                self.Stars.fourier(cosmo, k, M, a) * Factor +
-                self.Gas.fourier(cosmo, k, M, a) * Factor +
+        #No normalization factor is needed (unlike S19): the Mead profiles already add up to M
+        prof = (self.CollisionlessMatter.fourier(cosmo, k, M, a) +
+                self.Stars.fourier(cosmo, k, M, a) +
+                self.Gas.fourier(cosmo, k, M, a) +
                 self.TwoHalo.fourier(cosmo, k, M, a))
 
         return prof
 
 
-class DarkMatterOnlywithLSS(S19.DarkMatterOnly, MeadProfiles):
+class DarkMatterOnlywithLSS(MeadProfiles, S19.DarkMatterOnly):
 
     __doc__ = S19.DarkMatterOnly.__doc__.replace('Schneider', 'Mead')
 
@@ -850,7 +774,7 @@ class DarkMatterOnlywithLSS(S19.DarkMatterOnly, MeadProfiles):
         MeadProfiles.__init__(self, **kwargs)
 
 
-class DarkMatterBaryonwithLSS(S19.DarkMatterBaryon, MeadProfiles):
+class DarkMatterBaryonwithLSS(MeadProfiles, S19.DarkMatterBaryon):
 
     __doc__ = S19.DarkMatterBaryon.__doc__.replace('Schneider', 'Mead')
 
@@ -909,17 +833,10 @@ class Temperature(MeadProfiles):
         r_use = np.atleast_1d(r)
         M_use = np.atleast_1d(M)
 
-        z = 1/a - 1
         R = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
         
-        if (self.cdelta is None) and (self.c_M_relation is None):
-            #Use the Duffy08 calibration following Equation 33 in https://arxiv.org/pdf/2005.00009
-            c_M_relation = ccl.halos.concentration.ConcentrationDuffy08(mass_def = self.mass_def)
-        elif self.c_M_relation is not None:
-            c_M_relation = self.c_M_relation
-        else:
-            assert self.cdelta is not None, "Either provide cdelta or a c_M_relation input"
-            c_M_relation = ccl.halos.concentration.ConcentrationConstant(self.cdelta, mass_def = self.mass_def)
+        #Duffy08 by default, following Equation 33 in https://arxiv.org/pdf/2005.00009
+        c_M_relation = self._get_c_M_relation(ccl.halos.concentration.ConcentrationDuffy08)
             
         c    = c_M_relation(cosmo, M_use, a)
         c    = self._modify_concentration(cosmo, c, M_use, a)
@@ -939,6 +856,38 @@ class Temperature(MeadProfiles):
     
     
     def projected(self, cosmo, r, M, a):
+        """
+        Computes the projected temperature profile as the unweighted average of the temperature
+        along the line of sight,
+
+        .. math::
+
+            T_{\\rm proj}(r) = \\frac{1}{2 L} \\int_{-L}^{L} T\\left(\\sqrt{r^2 + l^2}\\right) dl,
+
+        where :math:`L` is `proj_cutoff` (or `padding_hi_proj * max(r)` if `proj_cutoff` is not set).
+
+        Note that this differs from the projected temperature in the `Thermodynamic` and
+        `Arico20` modules, which is a density-weighted average (the ratio of the projected pressure
+        and projected number density). The result here therefore depends on the choice of
+        `proj_cutoff`. For a density-weighted temperature, use the ratio of the projected
+        `Pressure` and projected gas number density.
+
+        Parameters
+        ----------
+        cosmo : pyccl.Cosmology
+            The cosmology object.
+        r : array_like
+            Projected radii, in comoving Mpc.
+        M : float or array_like
+            Halo mass, in solar masses.
+        a : float
+            Scale factor.
+
+        Returns
+        -------
+        prof : ndarray
+            The line-of-sight averaged temperature, in Kelvin.
+        """
 
         r_max = self.padding_hi_proj * np.max(r)
         if self.proj_cutoff is not None: r_max = self.proj_cutoff
@@ -1004,21 +953,16 @@ class Pressure(MeadProfiles):
 
     def _real(self, cosmo, r, M, a):
 
-        r_use = np.atleast_1d(r)
-        M_use = np.atleast_1d(M)
-
         z = 1/a - 1
 
-        R = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
-
         #The first "bound" component
-        T    = self.Temperature.real(cosmo, r_use, M, a)
-        n    = self.BoundGas.real(cosmo, r_use, M, a) / (self.mean_molecular_weight * m_p) / (Mpc_to_m * m_to_cm)**3
+        T    = self.Temperature.real(cosmo, r, M, a)
+        n    = self.BoundGas.real(cosmo, r, M, a) / (self.mean_molecular_weight * m_p) / (Mpc_to_m * m_to_cm)**3
         P1   = T * n * kb_cgs
 
         #The second, "ejected" component
         T    = self.T_w * np.exp(self.nu_T_w * z)
-        n    = self.EjectedGas.real(cosmo, r_use, M, a) / (self.mean_molecular_weight * m_p) / (Mpc_to_m * m_to_cm)**3
+        n    = self.EjectedGas.real(cosmo, r, M, a) / (self.mean_molecular_weight * m_p) / (Mpc_to_m * m_to_cm)**3
         P2   = T * n * kb_cgs
 
         prof = P1 + P2
@@ -1080,25 +1024,18 @@ class PressureAddDiffuse(MeadProfiles):
 
         super().__init__(**kwargs)
 
-
-    def update_precision_fftlog(self, **kwargs):
-
-        super().update_precision_fftlog(**kwargs)
-
-        obj_keys = dir(self)
-    
-        for k in obj_keys:
-            if isinstance(getattr(self, k), (ccl.halos.profiles.HaloProfile,)):
-                getattr(self, k).update_precision_fftlog(**kwargs)
+    #The real-space profile comes from the Fourier one, as in GasAddDiffuse. Needed by projected().
+    def _real(self, cosmo, r, M, a): return self._fftlog_wrap(cosmo, r, M, a, fourier_out=False)
 
 
     def _fourier(self, cosmo, k, M, a):
 
+        k_use = np.atleast_1d(k)
         M_use = np.atleast_1d(M)
         z     = 1/a - 1
-        
-        #The first "bound" component
-        P1   = self.Pressure.fourier(cosmo, k, M, a)
+
+        #The first "bound" component. Evaluated on 1D arrays, so it is always (M, k)
+        P1   = self.Pressure.fourier(cosmo, k_use, M_use, a)
 
         #The second, "ejected" component
         f_ej = self._get_gas_frac(M_use, a, cosmo)[1][:, None]

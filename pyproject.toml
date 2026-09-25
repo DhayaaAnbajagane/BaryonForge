@@ -15,6 +15,7 @@ classifiers = [
   "Operating System :: OS Independent",
 ]
 dependencies = [
+  "joblib",
   "tqdm",
   "healpy",
   "scipy>=1.12",

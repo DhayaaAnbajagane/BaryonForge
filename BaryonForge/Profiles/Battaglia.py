@@ -1,6 +1,7 @@
 import numpy as np
 import pyccl as ccl
-from ..utils.constants import (Msun_to_Kg, Mpc_to_m, G, Y, Pth_to_Pe)
+import warnings
+from ..utils.constants import (Msun_to_Kg, Mpc_to_m, G, Pth_to_Pe)
 
 
 __all__ = ['Pressure', 'ElectronPressure', 'GasDensity']
@@ -11,10 +12,12 @@ class Pressure(ccl.halos.profiles.HaloProfile):
     Class for implementing the Battaglia pressure profile using CCL's halo profile framework.
 
     This class computes the pressure profile of halos using the `Battaglia et al. (2012) <https://arxiv.org/pdf/1109.3711>`_ model. 
-    The model is based on numerical simulations and provides a way to calculate the electron 
-    pressure profile in galaxy clusters, which is useful for studying the thermal Sunyaev-Zel'dovich 
+    The model is based on numerical simulations and provides a way to calculate the thermal gas
+    pressure profile in galaxy clusters, which is useful for studying the thermal Sunyaev-Zel'dovich
     effect and other astrophysical phenomena. The final profile is in units of comoving
     volume. Use a factor of 1/a^3 (not 1/a^4) to convert to physical pressure.
+    This is the *gas* pressure; `ElectronPressure` gives the electron pressure. Pass this class
+    (not `ElectronPressure`) to `ThermalSZ`, which converts to electron pressure itself.
 
     Inherits from
     -------------
@@ -27,6 +30,10 @@ class Pressure(ccl.halos.profiles.HaloProfile):
         - '200_AGN': Calibrated using AGN feedback and a 200c overdensity mass definition.
         - '500_AGN': Calibrated using AGN feedback and a 500c overdensity mass definition.
         - '500_SH': Calibrated without AGN feedback and a 500c overdensity mass definition.
+    mass_def : ccl.halos.massdef.MassDef, optional
+        The mass definition of the profile. The profile is always computed assuming input masses
+        are in the mass definition of `Model_def`, so this should match it. A warning is raised
+        if it does not. Default is `MassDef200c`.
     truncate : float, optional
         Radius (in units of \( R / R_{\text{def}} \), where \( R_{\text{def}} \) is the halo 
         radius defined via the chosen spherical overdensity) at which to truncate the profiles 
@@ -78,10 +85,7 @@ class Pressure(ccl.halos.profiles.HaloProfile):
         if Model_def == '200_AGN':
             self.mdef = ccl.halos.massdef.MassDef(200, 'critical')
 
-        elif Model_def == '500_AGN':
-            self.mdef = ccl.halos.massdef.MassDef(500, 'critical')
-
-        elif Model_def == '500_SH':
+        elif Model_def in ('500_AGN', '500_SH'):
             self.mdef = ccl.halos.massdef.MassDef(500, 'critical')
 
         else:
@@ -93,6 +97,13 @@ class Pressure(ccl.halos.profiles.HaloProfile):
 
         #Import all other parameters from the base CCL Profile class
         super(Pressure, self).__init__(mass_def = mass_def)
+
+        #The profile is always computed with the mass definition of the calibration (self.mdef),
+        #so input masses must be in that definition. Warn if the declared mass_def disagrees.
+        if self.mass_def.name != self.mdef.name:
+            warnings.warn(f"Battaglia model '{Model_def}' is calibrated for {self.mdef.name} masses, and the profile "
+                          f"is computed assuming the input masses are {self.mdef.name}. However, mass_def = {self.mass_def.name} "
+                          f"was set for this profile. Pass mass_def = MassDef{self.mdef.name} to make these consistent.")
 
         #Constant that helps with the fourier transform convolution integral.
         #This value minimized the ringing due to the transforms
@@ -138,7 +149,6 @@ class Pressure(ccl.halos.profiles.HaloProfile):
         #Cosmological parameters
         Omega_m  = cosmo.cosmo.params.Omega_m
         Omega_b  = cosmo.cosmo.params.Omega_b
-        Omega_g  = cosmo.cosmo.params.Omega_g
         h        = cosmo.cosmo.params.h
 
         #We start with critical density in physical coordinates, in Msun/Mpc^3
@@ -177,8 +187,9 @@ class ElectronPressure(Pressure):
     """
     Computes the electron pressure profile based on the Battaglia et al. (2012) model.
 
-    This class extends `BattagliaPressure` by scaling the gas pressure profile 
-    to electron pressure using a predefined conversion factor.
+    This class extends `BattagliaPressure` by scaling the gas pressure profile
+    to electron pressure using a predefined conversion factor. Do not pass this class to
+    `ThermalSZ`, which already applies the conversion (use `Pressure` there).
 
     Inherits from
     -------------
@@ -236,6 +247,9 @@ class GasDensity(ccl.halos.profiles.HaloProfile):
     """
 
     def __init__(self, Model_def, truncate = False):
+
+        if Model_def not in ('200_AGN', '200_SH'):
+            raise ValueError(f"Input Model_def = {Model_def} not valid. Select one of: 200_AGN, 200_SH")
 
         self.mdef = ccl.halos.massdef.MassDef(200, 'critical')
 
