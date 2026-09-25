@@ -495,6 +495,17 @@ class BaseBFGProfiles(ccl.halos.profiles.HaloProfile):
         return self.__str__()
     
     
+    def _soft_cutoff(self, r):
+        """
+        The soft cutoff factor, `1/(1 + exp(2 (r - cutoff)))`, applied to profiles at large radii
+        (in comoving Mpc) to prevent divergences. Returned with the same shape as `r`.
+        """
+
+        arg = r - self.cutoff
+        arg = np.where(arg > 30, np.inf, arg) #This is to prevent an overflow in the exponential
+        return 1/( 1 + np.exp(2*arg) )
+
+
     #Add routines for consistently changing input params across all profiles
     def set_parameter(self, key, value): 
         """

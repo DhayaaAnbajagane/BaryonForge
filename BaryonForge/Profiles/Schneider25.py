@@ -335,9 +335,7 @@ class DarkMatter(Schneider25Profiles):
         rho_c = M_use/Normalization
         rho_c = rho_c[:, None]
 
-        arg  = (r_use[None, :] - self.cutoff)
-        arg  = np.where(arg > 30, np.inf, arg) #This is to prevent an overflow in the exponential
-        kfac = 1/( 1 + np.exp(2*arg) ) #Extra exponential cutoff
+        kfac = self._soft_cutoff(r_use[None, :]) #Extra exponential cutoff
         prof = rho_c/(r_use/r_s * (1 + r_use/r_s)**2) * 1/(1 + (r_use/r_t)**2)**2 * kfac
         
         #Handle dimensions so input dimensions are mirrored in the output
@@ -411,9 +409,7 @@ class TwoHalo(Schneider25Profiles):
         prof    = f_excl * (1 + bias_M * xi_mm)*ccl.rho_x(cosmo, a, species = 'matter', is_comoving = True)
 
         #Need this truncation so the fourier space integral isnt infinity
-        arg  = (r_use[None, :] - self.cutoff)
-        arg  = np.where(arg > 30, np.inf, arg) #This is to prevent an overflow in the exponential
-        kfac = 1/( 1 + np.exp(2*arg) ) #Extra exponential cutoff
+        kfac = self._soft_cutoff(r_use[None, :]) #Extra exponential cutoff
         prof = prof * kfac
 
         #Handle dimensions so input dimensions are mirrored in the output
@@ -492,9 +488,7 @@ class Stars(Schneider25Profiles):
         prof_integral = 1 / np.power(r_integral, 2) * np.exp(-r_integral/R_cga)
         Normalization = np.trapz(4 * np.pi * r_integral**2 * prof_integral, r_integral, axis = -1)[:, None]
         
-        arg  = (r_use[None, :] - self.cutoff)
-        arg  = np.where(arg > 30, np.inf, arg) #This is to prevent an overflow in the exponential
-        kfac = 1/( 1 + np.exp(2*arg) ) #Extra exponential cutoff
+        kfac = self._soft_cutoff(r_use[None, :]) #Extra exponential cutoff
         prof = 1/r_use**2 * np.exp(-r_use/R_cga) * kfac
         prof = prof * f_cga*M_tot/Normalization
                 
@@ -583,9 +577,7 @@ class HotGas(Schneider25Profiles):
         M_tot = np.trapz(4*np.pi*r_integral**2 * rho, r_integral, axis = -1)
         M_tot = np.atleast_1d(M_tot)[:, None]
         
-        arg   = (r_use[None, :] - self.cutoff)
-        arg   = np.where(arg > 30, np.inf, arg) #This is to prevent an overflow in the exponential
-        kfac  = 1/( 1 + np.exp(2*arg) ) #Extra exponential cutoff
+        kfac = self._soft_cutoff(r_use[None, :]) #Extra exponential cutoff
         prof  = 1/(1 + np.power(u, alpha))**(beta/alpha) / (1 + v**gamma)**(delta/gamma) * kfac
         prof *= f_hga[:, None]*M_tot/Normalization
         
@@ -673,9 +665,7 @@ class InnerGas(Schneider25Profiles):
         M_tot = np.trapz(4*np.pi*r_integral**2 * rho, r_integral, axis = -1)
         M_tot = np.atleast_1d(M_tot)[:, None]
         
-        arg   = (r_use[None, :] - self.cutoff)
-        arg   = np.where(arg > 30, np.inf, arg) #This is to prevent an overflow in the exponential
-        kfac  = 1/( 1 + np.exp(2*arg) ) #Extra exponential cutoff
+        kfac = self._soft_cutoff(r_use[None, :]) #Extra exponential cutoff
         prof  = np.power(r_use, -3) * np.exp(-r_use/R[:, None]) * kfac
         wgt   = 0.5 * (1 + np.tanh(np.log10(r_use/self.r_min_iga)/0.02))
         prof  = (1 - wgt)*h**3 + wgt*prof
@@ -884,9 +874,7 @@ class CollisionlessMatter(Schneider25Profiles):
         prof     = 1/(4*np.pi*r_use**2) * lin_der
         prof     = np.clip(prof, 0, None) #If prof < 0 due to interpolation errors, then force it to 0.
         
-        arg  = (r_use[None, :] - self.cutoff)
-        arg  = np.where(arg > 30, np.inf, arg) #This is to prevent an overflow in the exponential
-        kfac = 1/( 1 + np.exp(2*arg) ) #Extra exponential cutoff
+        kfac = self._soft_cutoff(r_use[None, :]) #Extra exponential cutoff
         prof = np.where(np.isfinite(prof), prof, 0) * kfac
 
         #Handle dimensions so input dimensions are mirrored in the output

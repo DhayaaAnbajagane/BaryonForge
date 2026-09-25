@@ -295,9 +295,7 @@ class DarkMatter(SchneiderProfiles):
         rho_c = M_use/Normalization
         rho_c = rho_c[:, None]
 
-        arg  = (r_use[None, :] - self.cutoff)
-        arg  = np.where(arg > 30, np.inf, arg) #This is to prevent an overflow in the exponential
-        kfac = 1/( 1 + np.exp(2*arg) ) #Extra exponential cutoff
+        kfac = self._soft_cutoff(r_use[None, :]) #Extra exponential cutoff
         prof = rho_c/(r_use/r_s * (1 + r_use/r_s)**2) * 1/(1 + (r_use/r_t)**2)**2 * kfac
         
         #Handle dimensions so input dimensions are mirrored in the output
@@ -383,9 +381,7 @@ class TwoHalo(SchneiderProfiles):
         prof    = (1 + bias_M * xi_mm)*ccl.rho_x(cosmo, a, species = 'matter', is_comoving = True)
 
         #Need this truncation so the fourier space integral isnt infinity
-        arg  = (r_use[None, :] - self.cutoff)
-        arg  = np.where(arg > 30, np.inf, arg) #This is to prevent an overflow in the exponential
-        kfac = 1/( 1 + np.exp(2*arg) ) #Extra exponential cutoff
+        kfac = self._soft_cutoff(r_use[None, :]) #Extra exponential cutoff
         prof = prof * kfac
 
         #Handle dimensions so input dimensions are mirrored in the output
@@ -483,9 +479,7 @@ class Stars(SchneiderProfiles):
         M_tot = np.trapz(4*np.pi*r_integral**2 * rho, r_integral, axis = -1)
         M_tot = np.atleast_1d(M_tot)[:, None]
         
-        arg  = (r_use[None, :] - self.cutoff)
-        arg  = np.where(arg > 30, np.inf, arg) #This is to prevent an overflow in the exponential
-        kfac = 1/( 1 + np.exp(2*arg) ) #Extra exponential cutoff
+        kfac = self._soft_cutoff(r_use[None, :]) #Extra exponential cutoff
         prof = f_cga*M_tot / (4*np.pi**(3/2)*R_h) * 1/r_use**2 * np.exp(-(r_use/2/R_h)**2) * kfac
                 
         #Handle dimensions so input dimensions are mirrored in the output
@@ -591,9 +585,7 @@ class Gas(SchneiderProfiles):
         M_tot = np.trapz(4*np.pi*r_integral**2 * rho, r_integral, axis = -1)
         M_tot = np.atleast_1d(M_tot)[:, None]
         
-        arg   = (r_use[None, :] - self.cutoff)
-        arg   = np.where(arg > 30, np.inf, arg) #This is to prevent an overflow in the exponential
-        kfac  = 1/( 1 + np.exp(2*arg) ) #Extra exponential cutoff
+        kfac = self._soft_cutoff(r_use[None, :]) #Extra exponential cutoff
         prof  = 1/(1 + u)**beta / (1 + v**gamma)**( (delta - beta)/gamma ) * kfac
         prof *= f_gas*M_tot/Normalization
         
@@ -900,9 +892,7 @@ class CollisionlessMatter(SchneiderProfiles):
         prof     = 1/(4*np.pi*r_use**2) * lin_der
         prof     = np.clip(prof, 0, None) #If prof < 0 due to interpolation errors, then force it to 0.
         
-        arg  = (r_use[None, :] - self.cutoff)
-        arg  = np.where(arg > 30, np.inf, arg) #This is to prevent an overflow in the exponential
-        kfac = 1/( 1 + np.exp(2*arg) ) #Extra exponential cutoff
+        kfac = self._soft_cutoff(r_use[None, :]) #Extra exponential cutoff
         prof = np.where(np.isfinite(prof), prof, 0) * kfac
 
         #Handle dimensions so input dimensions are mirrored in the output

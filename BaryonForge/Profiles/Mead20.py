@@ -218,9 +218,7 @@ class DarkMatter(MeadProfiles):
         r_s, c, rho_c = r_s[:, None], c[:, None], rho_c[:, None]
         r_use, R      = r_use[None, :], R[:, None]
 
-        arg  = (r_use - self.cutoff)
-        arg  = np.where(arg > 30, np.inf, arg) #This is to prevent an overflow in the exponential
-        kfac = 1/( 1 + np.exp(2*arg) ) #Extra exponential cutoff
+        kfac = self._soft_cutoff(r_use) #Extra exponential cutoff
         prof = rho_c/(r_use/r_s * (1 + r_use/r_s)**2) * kfac
         prof = np.where(r_use <= R, prof, 0)
         
@@ -457,9 +455,7 @@ class BoundGas(MeadProfiles):
         
         del prof_integral, x_integral
 
-        arg   = (r_use[None, :] - self.cutoff)
-        arg   = np.where(arg > 30, np.inf, arg) #This is to prevent an overflow in the exponential
-        kfac  = 1/( 1 + np.exp(2*arg) ) #Extra exponential cutoff
+        kfac = self._soft_cutoff(r_use[None, :]) #Extra exponential cutoff
         x_use = r_use / r_s
         prof  = np.power(np.log(1 + x_use) / x_use, 1/(Geff - 1))
         prof  = np.where(r_use[None, :] <= R[:, None], prof, 0)
@@ -533,9 +529,7 @@ class EjectedGas(MeadProfiles):
             else:
                 R_ej[i] = np.inf
         
-        arg   = (r_use[None, :] - self.cutoff)
-        arg   = np.where(arg > 30, np.inf, arg) #This is to prevent an overflow in the exponential
-        kfac  = 1/( 1 + np.exp(2*arg) ) #Extra exponential cutoff
+        kfac = self._soft_cutoff(r_use[None, :]) #Extra exponential cutoff
         prof  = f_ej * M_use[:, None] / np.power(2*np.pi*R_ej**2, 3/2) * np.exp(-np.power(r_use/R_ej, 2)/2) * kfac
 
         #Handle dimensions so input dimensions are mirrored in the output
@@ -657,9 +651,7 @@ class CollisionlessMatter(MeadProfiles):
         r_s, c, rho_c = r_s[:, None], c[:, None], rho_c[:, None]
         r_use, R      = r_use[None, :], R[:, None]
 
-        arg  = (r_use - self.cutoff)
-        arg  = np.where(arg > 30, np.inf, arg) #This is to prevent an overflow in the exponential
-        kfac = 1/( 1 + np.exp(2*arg) ) #Extra exponential cutoff
+        kfac = self._soft_cutoff(r_use) #Extra exponential cutoff
         prof = rho_c/(r_use/r_s * (1 + r_use/r_s)**2) * kfac
         prof = np.where(r_use <= R, prof, 0)
         

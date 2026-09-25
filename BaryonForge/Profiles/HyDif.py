@@ -258,9 +258,7 @@ class HydrostaticGas(HyDifProfiles):
 
         M_tot = self._get_M_tot(cosmo, r_integral, M_use, a)
 
-        arg  = (r_use[None, :] - self.cutoff)
-        arg  = np.where(arg > 30, np.inf, arg) #This is to prevent an overflow in the exponential
-        kfac = 1/( 1 + np.exp(2*arg) ) #Extra exponential cutoff
+        kfac = self._soft_cutoff(r_use[None, :]) #Extra exponential cutoff
         prof = self._gnfw(r_use[None, :], R_c, R_h, self.beta_h, self.gamma, self.delta_h) * kfac
         prof = prof * f_h*M_tot/Normalization
 
@@ -324,9 +322,7 @@ class DiffuseGas(HyDifProfiles):
 
         M_tot = self._get_M_tot(cosmo, r_integral, M_use, a)
 
-        arg  = (r_use[None, :] - self.cutoff)
-        arg  = np.where(arg > 30, np.inf, arg) #This is to prevent an overflow in the exponential
-        kfac = 1/( 1 + np.exp(2*arg) ) #Extra exponential cutoff
+        kfac = self._soft_cutoff(r_use[None, :]) #Extra exponential cutoff
         prof = self._gnfw(r_use[None, :], R_c, R_d, beta_d, self.gamma, self.delta_d) * kfac
         prof = prof * f_d*M_tot/Normalization
 

@@ -297,9 +297,7 @@ class DarkMatter(AricoProfiles):
         r_use, R      = r_use[None, :], R[:, None]
 
 
-        arg  = (r_use - self.cutoff)
-        arg  = np.where(arg > 30, np.inf, arg) #This is to prevent an overflow in the exponential
-        kfac = 1/( 1 + np.exp(2*arg) ) #Extra exponential cutoff
+        kfac = self._soft_cutoff(r_use) #Extra exponential cutoff
         prof = rho_c/(r_use/r_s * (1 + r_use/r_s)**2) * kfac
         prof = np.where(r_use <= R, prof, 0)
         
@@ -479,9 +477,7 @@ class BoundGasUntruncated(AricoProfiles):
         prof  = np.where(v <= 1, prof, nfw) 
         prof *= f_bg*M_use[:, None] / Normalization #This profile is allowed to go beyond R200c!
         
-        arg   = (r_use[None, :] - self.cutoff)
-        arg   = np.where(arg > 30, np.inf, arg) #This is to prevent an overflow in the exponential
-        kfac  = 1/( 1 + np.exp(2*arg) ) #Extra exponential cutoff
+        kfac = self._soft_cutoff(r_use[None, :]) #Extra exponential cutoff
         prof  = prof * kfac
         
         #Handle dimensions so input dimensions are mirrored in the output
@@ -581,9 +577,7 @@ class EjectedGas(AricoProfiles):
         R_ej  = self.eta * 0.75 * R_esc
         R_ej  = R_ej[:, None]
 
-        arg   = (r_use[None, :] - self.cutoff)
-        arg   = np.where(arg > 30, np.inf, arg) #This is to prevent an overflow in the exponential
-        kfac  = 1/( 1 + np.exp(2*arg) ) #Extra exponential cutoff
+        kfac = self._soft_cutoff(r_use[None, :]) #Extra exponential cutoff
         prof  = f_eg * M_use[:, None] / np.power(2*np.pi*R_ej**2, 3/2) * np.exp(-np.power(r_use/R_ej, 2)/2) * kfac
 
         #Handle dimensions so input dimensions are mirrored in the output
@@ -769,9 +763,7 @@ class ModifiedDarkMatter(AricoProfiles):
         prof  = rho_c / (r_use/r_s) / np.power(1 + r_use/r_s, 2)
         prof  = np.where(r_use[None, :] < rp, prof, (pGro - pBG))
         
-        arg   = (r_use[None, :] - self.cutoff)
-        arg   = np.where(arg > 30, np.inf, arg) #This is to prevent an overflow in the exponential
-        kfac  = 1/( 1 + np.exp(2*arg) ) #Extra exponential cutoff
+        kfac = self._soft_cutoff(r_use[None, :]) #Extra exponential cutoff
         prof  = prof * kfac
         prof  = np.where(r_use[None, :] <= R[:, None], prof, 0)
 
@@ -921,9 +913,7 @@ class CollisionlessMatter(AricoProfiles):
             prof     = 1/(4*np.pi*r_integral**2) * lin_der
             prof     = interpolate.PchipInterpolator(np.log(r_integral), prof, extrapolate = False)(np.log(r_use))
             
-            arg  = (r_use - self.cutoff)
-            arg  = np.where(arg > 30, np.inf, arg) #This is to prevent an overflow in the exponential
-            kfac = 1/( 1 + np.exp(2*arg) ) #Extra exponential cutoff
+            kfac = self._soft_cutoff(r_use) #Extra exponential cutoff
             prof = np.where(np.isnan(prof), 0, prof) * kfac
             prof = np.where(r_use <= R[m_i], prof, 0)
 
@@ -1130,9 +1120,7 @@ class Pressure(AricoProfiles):
         #and then apply that temp to all gas in the halo.
         prof  = rhoG * (prof / rhoBG)
         
-        arg   = (r_use[None, :] - self.cutoff)
-        arg   = np.where(arg > 30, np.inf, arg) #This is to prevent an overflow in the exponential
-        kfac  = 1/( 1 + np.exp(2*arg) ) #Extra exponential cutoff
+        kfac = self._soft_cutoff(r_use[None, :]) #Extra exponential cutoff
         prof  = prof * kfac
 
         #Handle dimensions so input dimensions are mirrored in the output
@@ -1397,9 +1385,7 @@ class BoundGasDeprecated(AricoProfiles):
         prof  = np.where(r_use[None, :] > R[:, None], 0, prof)
         prof  = f_bg * M_use[:, None] * prof / Norm
 
-        arg   = (r_use[None, :] - self.cutoff)
-        arg   = np.where(arg > 30, np.inf, arg) #This is to prevent an overflow in the exponential
-        kfac  = 1/( 1 + np.exp(2*arg) ) #Extra exponential cutoff
+        kfac = self._soft_cutoff(r_use[None, :]) #Extra exponential cutoff
         prof *= kfac
 
         #Handle dimensions so input dimensions are mirrored in the output
