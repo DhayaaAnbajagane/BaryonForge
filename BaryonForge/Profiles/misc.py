@@ -2,7 +2,7 @@ import numpy as np
 import pyccl as ccl
 from operator import add, mul, sub, truediv, neg, pos, abs
 from .Base import BaseBFGProfiles, hyper_params
-from ..utils.Tabulate import _set_parameter, _get_parameter
+from ..utils.Tabulate import _get_parameter
 from ..utils.misc import combine_fftpars
 from pyccl.pyutils import resample_array, _fftlog_transform as fftlog
 
@@ -249,13 +249,13 @@ class Truncation(BaseBFGProfiles):
     --------
     Create a truncation profile and apply it to a given halo:
 
-    >>> truncation_profile = Truncation(epsilon=0.8)
+    >>> truncation_profile = Truncation(epsilon_trunc=0.8)
     >>> other_bfg_profile  = Profile(...)
-    >>> truncated_profiled = other_bfg_profile * Truncation
+    >>> truncated_profile  = other_bfg_profile * truncation_profile
     >>> r = np.logspace(-2, 1, 50)  # Radii in comoving Mpc
     >>> M = 1e14  # Halo mass in solar masses
     >>> a = 0.8  # Scale factor
-    >>> truncated = other_bfg_profile.real(cosmo, r, M, a)
+    >>> truncated = truncated_profile.real(cosmo, r, M, a)
     """
 
     hyper_param_names = hyper_params + ['epsilon_trunc']
@@ -316,9 +316,6 @@ class Identity(BaseBFGProfiles):
         if np.ndim(M) == 0: prof = np.squeeze(prof, axis=0)
 
         return prof
-    
-    _projected = _real
-    _fourier   = _real
 
     def __str_prf__(self): return "Identity"
     def __str_par__(self): return  f"()"
@@ -357,9 +354,6 @@ class Zeros(BaseBFGProfiles):
         if np.ndim(M) == 0: prof = np.squeeze(prof, axis=0)
 
         return prof
-    
-    _projected = _real
-    _fourier   = _real
 
     def __str_prf__(self): return "Zeros"
     def __str_par__(self): return  f"()"
@@ -415,7 +409,6 @@ class TruncatedFourier(object):
 
         M_use = np.atleast_1d(M)
         k_use = np.atleast_1d(k)
-        prof  = np.zeros([M_use.size, k_use.size])
         R     = self.mass_def.get_radius(cosmo, M_use, a)/a #in comoving Mpc
         kprof = np.zeros([M_use.size, k_use.size])
         for M_i in range(M_use.size):
@@ -505,12 +498,8 @@ class ComovingToPhysical(BaseBFGProfiles):
     def projected(self, cosmo, r, M, a): return self.profile.projected(cosmo, r, M, a) * np.power(a, self.factor + 1)
     def fourier(self, cosmo, k, M, a):   return self.profile.fourier(cosmo, k, M, a)   * np.power(a, self.factor + 3)
 
-    def set_parameter(self, key, value): _set_parameter(self, key, value)
-
-    #CCL asserts that at least one of these methods exist. They simply
-    #forward to the public methods above, which do not use them.
-    def _real(self, cosmo, r, M, a):      return self.real(cosmo, r, M, a)
-    def _projected(self, cosmo, r, M, a): return self.projected(cosmo, r, M, a)
+    #CCL asserts that _real or _fourier exists. It forwards to the public method above.
+    def _real(self, cosmo, r, M, a): return self.real(cosmo, r, M, a)
     
 
 class Mdelta_to_Mtot(object):

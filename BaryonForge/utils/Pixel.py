@@ -1,7 +1,7 @@
 import pyccl as ccl
 import numpy as np, healpy as hp
 from scipy import interpolate, special
-from .Tabulate import _set_parameter, _get_parameter
+from .Tabulate import _get_parameter
 from ..Profiles.Base import BaseBFGProfiles
 
 __all__ = ['ConvolvedProfile', 'GridPixelApprox', 'HealPixel', 'NoPix']
@@ -105,21 +105,16 @@ class ConvolvedProfile(BaseBFGProfiles):
             The attribute or method from the Profile object.
 
         """
-        
-        try:
-            return super().__getattribute__(name)
-        
-        except AttributeError:
-            return getattr(self.Profile, name)
+
+        #Python only calls __getattr__ once the normal lookup has failed
+        return getattr(self.Profile, name)
 
 
     #Need to explicitly set these two methods (to enable pickling)
     #since otherwise the getattr call above leads to infinite recursions.
-    def __getstate__(self): return self.__dict__.copy()    
+    def __getstate__(self): return self.__dict__.copy()
     def __setstate__(self, state): return self.__dict__.update(state)
 
-    def set_parameter(self, key, value): _set_parameter(self, key, value)
-    
     
     def _real(self, cosmo, r, M, a):
         """
@@ -649,9 +644,6 @@ class NoPix(object):
     isHarmonic = False
     size = 0
 
-    def __init__(self):
-        pass
-        
     def real(self, k):
         return np.ones_like(k)
                 
