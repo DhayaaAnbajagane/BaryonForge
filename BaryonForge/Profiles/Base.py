@@ -245,10 +245,10 @@ class BaseBFGProfiles(ccl.halos.profiles.HaloProfile):
         Against a direct (untabulated) line-of-sight integral, with the default `n_per_decade_proj`,
         the median/max errors within R are 0.4-0.8% / <1.1% for S19, Mead20 and Arico20 profiles
         (legacy: 1-3% / 3-5% for smooth S19 profiles, and up to 60-70% near R for the truncated
-        Mead20/Arico20 ones). The cost relative to the legacy method is about 1.1-1.4x when `_real`
-        dominates the run time (eg. S19 or Arico20 DarkMatterBaryon tables of 100 radii x 30 masses),
-        and up to ~5x for cheap profiles evaluated at many radii (eg. S19 Gas at 2000 radii:
-        0.05 s -> 0.21 s), where the per-radius line-of-sight integral dominates.
+        Mead20/Arico20 ones). The line-of-sight integrals are vectorized over radii, so the run time
+        is set by `_real`, and is the same as or shorter than for the legacy method (eg. S19
+        DarkMatterBaryon at 100 radii x 30 masses: 1.0 s for both; at the 500 radii used by
+        `Baryonification2D`: 1.0 s vs 1.2 s; S19 Gas at 2000 radii: 0.013 s vs 0.045 s).
 
         Parameters
         ----------
@@ -325,36 +325,36 @@ class BaseBFGProfiles(ccl.halos.profiles.HaloProfile):
 
         proj_prof = np.zeros([M_use.size, r_use.size])
 
-        #This nested loop saves on memory, and vectorizing the calculation doesn't really
-        #speed things up, so better to keep the loop this way.
+        #Line-of-sight grid of every projected radius: the common r_proj, plus the l values where the
+        #line of sight crosses the edge nodes (and, per mass below, R). Missing crossings are filled
+        #with l = 0, which is already in r_proj; the duplicate adds a zero-width interval, so it
+        #contributes nothing to the integral. This keeps a rectangular (radius, l) array, so each mass
+        #is integrated with a few vectorized calls rather than a loop over radii.
+        l_edge = np.sqrt(np.clip(edge_nodes[None, :]**2 - r_use[:, None]**2, 0, None)) #Shape (r, edge nodes)
+        l_edge = np.where((l_edge > 0) & (l_edge < r_max), l_edge, 0)
+
+        #Radii are processed in blocks, so the (radius, l) arrays stay below ~16 MB each
+        block = max(1, 2_000_000 // (r_proj.size + l_edge.shape[1] + R_nodes.shape[1]))
+
         #Interpolate in log-log space wherever the profile is positive (exact for power-laws,
         #so the result does not depend on where the grid points happen to fall). In intervals
         #touching zero/negative values (eg. sharp truncations), fall back to linear interpolation.
-        #The line-of-sight values where each projected radius crosses the edge nodes
-        r_proj_j = []
-        for j in range(r_use.size):
-            l_nodes = np.sqrt(np.clip(edge_nodes**2 - r_use[j]**2, 0, None))
-            l_nodes = l_nodes[(l_nodes > 0) & (l_nodes < r_max)]
-            r_proj_j.append(np.sort(np.concatenate([r_proj, l_nodes])) if l_nodes.size > 0 else r_proj)
-
         ln_r_integral = np.log(r_integral)
         for i in range(M_use.size):
             positive = prof[i] > 0
             ln_prof  = np.log(np.where(positive, prof[i], 1))
 
-            #The line-of-sight values where each projected radius crosses R of this mass (NaN if it never does)
+            #The line-of-sight values where each projected radius crosses R of this mass (0 if it never does)
             with np.errstate(invalid = 'ignore'):
                 l_R = np.sqrt(R_nodes[i][None, :]**2 - r_use[:, None]**2)
-            l_R = np.where((l_R > 0) & (l_R < r_max), l_R, np.nan)
-            crosses = np.any(np.isfinite(l_R), axis = 1)
+                l_R = np.where((l_R > 0) & (l_R < r_max), l_R, 0)
 
-            for j in range(r_use.size):
+            for j in range(0, r_use.size, block):
 
-                r_proj    = r_proj_j[j]
-                if crosses[j]:
-                    r_proj = np.sort(np.concatenate([r_proj, l_R[j][np.isfinite(l_R[j])]]))
-
-                r_los     = np.sqrt(r_proj**2 + r_use[j]**2)
+                rows      = slice(j, j + block)
+                l_los     = np.broadcast_to(r_proj, (r_use[rows].size, r_proj.size))
+                l_los     = np.sort(np.concatenate([l_los, l_edge[rows], l_R[rows]], axis = 1), axis = 1)
+                r_los     = np.sqrt(l_los**2 + r_use[rows, None]**2)
                 integrand = np.interp(r_los, r_integral, prof[i])
 
                 if np.any(positive):
@@ -362,7 +362,7 @@ class BaseBFGProfiles(ccl.halos.profiles.HaloProfile):
                     loglog = positive[upper] & positive[upper - 1] & (r_los > 0)
                     integrand[loglog] = np.exp(np.interp(np.log(r_los[loglog]), ln_r_integral, ln_prof))
 
-                proj_prof[i, j] = 2*np.trapz(integrand, r_proj)
+                proj_prof[i, rows] = 2*np.trapz(integrand, l_los, axis = 1)
 
         #Handle dimensions so input dimensions are mirrored in the output
         if np.ndim(r) == 0:
