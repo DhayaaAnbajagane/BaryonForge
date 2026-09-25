@@ -7,10 +7,8 @@ import warnings
 
 from scipy import interpolate
 from tqdm import tqdm
-from ..utils import ParamTabulatedProfile
 from ..utils.Tabulate import _get_parameter
-from ..utils.misc import _default_mass_def
-from ..Profiles.BaryonCorrection import BaryonificationClass
+from ..utils.misc import _default_mass_def, _runner_cosmology, _check_p_keys
 
 __all__ = ['DefaultRunner', 'BaryonifyShell', 'PaintProfilesShell', 'PaintProfilesAnisShell',
            'regrid_pixels_hpix']
@@ -286,12 +284,7 @@ class BaryonifyShell(DefaultRunner):
           new map with the original map.
         """
 
-        cosmo = ccl.Cosmology(Omega_c = self.cosmo['Omega_m'] - self.cosmo['Omega_b'],
-                              Omega_b = self.cosmo['Omega_b'], h   = self.cosmo['h'],
-                              sigma8  = self.cosmo['sigma8'],  n_s = self.cosmo['n_s'],
-                              w0      = self.cosmo['w0'],      wa  = self.cosmo['wa'],
-                              matter_power_spectrum = 'linear')
-        cosmo.compute_sigma()
+        cosmo = _runner_cosmology(self.cosmo)
 
         orig_map = self.LightconeShell.map
         NSIDE    = self.LightconeShell.NSIDE
@@ -310,14 +303,7 @@ class BaryonifyShell(DefaultRunner):
         assert np.max(self.HaloLightConeCatalog.cat['z']) <= 30, f"We assume max(z) = 30, but your catalog has max(z) = {np.max(self.HaloLightConeCatalog.cat['z'])}"
         
         
-        keys = vars(self.model).get('p_keys', []) #Check if model has property keys
-
-        if len(keys) > 0:
-            txt = (f"You asked to use {keys} properties in Baryonification. You must pass a ParamTabulatedProfile "
-                   f"pr BaryonificationClass as the model. You have passed {type(self.model)} instead. "
-                   f"If you did pass in a BaryonificationClass make sure you passed in addition params using "
-                   f"the other_params option.")
-            assert isinstance(self.model, (ParamTabulatedProfile, BaryonificationClass)), txt
+        keys = _check_p_keys(self.model) #Names of extra (tabulated) model parameters
         
         pix_offsets = np.zeros([orig_map.size, 3]) 
         
@@ -422,12 +408,7 @@ class PaintProfilesShell(DefaultRunner):
         - Non-finite profile values are set to zero before adding profiles to the map.
         """
 
-        cosmo = ccl.Cosmology(Omega_c = self.cosmo['Omega_m'] - self.cosmo['Omega_b'],
-                              Omega_b = self.cosmo['Omega_b'], h   = self.cosmo['h'],
-                              sigma8  = self.cosmo['sigma8'],  n_s = self.cosmo['n_s'],
-                              w0      = self.cosmo['w0'],      wa  = self.cosmo['wa'],
-                              matter_power_spectrum = 'linear')
-        cosmo.compute_sigma()
+        cosmo = _runner_cosmology(self.cosmo)
 
         orig_map = self.LightconeShell.map
         new_map  = np.zeros_like(orig_map).astype(np.float64)
@@ -442,14 +423,7 @@ class PaintProfilesShell(DefaultRunner):
         assert np.max(self.HaloLightConeCatalog.cat['z']) <= 30, f"We assume max(z) = 30, but your catalog has max(z) = {np.max(self.HaloLightConeCatalog.cat['z'])}"
         
         
-        keys = vars(self.model).get('p_keys', []) #Check if model has property keys
-
-        if len(keys) > 0:
-            txt = (f"You asked to use {keys} properties in Baryonification. You must pass a ParamTabulatedProfile "
-                   f"pr BaryonificationClass as the model. You have passed {type(self.model)} instead. "
-                   f"If you did pass in a BaryonificationClass make sure you passed in addition params using "
-                   f"the other_params option.")
-            assert isinstance(self.model, (ParamTabulatedProfile, BaryonificationClass)), txt
+        keys = _check_p_keys(self.model) #Names of extra (tabulated) model parameters
 
         for j in tqdm(range(self.HaloLightConeCatalog.cat.size), desc = 'Painting Profile', disable = not self.verbose):
 
@@ -547,12 +521,7 @@ class PaintProfilesAnisShell(DefaultRunner):
         - Non-finite profile values are set to zero before adding profiles to the map.
         """
 
-        cosmo = ccl.Cosmology(Omega_c = self.cosmo['Omega_m'] - self.cosmo['Omega_b'],
-                              Omega_b = self.cosmo['Omega_b'], h   = self.cosmo['h'],
-                              sigma8  = self.cosmo['sigma8'],  n_s = self.cosmo['n_s'],
-                              w0      = self.cosmo['w0'],      wa  = self.cosmo['wa'],
-                              matter_power_spectrum = 'linear')
-        cosmo.compute_sigma()
+        cosmo = _runner_cosmology(self.cosmo)
 
         orig_map = self.LightconeShell.map
         new_map  = np.zeros_like(orig_map).astype(np.float64)
@@ -564,14 +533,7 @@ class PaintProfilesAnisShell(DefaultRunner):
         z_t = np.linspace(0, z_m + 0.1, 1000)
         D_a = interpolate.CubicSpline(z_t, ccl.angular_diameter_distance(cosmo, 1/(1 + z_t)))
         
-        keys = vars(self.model).get('p_keys', []) #Check if model has property keys
-
-        if len(keys) > 0:
-            txt = (f"You asked to use {keys} properties in Baryonification. You must pass a ParamTabulatedProfile "
-                   f"pr BaryonificationClass as the model. You have passed {type(self.model)} instead. "
-                   f"If you did pass in a BaryonificationClass make sure you passed in addition params using "
-                   f"the other_params option.")
-            assert isinstance(self.model, (ParamTabulatedProfile, BaryonificationClass)), txt
+        keys = _check_p_keys(self.model) #Names of extra (tabulated) model parameters
 
         #First we need to generate a model for the total mass distribution, according to the mass model
         Mtot_map = PaintProfilesShell(HaloLightConeCatalog = self.HaloLightConeCatalog, 

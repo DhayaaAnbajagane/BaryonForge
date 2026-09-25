@@ -21,6 +21,43 @@ def _default_mass_def(model, default = ccl.halos.massdef.MassDef200c):
     return default
 
 
+def _runner_cosmology(cosmo):
+    """
+    Returns the CCL cosmology used by the runners, built from a catalog's cosmology dictionary
+    (see `build_cosmodict`), with a linear power spectrum and sigma(M) precomputed.
+    """
+
+    cosmo_out = ccl.Cosmology(Omega_c = cosmo['Omega_m'] - cosmo['Omega_b'],
+                              Omega_b = cosmo['Omega_b'], h   = cosmo['h'],
+                              sigma8  = cosmo['sigma8'],  n_s = cosmo['n_s'],
+                              w0      = cosmo['w0'],      wa  = cosmo['wa'],
+                              matter_power_spectrum = 'linear')
+    cosmo_out.compute_sigma()
+
+    return cosmo_out
+
+
+def _check_p_keys(model):
+    """
+    Returns the extra (tabulated) parameter names of a runner model, `model.p_keys`, and checks that
+    a model with such parameters is a `ParamTabulatedProfile` or a `BaryonificationClass`.
+    """
+
+    #Imported here, since utils.misc is imported by those modules
+    from .Tabulate import ParamTabulatedProfile
+    from ..Profiles.BaryonCorrection import BaryonificationClass
+
+    keys = vars(model).get('p_keys', [])
+    if len(keys) > 0:
+        txt = (f"You asked to use {keys} properties in Baryonification. You must pass a ParamTabulatedProfile "
+               f"or BaryonificationClass as the model. You have passed {type(model)} instead. "
+               f"If you did pass in a BaryonificationClass make sure you passed in addition params using "
+               f"the other_params option.")
+        assert isinstance(model, (ParamTabulatedProfile, BaryonificationClass)), txt
+
+    return keys
+
+
 def generate_operator_method(op, reflect = False):
     """
     Defines a method for generating simple arithmetic operations for the Profile classes.

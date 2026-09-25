@@ -1,10 +1,7 @@
 import numpy as np
-import pyccl as ccl
-from scipy.spatial import KDTree 
+from scipy.spatial import KDTree
 from tqdm import tqdm
-from ..utils import ParamTabulatedProfile
-from ..utils.misc import _default_mass_def
-from ..Profiles.BaryonCorrection import BaryonificationClass
+from ..utils.misc import _default_mass_def, _runner_cosmology, _check_p_keys
 
 __all__ = ['DefaultRunnerSnapshot', 'BaryonifySnapshot']
 
@@ -187,25 +184,13 @@ class BaryonifySnapshot(DefaultRunnerSnapshot):
         - The method assumes that the input catalog provides particle coordinates as 'x', 'y', and optionally 'z'.
         """
 
-        cosmo = ccl.Cosmology(Omega_c = self.cosmo['Omega_m'] - self.cosmo['Omega_b'],
-                              Omega_b = self.cosmo['Omega_b'], h   = self.cosmo['h'],
-                              sigma8  = self.cosmo['sigma8'],  n_s = self.cosmo['n_s'],
-                              w0      = self.cosmo['w0'],      wa  = self.cosmo['wa'],
-                              matter_power_spectrum = 'linear')
-        cosmo.compute_sigma()
+        cosmo = _runner_cosmology(self.cosmo)
 
         L    = self.ParticleSnapshot.L
         axes = ['x', 'y'] if self.ParticleSnapshot.is2D else ['x', 'y', 'z']
         tot_offsets = np.zeros([len(self.ParticleSnapshot.cat), len(axes)])
 
-        keys = vars(self.model).get('p_keys', []) #Check if model has property keys
-
-        if len(keys) > 0:
-            txt = (f"You asked to use {keys} properties in Baryonification. You must pass a ParamTabulatedProfile "
-                   f"pr BaryonificationClass as the model. You have passed {type(self.model)} instead. "
-                   f"If you did pass in a BaryonificationClass make sure you passed in addition params using "
-                   f"the other_params option.")
-            assert isinstance(self.model, (ParamTabulatedProfile, BaryonificationClass)), txt
+        keys = _check_p_keys(self.model) #Names of extra (tabulated) model parameters
         
         for j in tqdm(range(self.HaloNDCatalog.cat.size), desc = 'Baryonifying matter', disable = not self.verbose):
 
