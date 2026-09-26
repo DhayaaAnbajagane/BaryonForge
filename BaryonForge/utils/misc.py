@@ -37,6 +37,35 @@ def _runner_cosmology(cosmo):
     return cosmo_out
 
 
+def _halo_radius(mass_def, cosmo, M, a):
+    """
+    Halo radius (physical Mpc) of many halos at once, `mass_def.get_radius(cosmo, M[i], a[i])` for every i,
+    where `M` and `a` are arrays of the same length. CCL's `get_radius` is elementwise in (M, a), so a single
+    call is used; mass definitions that do not accept an array of scale factors are evaluated halo by halo.
+    """
+
+    M = np.atleast_1d(np.asarray(M, dtype = float))
+    a = np.broadcast_to(np.asarray(a, dtype = float), M.shape)
+    try:
+        R = np.asarray(mass_def.get_radius(cosmo, M, a), dtype = float)
+        if R.shape == M.shape: return R
+    except Exception:
+        pass
+    return np.array([mass_def.get_radius(cosmo, M_i, a_i) for M_i, a_i in zip(M, a)], dtype = float)
+
+
+def _batch_method(obj, name):
+    """
+    Returns `obj.<name>` (eg. the batched readout `_projected_batch`) if it is defined by the class of `obj`
+    itself, and None otherwise. Wrappers such as `ConvolvedProfile` or `CombinedProfile` forward unknown
+    attributes to an inner profile, whose batched readout would skip the wrapper's own operation, so a
+    forwarded attribute must not be used.
+    """
+
+    if getattr(type(obj), name, None) is None: return None
+    return getattr(obj, name)
+
+
 def _check_p_keys(model):
     """
     Returns the extra (tabulated) parameter names of a runner model, `model.p_keys`, and checks that

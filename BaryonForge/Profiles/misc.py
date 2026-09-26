@@ -3,7 +3,7 @@ import pyccl as ccl
 from operator import add, mul, sub, truediv, neg, pos, abs
 from .Base import BaseBFGProfiles, hyper_params
 from ..utils.Tabulate import _get_parameter
-from ..utils.misc import combine_fftpars
+from ..utils.misc import combine_fftpars, _batch_method
 from pyccl.pyutils import resample_array, _fftlog_transform as fftlog
 
 __all__ = ['Truncation', 'Identity', 'Zeros', 'ComovingToPhysical', 'Mdelta_to_Mtot', 'CombinedProfile']
@@ -500,7 +500,19 @@ class ComovingToPhysical(BaseBFGProfiles):
 
     #CCL asserts that _real or _fourier exists. It forwards to the public method above.
     def _real(self, cosmo, r, M, a): return self.real(cosmo, r, M, a)
-    
+
+    #Batched readouts for the runners (see `TabulatedProfile._readout_batch`), available when the
+    #input profile itself provides them. `halo` maps every radius to its entry in `M` and `a`.
+    def _scaled_batch(self, name, power):
+        inner = _batch_method(self.profile, name)
+        if inner is None: return None
+        return lambda r, halo, M, a: inner(r, halo, M, a) * np.power(np.asarray(a, dtype = float), power)[halo]
+
+    @property
+    def _real_batch(self):      return self._scaled_batch('_real_batch', self.factor)
+    @property
+    def _projected_batch(self): return self._scaled_batch('_projected_batch', self.factor + 1)
+
 
 class Mdelta_to_Mtot(object):
     """

@@ -8,6 +8,7 @@ Test index:
     test_baryonification_moves_mass_inward_and_conserves_it: checks BaryonifyShell end to end.
     test_split_join_does_not_create_empty_splits: checks catalogs that do not fill every job.
     test_anisotropic_painting_background_includes_pixel_size: checks the background's pixel-area factor.
+    test_runners_do_not_depend_on_batching_or_n_jobs: checks batched/per-halo evaluation and threads agree exactly.
 """
 
 import warnings
@@ -199,3 +200,74 @@ def test_baryonification_moves_mass_inward_and_conserves_it():
     assert result[disc].sum() > 1.5 * original[disc].sum()
     far = hp.query_disc(NSIDE, hp.ang2vec(60.0, -20.0, lonlat=True), np.radians(8 / 60))
     np.testing.assert_allclose(result[far], original[far])
+
+
+class ScalingDisplacement:
+    """Displacement that depends on radius, mass and scale factor, evaluated halo by halo."""
+
+    def displacement(self, r, M, a):
+        return -0.5 * (M / 1e14)**(1 / 3) * np.exp(-np.atleast_1d(r) / (2 * a))
+
+
+class ScalingDisplacementBatched(ScalingDisplacement):
+    """The same displacement, also offering the batched readout that tabulated models provide."""
+
+    def _displacement_batch(self, r, halo, M, a):
+        return -0.5 * (M[halo] / 1e14)**(1 / 3) * np.exp(-r / (2 * a[halo]))
+
+
+class PerHaloOnly:
+    """Hides the batched readout of a profile, so the runners call it halo by halo."""
+
+    def __init__(self, profile):
+        self.profile = profile
+        self.mass_def = profile.mass_def
+
+    def projected(self, cosmo, r, M, a):
+        return self.profile.projected(cosmo, r, M, a)
+
+
+def test_runners_do_not_depend_on_batching_or_n_jobs():
+    """Batched and per-halo model evaluation, and any number of threads, give bit-identical maps."""
+    cosmology = _cosmology()
+    cosmology_parameters = bfg.utils.build_cosmodict(cosmology)
+    rng = np.random.default_rng(3)
+    N, NSIDE = 40, 64
+    catalog = bfg.HaloLightConeCatalog(rng.uniform(0, 360, N), rng.uniform(-60, 60, N), 10**rng.uniform(13, 15, N),
+                                       rng.uniform(0.2, 0.5, N), cosmology_parameters.copy())
+    counts = rng.poisson(5, hp.nside2npix(NSIDE)).astype(float)
+
+    def baryonify(model, n_jobs):
+        shell = bfg.LightconeShell(map=counts, cosmo=cosmology_parameters.copy())
+        return bfg.BaryonifyShell(catalog, shell, epsilon_max=5, model=model, verbose=False, n_jobs=n_jobs).process()
+
+    reference = baryonify(ScalingDisplacement(), 1)
+    np.testing.assert_array_equal(baryonify(ScalingDisplacementBatched(), 1), reference)
+    np.testing.assert_array_equal(baryonify(ScalingDisplacementBatched(), 3), reference)
+    assert reference.sum() == pytest.approx(counts.sum())
+
+    table = bfg.utils.TabulatedProfile(GaussianProfile(), cosmology)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        table.setup_interpolator(z_min=0.1, z_max=0.6, N_samples_z=4, M_min=1e12, M_max=1e16, N_samples_Mass=8,
+                                 R_min=1e-3, R_max=50, N_samples_R=64, verbose=False)
+
+    def paint(model, n_jobs):
+        shell = bfg.LightconeShell(map=np.zeros_like(counts), cosmo=cosmology_parameters.copy())
+        return bfg.PaintProfilesShell(catalog, shell, epsilon_max=5, model=model, verbose=False,
+                                      include_pixel_size=True, n_jobs=n_jobs).process()
+
+    reference = paint(PerHaloOnly(table), 1)
+    assert reference.sum() > 0
+    np.testing.assert_array_equal(paint(table, 1), reference)
+    np.testing.assert_array_equal(paint(table, 3), reference)
+
+    def paint_anisotropic(model, n_jobs):
+        shell = bfg.LightconeShell(map=counts, cosmo=cosmology_parameters.copy(), redshift=0.35)
+        return bfg.PaintProfilesAnisShell(catalog, shell, epsilon_max=5, model=model, Tracer_model=model,
+                                          Mtot_model=table, background_val=1.0, global_tracer_fraction=0.1,
+                                          verbose=False, n_jobs=n_jobs).process()
+
+    reference = paint_anisotropic(PerHaloOnly(table), 1)
+    np.testing.assert_array_equal(paint_anisotropic(table, 1), reference)
+    np.testing.assert_array_equal(paint_anisotropic(table, 3), reference)

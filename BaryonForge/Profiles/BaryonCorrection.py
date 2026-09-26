@@ -5,8 +5,8 @@ from scipy import interpolate, integrate
 import warnings
 from itertools import product
 
-from ..utils.Tabulate import _set_parameter, _record_parameters, _restore_parameters
-from ..utils.misc     import destory_Pk, _default_mass_def
+from ..utils.Tabulate import _set_parameter, _record_parameters, _restore_parameters, _interpolate
+from ..utils.misc     import destory_Pk, _default_mass_def, _halo_radius
 
 __all__ = ['BaryonificationClass', 'Baryonification3D', 'Baryonification2D']
 
@@ -371,6 +371,77 @@ class BaryonificationClass(object):
         self.cosmo = destory_Pk(self.cosmo)
 
     
+    def _warn_outside_table(self, z, M, r):
+        """Warn if the requested redshifts, masses or radii fall outside the tabulated ranges."""
+
+        #Get the ranges we used as input, so we can check if requested
+        #ranges are contained within the input/tabulated ranges.
+        #We saved log(1 + z) so converting back to z here...
+        z_tab = np.exp(self.raw_input_z_range) - 1
+        M_tab = np.exp(self.raw_input_M_range)
+        r_tab = np.exp(self.raw_input_r_range)
+
+        if (np.min(z) < np.min(z_tab)) | (np.max(z) > np.max(z_tab)):
+            warn_text = f"Requested redshift range [{np.min(z)}, {np.max(z)}] outside table's range [{np.min(z_tab)}, {np.max(z_tab)}]"
+            warnings.warn(warn_text, UserWarning)
+
+        if (np.min(M) < np.min(M_tab)) | (np.max(M) > np.max(M_tab)):
+            warn_text = (f"Requested log_Mass range [{np.log10(np.min(M))}, {np.log10(np.max(M))}] outside "
+                         f"table's range [{np.log10(np.min(M_tab))}, {np.log10(np.max(M_tab))}]")
+            warnings.warn(warn_text, UserWarning)
+
+        if not self.Rdelta_sampling:
+            if (np.min(r) < np.min(r_tab)) | (np.max(r) > np.max(r_tab)):
+                warn_text = f"Requested Radius range [{np.min(r)}, {np.max(r)}] outside table's range [{np.min(r_tab)}, {np.max(r_tab)}]"
+                warnings.warn(warn_text, UserWarning)
+
+
+    def _check_table_kwargs(self, kwargs, method = 'displacement'):
+        """Check that exactly the tabulated extra parameters were passed."""
+
+        if not hasattr(self, 'interp_d'):
+            raise NameError("No Table created. Run setup_interpolator() method first")
+
+        for k in self.p_keys:
+            assert k in kwargs.keys(), "Need to provide %s as input into `%s'. Table was built with this." % (k, method)
+
+        extra = [k for k in kwargs.keys() if k not in self.p_keys]
+        if len(extra) > 0:
+            raise ValueError(f"Parameters {extra} were passed to `{method}', but the table was only built with {self.p_keys}.")
+
+
+    def _displacement_batch(self, r, halo, M, a, **kwargs):
+        """
+        Displacements of many halos in a single read of the table, as used by the runners.
+
+        `M`, `a` and the values of `kwargs` hold one entry per halo, and `halo` gives, for every radius
+        in `r`, the index of the halo it belongs to. The result has the shape of `r`, and each entry equals
+        `displacement(r[i], M[halo[i]], a[halo[i]], ...)` up to floating-point rounding. Reading the table
+        once for all halos avoids the per-call overhead of the interpolator, which otherwise dominates
+        when each halo has only a few hundred radii.
+        """
+
+        self._check_table_kwargs(kwargs)
+
+        r     = np.asarray(r, dtype = float)
+        halo  = np.asarray(halo, dtype = int)
+        M     = np.atleast_1d(np.asarray(M, dtype = float))
+        a     = np.broadcast_to(np.asarray(a, dtype = float), M.shape)
+        if r.size == 0: return np.zeros(0)
+
+        R     = _halo_radius(self.mass_def, self.cosmo, M, a)/a #in comoving Mpc
+        used  = np.zeros(M.size, dtype = bool); used[halo] = True #Halos with at least one radius
+        self._warn_outside_table(1/a[used] - 1, M[used], r)
+
+        z_in  = np.log(1/a)[halo] #This is log(1 + z)
+        M_in  = np.log(M)[halo]
+        r_in  = np.log(r) - np.log(R)[halo] if self.Rdelta_sampling else np.log(r)
+        k_in  = [np.broadcast_to(np.asarray(kwargs[k], dtype = float), M.shape)[halo] for k in self.p_keys]
+        displ = _interpolate(self.interp_d, tuple([z_in, M_in, r_in] + k_in))
+
+        return np.where(r < self.epsilon_max*R[halo], displ, 0) #Set large-scale displacements to 0
+
+
     def _readout(self, r, M, a, **kwargs):
 
         """
@@ -415,28 +486,8 @@ class BaryonificationClass(object):
         r_in  = np.log(r_use)
         k_in  = [kwargs[k] * empty for k in self.p_keys] #Same order as the table axes, not the kwargs order
 
-        #Get the ranges we used as input, so we can check if requested
-        #ranges are contained within the input/tabulated ranges.
-        #We saved log(1 + z) so converting back to z here...
-        z_tab = np.exp(self.raw_input_z_range) - 1
-        M_tab = np.exp(self.raw_input_M_range)
-        r_tab = np.exp(self.raw_input_r_range)
+        self._warn_outside_table(z_use, M_use, r_use)
 
-        if (np.min(z_use) < np.min(z_tab)) | (np.max(z_use) > np.max(z_tab)):
-            warn_text = f"Requested redshift range [{np.min(z_use)}, {np.max(z_use)}] outside table's range [{np.min(z_tab)}, {np.max(z_tab)}]"            
-            warnings.warn(warn_text, UserWarning)
-        
-        if (np.min(M_use) < np.min(M_tab)) | (np.max(M_use) > np.max(M_tab)):
-            warn_text = (f"Requested log_Mass range [{np.log10(np.min(M_use))}, {np.log10(np.max(M_use))}] outside "
-                         f"table's range [{np.log10(np.min(M_tab))}, {np.log10(np.max(M_tab))}]")          
-            warnings.warn(warn_text, UserWarning)
-
-        if not self.Rdelta_sampling:
-            if (np.min(r_use) < np.min(r_tab)) | (np.max(r_use) > np.max(r_tab)):
-                warn_text = f"Requested Radius range [{np.min(r_use)}, {np.max(r_use)}] outside table's range [{np.min(r_tab)}, {np.max(r_tab)}]"            
-                warnings.warn(warn_text, UserWarning)
-
-        
         for i in range(M_use.size):
             M_in  = np.log(M_use[i])*empty
             R     = self.mass_def.get_radius(self.cosmo, M_use[i], a)/a #in comoving Mpc
@@ -444,7 +495,7 @@ class BaryonificationClass(object):
             #If Rdelta sampling, the sample in r/Rdelta not r.
             #The table would have been constructed appropriately
             r_tab_in = r_in - np.log(R) if self.Rdelta_sampling else r_in
-            displ[i] = table(tuple([z_in, M_in, r_tab_in] + k_in))
+            displ[i] = _interpolate(table, tuple([z_in, M_in, r_tab_in] + k_in))
             
             inside   = (r < self.epsilon_max*R)
             displ[i] = np.where(inside, displ[i], 0) #Set large-scale displacements to 0
@@ -490,15 +541,7 @@ class BaryonificationClass(object):
             If required parameters are not provided in `kwargs`.
         """
         
-        if not hasattr(self, 'interp_d'):
-            raise NameError("No Table created. Run setup_interpolator() method first")
-            
-        for k in self.p_keys:
-            assert k in kwargs.keys(), "Need to provide %s as input into `displacement'. Table was built with this." % k
-
-        extra = [k for k in kwargs.keys() if k not in self.p_keys]
-        if len(extra) > 0:
-            raise ValueError(f"Parameters {extra} were passed to `displacement', but the table was only built with {self.p_keys}.")
+        self._check_table_kwargs(kwargs)
 
         return self._readout(r, M, a, **kwargs)
 

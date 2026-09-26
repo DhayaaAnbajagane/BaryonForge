@@ -4,9 +4,142 @@ import pyccl as ccl
 from tqdm import tqdm
 from itertools import product
 from scipy import interpolate
+from numba import njit
 from .misc import destory_Pk
 
 __all__ = ['_set_parameter', '_get_parameter', 'TabulatedProfile', 'ParamTabulatedProfile']
+
+
+@njit(nogil = True)
+def _find_interval(grid, start, n, x):
+    """Index i with grid[i] <= x < grid[i+1] (the last interval for x at or above the top node, and the
+    first for x below the bottom one), as scipy's `find_interval_ascending` with extrapolation.
+    The search starts from the interval a uniform grid would give (the tables are uniform in log radius
+    and log mass), so it takes a step or two instead of a full bisection; any grid gives the same result."""
+
+    lo, hi = grid[start], grid[start + n - 1]
+    if not (lo <= x <= hi):
+        return 0 if x < lo else n - 2
+    if x == hi:
+        return n - 2
+
+    i = int((x - lo) / (hi - lo) * (n - 1))
+    i = min(max(i, 0), n - 2)
+    if (grid[start + i] <= x) and (x < grid[start + i + 1]):
+        return i
+
+    low, high = 0, n - 2
+    while low < high:
+        mid = (low + high) // 2
+        if   x <  grid[start + mid]:     high = mid
+        elif x >= grid[start + mid + 1]: low  = mid + 1
+        else:
+            low = mid
+            break
+    return low
+
+
+@njit(nogil = True)
+def _linear_regular_grid(grid, start, size, values, strides, points, fill, use_fill, two_d, out):
+    """
+    Linear interpolation on a rectilinear grid (all grids concatenated in `grid`, dimension k starting at
+    `start[k]` with `size[k]` nodes), with the same arithmetic as scipy's `RegularGridInterpolator`: the same
+    intervals and normalized distances, weights multiplied in dimension order, and corners summed in the
+    same order. `two_d` selects the arithmetic of scipy's separate 2D path (`evaluate_linear_2d`).
+    Points outside the grid get `fill` (if `use_fill`), and points with a NaN coordinate get NaN.
+    """
+
+    P, d  = points.shape
+    lower = np.empty(d, dtype = np.int64)
+    upper = np.empty(d, dtype = np.int64)
+    y     = np.empty(d)
+    ym    = np.empty(d)
+
+    for p in range(P):
+        has_nan = False
+        outside = False
+        for k in range(d):
+            x = points[p, k]
+            s = start[k]
+            n = size[k]
+            if x != x: has_nan = True
+            if (x < grid[s]) or (x > grid[s + n - 1]): outside = True
+            if n == 1:
+                lower[k], upper[k], y[k] = 0, 0, 0.0 #Length-one axis: both "corners" are the single node
+            else:
+                i = _find_interval(grid, s, n, x)
+                lower[k], upper[k] = i, i + 1
+                y[k] = (x - grid[s + i]) / (grid[s + i + 1] - grid[s + i])
+            ym[k] = 1 - y[k]
+
+        if has_nan:
+            out[p] = np.nan
+            continue
+        if outside and use_fill:
+            out[p] = fill
+            continue
+
+        if two_d:
+            s0, s1 = strides[0], strides[1]
+            if size[1] == 1:
+                #scipy interpolates along axis 0 only (and gives NaN if axis 0 also has length one)
+                if size[0] == 1: out[p] = np.nan
+                else: out[p] = values[lower[0]*s0]*ym[0] + values[upper[0]*s0]*y[0]
+            elif size[0] == 1:
+                out[p] = values[lower[1]*s1]*ym[1] + values[upper[1]*s1]*y[1]
+            else:
+                value = 0.0
+                value = value + values[lower[0]*s0 + lower[1]*s1] * ym[0] * ym[1]
+                value = value + values[lower[0]*s0 + upper[1]*s1] * ym[0] * y[1]
+                value = value + values[upper[0]*s0 + lower[1]*s1] * y[0]  * ym[1]
+                value = value + values[upper[0]*s0 + upper[1]*s1] * y[0]  * y[1]
+                out[p] = value
+            continue
+
+        value = 0.0
+        for c in range(1 << d):
+            weight = 1.0
+            flat   = 0
+            for k in range(d):
+                if (c >> (d - 1 - k)) & 1:
+                    weight = weight * y[k]
+                    flat  += upper[k] * strides[k]
+                else:
+                    weight = weight * ym[k]
+                    flat  += lower[k] * strides[k]
+            value = value + values[flat] * weight
+        out[p] = value
+
+    return out
+
+
+def _interpolate(table, points):
+    """
+    Evaluates `table` (a scipy `RegularGridInterpolator`) at `points`, a tuple with one array per dimension.
+    Linear tables are evaluated with a numba kernel that reproduces scipy's result, without its per-call
+    overhead and without holding the GIL (so runner threads can evaluate tables concurrently). Other tables
+    are passed to scipy.
+    """
+
+    values = getattr(table, 'values', None)
+    if not (isinstance(table, interpolate.RegularGridInterpolator) and (table.method == 'linear') and
+            (not table.bounds_error) and (values is not None) and (values.dtype == np.float64) and
+            (values.ndim == len(table.grid))):
+        return table(points)
+
+    pts    = np.stack(np.broadcast_arrays(*[np.asarray(p, dtype = float) for p in points]), axis = -1)
+    shape  = pts.shape[:-1]
+    pts    = np.ascontiguousarray(pts.reshape(-1, len(table.grid)))
+    values = np.ascontiguousarray(values)
+    grid   = np.concatenate([np.asarray(g, dtype = float) for g in table.grid])
+    size   = np.array([len(g) for g in table.grid], dtype = np.int64)
+    start  = np.concatenate([[0], np.cumsum(size)[:-1]]).astype(np.int64)
+    fill   = np.nan if table.fill_value is None else float(table.fill_value)
+    two_d  = (len(table.grid) == 2) and table.values.flags.writeable and (table.values.dtype.byteorder in ('=', '|'))
+    out    = _linear_regular_grid(grid, start, size, values.ravel(), np.array(values.strides, dtype = np.int64) // 8,
+                                  pts, fill, table.fill_value is not None, two_d, np.empty(pts.shape[0]))
+
+    return out.reshape(shape)
 
 def _set_parameter(obj, key, value):
     """
@@ -374,7 +507,7 @@ class TabulatedProfile(ccl.halos.profiles.HaloProfile):
         for i in range(M_use.size):
             M_in  = np.log(M_use[i])*empty
 
-            prof[i] = table((z_in, M_in, r_in, ))
+            prof[i] = _interpolate(table, (z_in, M_in, r_in, ))
             prof[i] = np.exp(prof[i])
             
         #Handle dimensions so input dimensions are mirrored in the output
@@ -384,8 +517,33 @@ class TabulatedProfile(ccl.halos.profiles.HaloProfile):
             prof = np.squeeze(prof, axis=0)
             
         return prof
-            
-        
+
+
+    def _readout_batch(self, r, halo, M, a, table):
+        """
+        Profiles of many halos in a single read of `table`, as used by the runners.
+
+        `M` and `a` hold one entry per halo, and `halo` gives, for every radius in `r`, the index of the halo
+        it belongs to. The result has the shape of `r`, and each entry equals `_readout(r[i], M[halo[i]],
+        a[halo[i]], table)` up to floating-point rounding.
+        """
+
+        if not (hasattr(self, 'interp3D') & hasattr(self, 'interp2D')):
+            raise NameError("No Table created. Run setup_interpolator() method first")
+
+        r    = np.asarray(r, dtype = float)
+        halo = np.asarray(halo, dtype = int)
+        M    = np.atleast_1d(np.asarray(M, dtype = float))
+        a    = np.broadcast_to(np.asarray(a, dtype = float), M.shape)
+        if r.size == 0: return np.zeros(0)
+
+        return np.exp(_interpolate(table, (np.log(1/a)[halo], np.log(M)[halo], np.log(r))))
+
+
+    def _real_batch(self, r, halo, M, a):      return self._readout_batch(r, halo, M, a, getattr(self, 'interp3D', None))
+    def _projected_batch(self, r, halo, M, a): return self._readout_batch(r, halo, M, a, getattr(self, 'interp2D', None))
+
+
     def _real(self, cosmo, r, M, a):
         """
         Computes the real-space profile using the tabulated interpolator.
@@ -394,16 +552,16 @@ class TabulatedProfile(ccl.halos.profiles.HaloProfile):
         ----------
         cosmo : object
             A `ccl.Cosmology` object representing the cosmological parameters.
-        
+
         r : array_like
             The radii at which to compute the profile.
-        
+
         M : float or array_like
             The mass of the halo.
-        
+
         a : float or array_like
             The scale factor at which to compute the profile.
-        
+
         Returns
         -------
         prof : ndarray
@@ -700,7 +858,7 @@ class ParamTabulatedProfile(object):
         for i in range(M_use.size):
             M_in  = np.log(M_use[i])*empty
             p_in  = tuple([z_in, M_in, r_in] + k_in)
-            prof[i] = table(p_in)
+            prof[i] = _interpolate(table, p_in)
             prof[i] = np.exp(prof[i])
             
         #Handle dimensions so input dimensions are mirrored in the output
@@ -710,8 +868,42 @@ class ParamTabulatedProfile(object):
             prof = np.squeeze(prof, axis=0)
             
         return prof
-    
-            
+
+
+    def _readout_batch(self, r, halo, M, a, table, **kwargs):
+        """
+        Profiles of many halos in a single read of `table`, as used by the runners.
+
+        `M`, `a` and the values of `kwargs` hold one entry per halo, and `halo` gives, for every radius in
+        `r`, the index of the halo it belongs to. The result has the shape of `r`, and each entry equals
+        `_readout(r[i], M[halo[i]], a[halo[i]], table, ...)` up to floating-point rounding.
+        """
+
+        if not (hasattr(self, 'interp3D') & hasattr(self, 'interp2D')):
+            raise NameError("No Table created. Run setup_interpolator() method first")
+        for k in self.p_keys:
+            assert k in kwargs.keys(), "Need to provide %s as input. Table was built with this." % k
+        extra = [k for k in kwargs.keys() if k not in self.p_keys]
+        if len(extra) > 0:
+            raise ValueError(f"Parameters {extra} were passed, but the table was only built with {self.p_keys}.")
+
+        r    = np.asarray(r, dtype = float)
+        halo = np.asarray(halo, dtype = int)
+        M    = np.atleast_1d(np.asarray(M, dtype = float))
+        a    = np.broadcast_to(np.asarray(a, dtype = float), M.shape)
+        if r.size == 0: return np.zeros(0)
+
+        k_in = [np.broadcast_to(np.asarray(kwargs[k], dtype = float), M.shape)[halo] for k in self.p_keys] #Same order as the table axes
+        return np.exp(_interpolate(table, tuple([np.log(1/a)[halo], np.log(M)[halo], np.log(r)] + k_in)))
+
+
+    def _real_batch(self, r, halo, M, a, **kwargs):
+        return self._readout_batch(r, halo, M, a, getattr(self, 'interp3D', None), **kwargs)
+
+    def _projected_batch(self, r, halo, M, a, **kwargs):
+        return self._readout_batch(r, halo, M, a, getattr(self, 'interp2D', None), **kwargs)
+
+
     def real(self, cosmo, r, M, a, **kwargs):
         """
         Computes the real-space profile using the tabulated interpolator.

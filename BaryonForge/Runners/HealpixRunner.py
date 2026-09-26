@@ -2,16 +2,95 @@
 import numpy as np
 import pyccl as ccl
 import healpy as hp
+import joblib
 from numba import njit
 import warnings
+from concurrent.futures import ThreadPoolExecutor
 
 from scipy import interpolate
 from tqdm import tqdm
 from ..utils.Tabulate import _get_parameter
-from ..utils.misc import _default_mass_def, _runner_cosmology, _check_p_keys
+from ..utils.misc import _default_mass_def, _runner_cosmology, _check_p_keys, _halo_radius, _batch_method
 
 __all__ = ['DefaultRunner', 'BaryonifyShell', 'PaintProfilesShell', 'PaintProfilesAnisShell',
            'regrid_pixels_hpix']
+
+
+@njit
+def _add_at(target, index, values):
+    """`target[index[i]] += values[i]` for every i, in order. `target` is modified in place."""
+
+    for i in range(index.size):
+        target[index[i]] += values[i]
+
+    return target
+
+
+@njit
+def _add_rows_at(target, index, values):
+    """`target[index[i], :] += values[i, :]` for every i, in order. `target` is modified in place."""
+
+    for i in range(index.size):
+        for k in range(values.shape[1]):
+            target[index[i], k] += values[i, k]
+
+    return target
+
+@njit(nogil = True)
+def _pair_geometry(x, y, z, hid, hvec, D, full):
+    """
+    For every (halo, pixel) pair, with (x, y, z) the pixel's unit vector and `hid` the index of its halo:
+    the distance between the pixel and the halo (physical Mpc, at the halo's distance `D`), and, if `full`,
+    the pixel position `vec * D` and the separation `vec * D - vec_halo * D`. Same arithmetic, in the same
+    order, as the numpy expressions it replaces.
+    """
+
+    P    = x.size
+    r    = np.empty(P)
+    pos  = np.empty((P if full else 0, 3))
+    diff = np.empty((P if full else 0, 3))
+    for i in range(P):
+        h  = hid[i]
+        d  = D[h]
+        px, py, pz = x[i]*d, y[i]*d, z[i]*d
+        dx, dy, dz = px - hvec[h, 0]*d, py - hvec[h, 1]*d, pz - hvec[h, 2]*d
+        r[i] = np.sqrt((dx*dx + dy*dy) + dz*dz)
+        if full:
+            pos[i, 0],  pos[i, 1],  pos[i, 2]  = px, py, pz
+            diff[i, 0], diff[i, 1], diff[i, 2] = dx, dy, dz
+
+    return r, pos, diff
+
+
+@njit(nogil = True)
+def _unit_vector_shift(x, y, z, pos, diff, r, disp):
+    """
+    Change of each pixel's unit vector when its position `pos` moves by `disp` along `diff / r` (offsets that
+    are not finite, eg. for a pixel at the halo center, are set to zero). Same arithmetic, in the same order,
+    as the numpy expressions it replaces.
+    """
+
+    P   = x.size
+    out = np.empty((P, 3))
+    for i in range(P):
+        ox = disp[i] * (diff[i, 0] / r[i])
+        oy = disp[i] * (diff[i, 1] / r[i])
+        oz = disp[i] * (diff[i, 2] / r[i])
+        ox = ox if np.isfinite(ox) else 0.0
+        oy = oy if np.isfinite(oy) else 0.0
+        oz = oz if np.isfinite(oz) else 0.0
+        nx, ny, nz = pos[i, 0] + ox, pos[i, 1] + oy, pos[i, 2] + oz
+        norm = np.sqrt((nx*nx + ny*ny) + nz*nz)
+        out[i, 0], out[i, 1], out[i, 2] = nx/norm - x[i], ny/norm - y[i], nz/norm - z[i]
+
+    return out
+
+#Compile once at import, as for regrid_pixels_hpix below
+_add_at(np.zeros(3), np.array([0, 2]), np.ones(2))
+_add_rows_at(np.zeros([3, 3]), np.array([0, 2]), np.ones([2, 3]))
+for _full in (True, False):
+    _g = _pair_geometry(np.ones(2), np.zeros(2), np.zeros(2), np.array([0, 0]), np.zeros([1, 3]), np.ones(1), _full)
+_unit_vector_shift(np.ones(2), np.zeros(2), np.zeros(2), np.ones([2, 3]), np.ones([2, 3]), np.ones(2), np.ones(2))
 
 @njit
 def regrid_pixels_hpix(hmap, parent_pix_vals, child_pix, child_weights):
@@ -109,6 +188,11 @@ class DefaultRunner(object):
     verbose : bool, optional
         A flag to enable verbose output for logging or debugging purposes. Default is True.
 
+    n_jobs : int, optional
+        Number of threads used to process the halos. Default is 1 (serial). Use -1 for all available
+        cores (-2 for all but one, and so on). The output does not depend on `n_jobs`: halos are processed
+        in fixed chunks and their contributions are always added to the map in catalog order.
+
     Attributes
     ----------
     HaloLightConeCatalog : object
@@ -163,23 +247,158 @@ class DefaultRunner(object):
     """
     
     def __init__(self, HaloLightConeCatalog, LightconeShell, epsilon_max, model, use_ellipticity = False,
-                 mass_def = None, include_pixel_size = False, verbose = True):
+                 mass_def = None, include_pixel_size = False, verbose = True, n_jobs = 1):
 
         self.HaloLightConeCatalog = HaloLightConeCatalog
         self.LightconeShell       = LightconeShell
         self.cosmo = HaloLightConeCatalog.cosmology
         self.model = model
-        
-        
+
+
         self.epsilon_max = epsilon_max
         self.mass_def    = _default_mass_def(model) if mass_def is None else mass_def
         self.verbose     = verbose
-        
+        self.n_jobs      = n_jobs
+
         self.use_ellipticity    = use_ellipticity
         self.include_pixel_size = include_pixel_size
 
         if use_ellipticity:
             raise NotImplementedError("You have set use_ellipticity = True, but this not yet implemented for HealpixRunner")
+
+
+    #Largest number of (halo, pixel) pairs handled in one chunk. Bounds the memory of a chunk (~100 bytes
+    #per pair), while keeping the per-chunk overheads (one pix2vec and one model call) negligible.
+    _max_pairs_per_chunk = 1_000_000
+
+
+    def _n_threads(self):
+        """Number of threads to use, following the joblib convention for negative `n_jobs`."""
+
+        n = 1 if self.n_jobs in (None, 0) else int(self.n_jobs)
+        return max(1, joblib.cpu_count() + 1 + n) if n < 0 else n
+
+
+    def _halo_table(self, cosmo, D_a, keys):
+        """
+        Quantities of every halo in the catalog, computed once rather than inside the loop over halos:
+        mass `M`, scale factor `a`, angular diameter distance `D` (physical Mpc), unit vector `vec`,
+        angular cutout radius `radius`, and the extra (tabulated) properties `other`.
+        """
+
+        cat = self.HaloLightConeCatalog.cat
+        M   = np.asarray(cat['M'],   dtype = float)
+        z   = np.asarray(cat['z'],   dtype = float)
+        ra  = np.asarray(cat['ra'],  dtype = float)
+        dec = np.asarray(cat['dec'], dtype = float)
+        a   = 1/(1 + z)
+        R   = _halo_radius(self.mass_def, cosmo, M, a) #in physical Mpc
+        D   = np.asarray(D_a(z), dtype = float) #also physical Mpc since Ang. Diam. Dist.
+
+        return {'M' : M, 'a' : a, 'D' : D, 'ra' : ra, 'dec' : dec,
+                'vec'    : np.atleast_2d(hp.ang2vec(ra, dec, lonlat = True)),
+                'radius' : R * self.epsilon_max / D,
+                'other'  : {key : np.asarray(cat[key]) for key in keys}}
+
+
+    def _halo_chunks(self, H, NSIDE):
+        """
+        Splits the catalog, in order, into chunks of consecutive halos with at most ~`_max_pairs_per_chunk`
+        (halo, pixel) pairs each (estimated from the cutout areas), and with enough chunks to balance the
+        threads. The chunking does not change the output.
+        """
+
+        N     = H['M'].size
+        n_pix = np.pi * H['radius']**2 / hp.nside2pixarea(NSIDE) + 4
+        size  = max(1, int(np.ceil(N / (8 * self._n_threads())))) if self._n_threads() > 1 else N
+        chunk = np.maximum(np.cumsum(n_pix) // self._max_pairs_per_chunk, np.arange(N) // size).astype(int)
+        chunk = np.maximum.accumulate(chunk)
+
+        return np.split(np.arange(N), np.flatnonzero(np.diff(chunk)) + 1)
+
+
+    def _run_chunks(self, function, chunks, desc = None):
+        """
+        Yields `function(chunk)` for every chunk, in chunk order, running up to `_n_threads()` chunks at once.
+        At most two results per thread are held at any time. A progress bar is shown if `desc` is given.
+        """
+
+        n = self._n_threads()
+        with tqdm(total = sum(c.size for c in chunks), desc = desc, disable = (not self.verbose) or (desc is None)) as pbar:
+            if n == 1:
+                for c in chunks:
+                    yield function(c)
+                    pbar.update(c.size)
+                return
+
+            with ThreadPoolExecutor(max_workers = n) as executor:
+                pending = [executor.submit(function, c) for c in chunks[:2*n]]
+                for i in range(len(chunks)):
+                    result = pending[i].result()
+                    if i + 2*n < len(chunks): pending.append(executor.submit(function, chunks[i + 2*n]))
+                    pending[i] = None
+                    yield result
+                    pbar.update(chunks[i].size)
+
+
+    def _chunk_pixels(self, halos, H, NSIDE, min_pixels = 0):
+        """
+        Pixels within the cutout of every halo in `halos`. Returns the pixel indices of all (halo, pixel)
+        pairs, and the chunk-local index of the halo of each pair. A halo with fewer than `min_pixels`
+        pixels in its cutout uses the 4 pixels nearest to its center instead.
+        """
+
+        pix = []
+        for j in halos:
+            p = hp.query_disc(NSIDE, H['vec'][j], H['radius'][j], inclusive = False, nest = False)
+            if p.size < min_pixels:
+                p = hp.get_interp_weights(NSIDE, H['ra'][j], H['dec'][j], lonlat = True)[0]
+            pix.append(p)
+
+        sizes = [p.size for p in pix]
+        pix   = np.concatenate(pix).astype(np.int64) if len(pix) > 0 else np.zeros(0, dtype = np.int64)
+
+        return pix, np.repeat(np.arange(len(halos)), sizes)
+
+
+    def _chunk_geometry(self, halos, hid, pix, H, NSIDE, full = False):
+        """
+        For every (halo, pixel) pair: the distance between pixel and halo (physical Mpc, at the halo's
+        distance; we assume flat cosmologies, where D_a is the right distance to use here). If `full`, also
+        the pixel's unit vector (x, y, z), its position and its separation vector from the halo.
+        """
+
+        x, y, z = [np.asarray(v, dtype = float) for v in hp.pix2vec(nside = NSIDE, ipix = pix)]
+        r_sep, pos, diff = _pair_geometry(x, y, z, hid, np.ascontiguousarray(H['vec'][halos]), H['D'][halos], full)
+
+        return ((x, y, z), pos, diff, r_sep) if full else r_sep
+
+
+    def _evaluate(self, model, method, cosmo, r, hid, halos, H):
+        """
+        `model.<method>` (`'displacement'` or `'projected'`) for every (halo, pixel) pair of a chunk, where
+        `r` are the comoving radii of the pairs and `hid` their chunk-local halo index. Uses the model's
+        batched readout if it has one (eg. `Baryonification2D`, `TabulatedProfile`), and otherwise calls the
+        model once per halo, as before.
+        """
+
+        M, a  = H['M'][halos], H['a'][halos]
+        other = {k : v[halos] for k, v in H['other'].items()}
+
+        batch = _batch_method(model, f'_{method}_batch')
+        if batch is not None:
+            return np.asarray(batch(r, hid, M, a, **other), dtype = float)
+
+        out    = np.zeros(r.size)
+        bounds = np.searchsorted(hid, np.arange(len(halos) + 1))
+        for i in range(len(halos)):
+            s, e = bounds[i], bounds[i + 1]
+            if e == s: continue
+            o_i = {k : v[i] for k, v in other.items()} #Other properties
+            if method == 'displacement': out[s:e] = model.displacement(r[s:e], M[i], a[i], **o_i)
+            else:                        out[s:e] = getattr(model, method)(cosmo, r[s:e], M[i], a[i], **o_i)
+
+        return out
     
     
     def build_Rmat(self, A, ref):
@@ -304,60 +523,42 @@ class BaryonifyShell(DefaultRunner):
         
         
         keys = _check_p_keys(self.model) #Names of extra (tabulated) model parameters
-        
-        pix_offsets = np.zeros([orig_map.size, 3]) 
-        
-        for j in tqdm(range(self.HaloLightConeCatalog.cat.size), desc = 'Baryonifying matter', disable = not self.verbose):
+        H    = self._halo_table(cosmo, D_a, keys)
 
-            M_j = self.HaloLightConeCatalog.cat['M'][j]
-            z_j = self.HaloLightConeCatalog.cat['z'][j]
-            a_j = 1/(1 + z_j)
-            R_j = self.mass_def.get_radius(cosmo, M_j, a_j) #in physical Mpc
-            D_j = D_a(z_j)
-            o_j = {key : self.HaloLightConeCatalog.cat[key][j] for key in keys} #Other properties
+        def chunk_offsets(halos):
 
-            #Now just ra and dec
-            ra_j   = self.HaloLightConeCatalog.cat['ra'][j]
-            dec_j  = self.HaloLightConeCatalog.cat['dec'][j]
-            vec_j  = hp.ang2vec(ra_j, dec_j, lonlat = True)
-            
-            radius = R_j * self.epsilon_max / D_j
-            pixind = hp.query_disc(self.LightconeShell.NSIDE, vec_j, radius, inclusive = False, nest = False)
-            
-            #If there are less than 4 particles, use the 4 nearest particles
-            if pixind.size < 4:
-                pixind = hp.get_interp_weights(NSIDE, ra_j, dec_j, lonlat = True)[0]
-                
-            vec    = np.stack(hp.pix2vec(nside = NSIDE, ipix = pixind), axis = 1) #We don't precompute/cache, in order to save memory
-            
-            pos_j  = vec_j * D_j #We assume flat cosmologies, where D_a is the right distance to use here
-            pos    = vec   * D_j #In physical distance, since D_j is physical distance (not comoving)
-            diff   = pos - pos_j
-            r_sep  = np.sqrt(np.sum(diff**2, axis = 1))
-            
+            #If there are less than 4 pixels in a cutout, use the 4 nearest pixels
+            pix, hid = self._chunk_pixels(halos, H, NSIDE, min_pixels = 4)
+            vec, pos, diff, r_sep = self._chunk_geometry(halos, hid, pix, H, NSIDE, full = True) #pos in physical distance
+            a = H['a'][halos][hid]
+
             #Compute the displacement needed. Convert input distance from physical --> comoving.
             #Then convert the output from comoving --> physical since "pos" is in physical distance
-            offset = self.model.displacement(r_sep/a_j, M_j, a_j, **o_j) * a_j
-            offset = offset[:, None] * (diff/r_sep[:, None]) #Add direction
-            offset = np.where(np.isfinite(offset), offset, 0) #If offset is weird, set it to 0
-            
-            #Now convert the 3D offset into a shift in the unit vector of the pixel
-            nw_pos = pos + offset #New position
-            nw_vec = nw_pos/np.sqrt(np.sum(nw_pos**2, axis = 1))[:, None] #Get unit vector of new position
-            offset = nw_vec - vec #Subtract from it the pixel's original unit vector
-            
-            #Accumulate the offsets in the UNIT VECTORS of the hpixels
-            pix_offsets[pixind, :] += offset
-        
-        new_vec = np.stack( hp.pix2vec(NSIDE, np.arange(orig_map.size)), axis = 1) + pix_offsets
-        new_ang = np.stack( hp.vec2ang(new_vec, lonlat = True), axis = 1)
+            disp = self._evaluate(self.model, 'displacement', cosmo, r_sep/a, hid, halos, H) * a
+
+            #Now convert the 3D offset (disp along diff/r_sep, set to 0 if it is weird) into a shift in the
+            #unit vector of the pixel: the unit vector of the new position minus the original unit vector
+            return pix, _unit_vector_shift(*vec, pos, diff, r_sep, np.asarray(disp, dtype = float))
+
+        #Accumulate the offsets in the UNIT VECTORS of the hpixels, halo by halo in catalog order
+        pix_offsets = np.zeros([orig_map.size, 3])
+        for pix, offset in self._run_chunks(chunk_offsets, self._halo_chunks(H, NSIDE), 'Baryonifying matter'):
+            _add_rows_at(pix_offsets, pix, offset)
+
         p_pix   = np.where(orig_map != 0)[0] #Only select regions with non-zero map-values. Zero value pixels don't matter
-        
-        c_pix, c_weight = hp.get_interp_weights(NSIDE, new_ang[p_pix, 0], new_ang[p_pix, 1], lonlat = True)
-        c_pix, c_weight = c_pix.T, c_weight.T
-        
+
+        #Reassign each displaced pixel to the four pixels around its new position. Done in chunks of pixels
+        #(threaded if n_jobs > 1) that are regridded in order, so the result is the same as a single pass.
+        def chunk_weights(pix):
+            new_vec = np.stack( hp.pix2vec(NSIDE, pix), axis = 1) + pix_offsets[pix]
+            new_ang = np.stack( hp.vec2ang(new_vec, lonlat = True), axis = 1)
+            c_pix, c_weight = hp.get_interp_weights(NSIDE, new_ang[:, 0], new_ang[:, 1], lonlat = True)
+            return pix, c_pix.T, c_weight.T
+
         new_map = np.zeros(orig_map.size, dtype = float)
-        new_map = regrid_pixels_hpix(new_map, orig_map[p_pix], c_pix, c_weight)
+        chunks  = np.array_split(p_pix, max(1, int(np.ceil(p_pix.size / 250_000))))
+        for pix, c_pix, c_weight in self._run_chunks(chunk_weights, chunks):
+            new_map = regrid_pixels_hpix(new_map, orig_map[pix], c_pix, c_weight)
 
         #Do a quick check that the sum is the same
         new_sum = np.sum(new_map)
@@ -424,46 +625,31 @@ class PaintProfilesShell(DefaultRunner):
         
         
         keys = _check_p_keys(self.model) #Names of extra (tabulated) model parameters
+        H    = self._halo_table(cosmo, D_a, keys)
 
-        for j in tqdm(range(self.HaloLightConeCatalog.cat.size), desc = 'Painting Profile', disable = not self.verbose):
+        def chunk_paint(halos):
 
-            M_j = self.HaloLightConeCatalog.cat['M'][j]
-            z_j = self.HaloLightConeCatalog.cat['z'][j]
-            a_j = 1/(1 + z_j)
-            R_j = self.mass_def.get_radius(cosmo, M_j, a_j) #in physical Mpc
-            D_j = D_a(z_j) #also physical Mpc since Ang. Diam. Dist.
-            o_j = {key : self.HaloLightConeCatalog.cat[key][j] for key in keys} #Other properties
-            
-            ra_j   = self.HaloLightConeCatalog.cat['ra'][j]
-            dec_j  = self.HaloLightConeCatalog.cat['dec'][j]
-            vec_j  = hp.ang2vec(ra_j, dec_j, lonlat = True)
-            
-            radius = R_j * self.epsilon_max / D_j
-            pixind = hp.query_disc(self.LightconeShell.NSIDE, vec_j, radius, inclusive = False, nest = False)
-
-            #Halo is smaller than a pixel, so no pixel centers fall within the cutout. Skip it.
-            if pixind.size == 0: continue
-
-            vec    = np.stack(hp.pix2vec(nside = NSIDE, ipix = pixind), axis = 1)
-
-            pos_j  = vec_j * D_j #We assume flat cosmologies, where D_a is the right distance to use here
-            pos    = vec   * D_j
-            diff   = pos - pos_j
-            r_sep  = np.sqrt(np.sum(diff**2, axis = 1))
+            #A halo smaller than a pixel has no pixel centers in its cutout, and so contributes no pairs.
+            pix, hid = self._chunk_pixels(halos, H, NSIDE)
+            r_sep    = self._chunk_geometry(halos, hid, pix, H, NSIDE)
+            a        = H['a'][halos][hid]
 
             #Compute the painted map
-            Paint  = self.model.projected(cosmo, r_sep/a_j, M_j, a_j, **o_j)
-            Paint  = np.where(np.isfinite(Paint), Paint, 0) #Set non-finite values to 0
-            
+            Paint = self._evaluate(self.model, 'projected', cosmo, r_sep/a, hid, halos, H)
+            Paint = np.where(np.isfinite(Paint), Paint, 0) #Set non-finite values to 0
+
             #Add the pixel area back to the maps if requested by user.
             #This factor is needed to get, eg., mass maps when inputting density profiles
-            #Factor of D_j helps convert from radian^2 to physical Mpc^2.
-            #Since D_j is the *physical* ang. diam. distance, the profile must already be
+            #Factor of D helps convert from radian^2 to physical Mpc^2.
+            #Since D is the *physical* ang. diam. distance, the profile must already be
             #in physical units (ie. wrapped in ComovingToPhysical with factor = -3).
-            if self.include_pixel_size: Paint = Paint * (pixarea * D_j**2)
+            if self.include_pixel_size: Paint = Paint * (pixarea * H['D'][halos][hid]**2)
 
-            #Add the profiles to the new healpix map
-            new_map[pixind] += Paint
+            return pix, Paint
+
+        #Add the profiles to the new healpix map, halo by halo in catalog order
+        for pix, Paint in self._run_chunks(chunk_paint, self._halo_chunks(H, NSIDE), 'Painting Profile'):
+            _add_at(new_map, pix, Paint)
 
         return new_map
     
@@ -485,15 +671,15 @@ class PaintProfilesAnisShell(DefaultRunner):
 
     def __init__(self, HaloLightConeCatalog, LightConeShell, epsilon_max, model, Tracer_model, Mtot_model, 
                  background_val, global_tracer_fraction, 
-                 mass_def = None, 
-                 include_pixel_size = False, use_ellipticity = False, verbose = True):
-        
+                 mass_def = None,
+                 include_pixel_size = False, use_ellipticity = False, verbose = True, n_jobs = 1):
+
         self.Tracer_model   = Tracer_model
         self.Mtot_model     = Mtot_model
         self.background_val = background_val
         self.global_tracer_fraction = global_tracer_fraction
-        
-        super().__init__(HaloLightConeCatalog, LightConeShell, epsilon_max, model, use_ellipticity, mass_def, include_pixel_size, verbose)
+
+        super().__init__(HaloLightConeCatalog, LightConeShell, epsilon_max, model, use_ellipticity, mass_def, include_pixel_size, verbose, n_jobs)
         
     def process(self):
         """
@@ -541,7 +727,7 @@ class PaintProfilesAnisShell(DefaultRunner):
                                       epsilon_max = self.epsilon_max, model = self.Mtot_model, 
                                       use_ellipticity = self.use_ellipticity, 
                                       include_pixel_size = True,
-                                      mass_def = self.mass_def, verbose = self.verbose).process()
+                                      mass_def = self.mass_def, verbose = self.verbose, n_jobs = self.n_jobs).process()
         
         assert self.LightconeShell.redshift is not None, "The LightconeShell must have a redshift to use PaintProfilesAnisShell"
 
@@ -568,53 +754,37 @@ class PaintProfilesAnisShell(DefaultRunner):
             warnings.warn("Inputted halos contribute more mass than is available for this mean matter density."
                           "Your Mtot_model profiles are either too extended or you are using the wrong cosmology.")
             
-        Paint  = self.model.projected
-        Tracer = self.Tracer_model.projected
+        H = self._halo_table(cosmo, D_a, keys)
 
-        for j in tqdm(range(self.HaloLightConeCatalog.cat.size), desc = 'Painting Profile', disable = not self.verbose):
+        def chunk_paint(halos):
 
-            M_j = self.HaloLightConeCatalog.cat['M'][j]
-            z_j = self.HaloLightConeCatalog.cat['z'][j]
-            a_j = 1/(1 + z_j)
-            R_j = self.mass_def.get_radius(cosmo, M_j, a_j) #in physical Mpc
-            D_j = D_a(z_j) #also physical Mpc since Ang. Diam. Dist.
-            o_j = {key : self.HaloLightConeCatalog.cat[key][j] for key in keys} #Other properties
-            
-            ra_j   = self.HaloLightConeCatalog.cat['ra'][j]
-            dec_j  = self.HaloLightConeCatalog.cat['dec'][j]
-            vec_j  = hp.ang2vec(ra_j, dec_j, lonlat = True)
-            
-            radius = R_j * self.epsilon_max / D_j
-            pixind = hp.query_disc(self.LightconeShell.NSIDE, vec_j, radius, inclusive = False, nest = False)
-
-            #Halo is smaller than a pixel, so no pixel centers fall within the cutout. Skip it.
-            if pixind.size == 0: continue
-
-            vec    = np.stack(hp.pix2vec(nside = NSIDE, ipix = pixind), axis = 1)
-
-            pos_j  = vec_j * D_j #We assume flat cosmologies, where D_a is the right distance to use here
-            pos    = vec   * D_j
-            diff   = pos - pos_j
-            r_sep  = np.sqrt(np.sum(diff**2, axis = 1))
+            #A halo smaller than a pixel has no pixel centers in its cutout, and so contributes no pairs.
+            pix, hid = self._chunk_pixels(halos, H, NSIDE)
+            r_sep    = self._chunk_geometry(halos, hid, pix, H, NSIDE)
+            r    = r_sep/H['a'][halos][hid]
+            area = pixarea * H['D'][halos][hid]**2
 
             #Compute the painted map
-            Painting = Paint(cosmo, r_sep/a_j, M_j, a_j, **o_j)
+            Painting = self._evaluate(self.model, 'projected', cosmo, r, hid, halos, H)
             Painting = np.where(np.isfinite(Painting), Painting, 0)
-            Canvas   = Tracer(cosmo, r_sep/a_j, M_j, a_j, **o_j)
+            Canvas   = self._evaluate(self.Tracer_model, 'projected', cosmo, r, hid, halos, H)
             Canvas   = np.where(np.isfinite(Canvas) & np.invert(np.isnan(Canvas)), Canvas, 0)
-            Canvas   = Canvas * (pixarea * D_j**2) #Tracer mass in pixel, same units as Mtot_map (painted with include_pixel_size = True)
-            Mfrac    = np.divide(Canvas, Mtot_map[pixind], out = np.zeros_like(Canvas), where = Mtot_map[pixind] > 0)
-            Mfrac   *= orig_map[pixind]
-            
+            Canvas   = Canvas * area #Tracer mass in pixel, same units as Mtot_map (painted with include_pixel_size = True)
+            Mfrac    = np.divide(Canvas, Mtot_map[pix], out = np.zeros_like(Canvas), where = Mtot_map[pix] > 0)
+            Mfrac   *= orig_map[pix]
+
             #Add the pixel area back to the maps if requested by user.
             #This factor is needed to get, eg., mass maps when inputting density profiles
-            #Factor of D_j helps convert from radian^2 to physical Mpc^2.
-            #Since D_j is the *physical* ang. diam. distance, the profile must already be
+            #Factor of D helps convert from radian^2 to physical Mpc^2.
+            #Since D is the *physical* ang. diam. distance, the profile must already be
             #in physical units (ie. wrapped in ComovingToPhysical with factor = -3).
-            if self.include_pixel_size: Painting = Painting * (pixarea * D_j**2)
+            if self.include_pixel_size: Painting = Painting * area
 
-            #Add the profiles to the new healpix map
-            new_map[pixind] += Painting * Mfrac   
+            return pix, Painting * Mfrac
+
+        #Add the profiles to the new healpix map, halo by halo in catalog order
+        for pix, values in self._run_chunks(chunk_paint, self._halo_chunks(H, NSIDE), 'Painting Profile'):
+            _add_at(new_map, pix, values)
 
         #Missing mass was assigned to uniform background. Here we account for that background's contribution
         Mfrac    = np.divide(dV * drho_m, Mtot_map, out = np.zeros_like(Mtot_map), where = Mtot_map > 0)
