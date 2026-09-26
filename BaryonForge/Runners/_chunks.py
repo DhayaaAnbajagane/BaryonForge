@@ -7,13 +7,14 @@ to the output in catalog order, so the result does not depend on the chunking or
 import numpy as np
 import joblib
 from numba import njit
+from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor
 from tqdm import tqdm
 
 from ..utils.misc import _batch_method
 
 
-@njit
+@njit(nogil = True)
 def _add_at(target, index, values):
     """`target[index[i]] += values[i]` for every i, in order. `target` is modified in place."""
 
@@ -23,7 +24,7 @@ def _add_at(target, index, values):
     return target
 
 
-@njit
+@njit(nogil = True)
 def _add_rows_at(target, index, values):
     """`target[index[i], :] += values[i, :]` for every i, in order. `target` is modified in place."""
 
@@ -32,6 +33,51 @@ def _add_rows_at(target, index, values):
             target[index[i], k] += values[i, k]
 
     return target
+
+
+@njit(nogil = True)
+def _add_at_range(target, index, values, lo, hi):
+    """`_add_at` for the entries with `lo <= index[i] < hi` only (in the same order)."""
+
+    for i in range(index.size):
+        j = index[i]
+        if (j >= lo) and (j < hi): target[j] += values[i]
+
+    return target
+
+
+@njit(nogil = True)
+def _add_rows_at_range(target, index, values, lo, hi):
+    """`_add_rows_at` for the entries with `lo <= index[i] < hi` only (in the same order)."""
+
+    for i in range(index.size):
+        j = index[i]
+        if (j >= lo) and (j < hi):
+            for k in range(values.shape[1]):
+                target[j, k] += values[i, k]
+
+    return target
+
+
+@contextmanager
+def _range_adder(n_threads):
+    """
+    Yields `add(kernel, target, *args)`, which runs `kernel(target, *args, lo, hi)` (a GIL-free `*_range` kernel)
+    over `n_threads` consecutive ranges [lo, hi) of the target's entries at once, and waits for all of them.
+    Every entry is updated by one thread only, with the contributions in their original order, so a sequence
+    of `add` calls gives exactly the result of the serial loops.
+    """
+
+    if n_threads == 1:
+        yield lambda kernel, target, *args: kernel(target, *args, 0, target.shape[0])
+        return
+
+    with ThreadPoolExecutor(max_workers = n_threads) as pool:
+        def add(kernel, target, *args):
+            bounds  = np.linspace(0, target.shape[0], n_threads + 1).astype(np.int64)
+            futures = [pool.submit(kernel, target, *args, bounds[t], bounds[t + 1]) for t in range(n_threads)]
+            for f in futures: f.result()
+        yield add
 
 
 def _n_threads(n_jobs):
