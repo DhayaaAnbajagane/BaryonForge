@@ -577,7 +577,7 @@ class PaintProfilesShell(DefaultRunner):
         cosmo = _runner_cosmology(self.cosmo)
 
         orig_map = self.LightconeShell.map
-        new_map  = np.zeros_like(orig_map).astype(np.float64)
+        new_map  = np.zeros(orig_map.shape, dtype = np.float64) #One map-sized allocation (zeros_like().astype() made two)
         NSIDE    = self.LightconeShell.NSIDE
         pixarea  = hp.nside2pixarea(NSIDE, degrees = False)
 
@@ -675,7 +675,7 @@ class PaintProfilesAnisShell(DefaultRunner):
         cosmo = _runner_cosmology(self.cosmo)
 
         orig_map = self.LightconeShell.map
-        new_map  = np.zeros_like(orig_map).astype(np.float64)
+        new_map  = np.zeros(orig_map.shape, dtype = np.float64) #One map-sized allocation (zeros_like().astype() made two)
         NSIDE    = self.LightconeShell.NSIDE
         pixarea  = hp.nside2pixarea(NSIDE, degrees = False)
 
@@ -752,12 +752,13 @@ class PaintProfilesAnisShell(DefaultRunner):
             _add_at(new_map, pix, values)
 
         #Missing mass was assigned to uniform background. Here we account for that background's contribution
+        #(The scalings are done in place, to avoid more map-sized arrays; the arithmetic is unchanged.)
         Mfrac    = np.divide(dV * drho_m, Mtot_map, out = np.zeros_like(Mtot_map), where = Mtot_map > 0)
         Mfrac   *= orig_map
-        Bkg      = self.background_val * self.global_tracer_fraction * Mfrac
+        Mfrac   *= self.background_val * self.global_tracer_fraction #The background, Bkg
         #Same pixel-size factor as the halo terms above, using the shell's distance
-        if self.include_pixel_size: Bkg = Bkg * (pixarea * dD**2)
-        new_map += Bkg
+        if self.include_pixel_size: Mfrac *= (pixarea * dD**2)
+        new_map += Mfrac
 
         new_map  = new_map.reshape(orig_map.shape)
 
