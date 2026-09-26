@@ -4,6 +4,7 @@ from tqdm import tqdm
 from scipy import interpolate, integrate
 import warnings
 from itertools import product
+from concurrent.futures import ThreadPoolExecutor
 
 from ..utils.Tabulate import _set_parameter, _record_parameters, _restore_parameters, _interpolate
 from ..utils.misc     import destory_Pk, _default_mass_def, _halo_radius
@@ -440,6 +441,49 @@ class BaryonificationClass(object):
         displ = _interpolate(self.interp_d, tuple([z_in, M_in, r_in] + k_in))
 
         return np.where(r < self.epsilon_max*R[halo], displ, 0) #Set large-scale displacements to 0
+
+
+    def _displacement_curves(self, M, a, r = None, n_threads = 1, **kwargs):
+        """
+        Displacement of every halo tabulated along the table's radial nodes, as used by the snapshot runner.
+
+        Returns `(nodes, curves, shift, R_cut)`: for halo `i` at comoving radius `x`, the displacement is the
+        linear interpolation of `curves[i]` over `nodes` at `log(x) - shift[i]` (NaN outside the nodes), and
+        zero for `x >= R_cut[i]`. Since the table is linear in the radial coordinate, this equals
+        `displacement(x, M[i], a[i], ...)` up to floating-point rounding. `M`, `a` and the values of `kwargs`
+        hold one entry per halo, and `r` (optional) are the radii that will be requested, used only for the
+        usual out-of-range warnings. The table is read by `n_threads` threads (the result does not depend on
+        it). Returns None if the table is not a linear `RegularGridInterpolator`.
+        """
+
+        self._check_table_kwargs(kwargs)
+        table = self.interp_d
+        if not (isinstance(table, interpolate.RegularGridInterpolator) and (table.method == 'linear')):
+            return None
+
+        M     = np.atleast_1d(np.asarray(M, dtype = float))
+        a     = np.broadcast_to(np.asarray(a, dtype = float), M.shape)
+        R     = _halo_radius(self.mass_def, self.cosmo, M, a)/a #in comoving Mpc
+        self._warn_outside_table(1/a - 1, M, np.atleast_1d(r) if r is not None else np.exp(self.raw_input_r_range[[0, -1]]))
+
+        nodes  = np.asarray(table.grid[2], dtype = float)
+        n      = nodes.size
+        k_all  = [np.broadcast_to(np.asarray(kwargs[k], dtype = float), M.shape) for k in self.p_keys]
+
+        def read(halos):
+            k_in   = [np.repeat(k[halos], n) for k in k_all]
+            points = tuple([np.repeat(np.log(1/a[halos]), n), np.repeat(np.log(M[halos]), n), np.tile(nodes, halos.size)] + k_in)
+            return _interpolate(table, points).reshape(halos.size, n)
+
+        groups = np.array_split(np.arange(M.size), max(1, min(int(n_threads), M.size)))
+        if len(groups) == 1:
+            curves = read(groups[0])
+        else:
+            with ThreadPoolExecutor(max_workers = len(groups)) as executor: #The table readout releases the GIL
+                curves = np.concatenate(list(executor.map(read, groups)), axis = 0)
+        shift  = np.log(R) if self.Rdelta_sampling else np.zeros(M.size)
+
+        return nodes, curves, shift, self.epsilon_max*R
 
 
     def _readout(self, r, M, a, **kwargs):

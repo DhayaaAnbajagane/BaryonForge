@@ -2,39 +2,18 @@
 import numpy as np
 import pyccl as ccl
 import healpy as hp
-import joblib
 from numba import njit
 import warnings
-from concurrent.futures import ThreadPoolExecutor
 
 from scipy import interpolate
 from tqdm import tqdm
 from ..utils.Tabulate import _get_parameter
-from ..utils.misc import _default_mass_def, _runner_cosmology, _check_p_keys, _halo_radius, _batch_method
+from ..utils.misc import _default_mass_def, _runner_cosmology, _check_p_keys, _halo_radius
+from ._chunks import _add_at, _add_rows_at, _n_threads, _chunk_bounds, _run_chunks, _evaluate_pairs
 
 __all__ = ['DefaultRunner', 'BaryonifyShell', 'PaintProfilesShell', 'PaintProfilesAnisShell',
            'regrid_pixels_hpix']
 
-
-@njit
-def _add_at(target, index, values):
-    """`target[index[i]] += values[i]` for every i, in order. `target` is modified in place."""
-
-    for i in range(index.size):
-        target[index[i]] += values[i]
-
-    return target
-
-
-@njit
-def _add_rows_at(target, index, values):
-    """`target[index[i], :] += values[i, :]` for every i, in order. `target` is modified in place."""
-
-    for i in range(index.size):
-        for k in range(values.shape[1]):
-            target[index[i], k] += values[i, k]
-
-    return target
 
 @njit(nogil = True)
 def _pair_geometry(x, y, z, hid, hvec, D, full):
@@ -86,8 +65,6 @@ def _unit_vector_shift(x, y, z, pos, diff, r, disp):
     return out
 
 #Compile once at import, as for regrid_pixels_hpix below
-_add_at(np.zeros(3), np.array([0, 2]), np.ones(2))
-_add_rows_at(np.zeros([3, 3]), np.array([0, 2]), np.ones([2, 3]))
 for _full in (True, False):
     _g = _pair_geometry(np.ones(2), np.zeros(2), np.zeros(2), np.array([0, 0]), np.zeros([1, 3]), np.ones(1), _full)
 _unit_vector_shift(np.ones(2), np.zeros(2), np.zeros(2), np.ones([2, 3]), np.ones([2, 3]), np.ones(2), np.ones(2))
@@ -275,8 +252,7 @@ class DefaultRunner(object):
     def _n_threads(self):
         """Number of threads to use, following the joblib convention for negative `n_jobs`."""
 
-        n = 1 if self.n_jobs in (None, 0) else int(self.n_jobs)
-        return max(1, joblib.cpu_count() + 1 + n) if n < 0 else n
+        return _n_threads(self.n_jobs)
 
 
     def _halo_table(self, cosmo, D_a, keys):
@@ -308,37 +284,17 @@ class DefaultRunner(object):
         threads. The chunking does not change the output.
         """
 
-        N     = H['M'].size
         n_pix = np.pi * H['radius']**2 / hp.nside2pixarea(NSIDE) + 4
-        size  = max(1, int(np.ceil(N / (8 * self._n_threads())))) if self._n_threads() > 1 else N
-        chunk = np.maximum(np.cumsum(n_pix) // self._max_pairs_per_chunk, np.arange(N) // size).astype(int)
-        chunk = np.maximum.accumulate(chunk)
-
-        return np.split(np.arange(N), np.flatnonzero(np.diff(chunk)) + 1)
+        return _chunk_bounds(n_pix, self._max_pairs_per_chunk, self._n_threads())
 
 
     def _run_chunks(self, function, chunks, desc = None):
         """
         Yields `function(chunk)` for every chunk, in chunk order, running up to `_n_threads()` chunks at once.
-        At most two results per thread are held at any time. A progress bar is shown if `desc` is given.
+        A progress bar is shown if `desc` is given.
         """
 
-        n = self._n_threads()
-        with tqdm(total = sum(c.size for c in chunks), desc = desc, disable = (not self.verbose) or (desc is None)) as pbar:
-            if n == 1:
-                for c in chunks:
-                    yield function(c)
-                    pbar.update(c.size)
-                return
-
-            with ThreadPoolExecutor(max_workers = n) as executor:
-                pending = [executor.submit(function, c) for c in chunks[:2*n]]
-                for i in range(len(chunks)):
-                    result = pending[i].result()
-                    if i + 2*n < len(chunks): pending.append(executor.submit(function, chunks[i + 2*n]))
-                    pending[i] = None
-                    yield result
-                    pbar.update(chunks[i].size)
+        return _run_chunks(function, chunks, self._n_threads(), self.verbose, desc)
 
 
     def _chunk_pixels(self, halos, H, NSIDE, min_pixels = 0):
@@ -382,23 +338,8 @@ class DefaultRunner(object):
         model once per halo, as before.
         """
 
-        M, a  = H['M'][halos], H['a'][halos]
-        other = {k : v[halos] for k, v in H['other'].items()}
-
-        batch = _batch_method(model, f'_{method}_batch')
-        if batch is not None:
-            return np.asarray(batch(r, hid, M, a, **other), dtype = float)
-
-        out    = np.zeros(r.size)
-        bounds = np.searchsorted(hid, np.arange(len(halos) + 1))
-        for i in range(len(halos)):
-            s, e = bounds[i], bounds[i + 1]
-            if e == s: continue
-            o_i = {k : v[i] for k, v in other.items()} #Other properties
-            if method == 'displacement': out[s:e] = model.displacement(r[s:e], M[i], a[i], **o_i)
-            else:                        out[s:e] = getattr(model, method)(cosmo, r[s:e], M[i], a[i], **o_i)
-
-        return out
+        return _evaluate_pairs(model, method, cosmo, r, hid, H['M'][halos], H['a'][halos],
+                               {k : v[halos] for k, v in H['other'].items()})
     
     
     def build_Rmat(self, A, ref):

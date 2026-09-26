@@ -13,6 +13,7 @@ Test index:
     test_baryonify_grid_accepts_parameterized_baryonification: checks BaryonificationClass with p_keys.
     test_baryonify_grid_does_not_depend_on_bin_origin: checks large cutouts for bins centered on zero.
     test_snapshot_output_is_wrapped_into_the_box: checks outputs lie in [0, L) and can be reused.
+    test_snapshot_paths_match_the_kdtree_algorithm: checks the cell index, tabulated/per-halo paths and n_jobs (2D, 3D).
 """
 
 import numpy as np
@@ -330,3 +331,86 @@ def test_snapshot_output_is_wrapped_into_the_box(cosmology_parameters):
     again = bfg.ParticleSnapshot(x=new_catalog["x"], y=new_catalog["y"], z=new_catalog["z"], M=np.ones(500),
                                  L=BOX, redshift=REDSHIFT, cosmo=dict(cosmology_parameters))
     bfg.BaryonifySnapshot(catalog, again, epsilon_max=5, model=OutwardDisplacement(), verbose=False).process()
+
+
+class PiecewiseLogDisplacement:
+    """Inward displacement that is linear in log(r) between nodes (like a table), and zero beyond 3 Mpc."""
+
+    nodes = np.linspace(np.log(1e-3), np.log(10), 400)
+
+    def _curve(self, M):
+        return -0.3 * (M / 1e14)**(1 / 3) * np.exp(-np.exp(self.nodes) / 1.5)
+
+    def displacement(self, r, M, a):
+        u = np.log(np.atleast_1d(r))
+        d = np.interp(u, self.nodes, self._curve(M))
+        d = np.where((u >= self.nodes[0]) & (u <= self.nodes[-1]), d, np.nan)
+        return np.where(np.atleast_1d(r) < 3, d, 0)
+
+
+class PiecewiseLogDisplacementTabulated(PiecewiseLogDisplacement):
+    """The same displacement, also offering the per-halo curves that tabulated models provide."""
+
+    def _displacement_curves(self, M, a, r=None, n_threads=1):
+        M = np.atleast_1d(M)
+        return self.nodes, np.stack([self._curve(m) for m in M]), np.zeros(M.size), np.full(M.size, 3.0)
+
+
+def _kdtree_baryonification(catalog, snapshot, epsilon_max, model):
+    """The KDTree algorithm the snapshot runner used before the cell index, as a reference."""
+    from scipy.spatial import KDTree
+    from BaryonForge.utils.misc import _runner_cosmology
+
+    cosmo, L = _runner_cosmology(catalog.cosmology), snapshot.L
+    axes = ["x", "y"] if snapshot.is2D else ["x", "y", "z"]
+    tree = KDTree(np.mod(np.vstack([snapshot.cat[ax] for ax in axes]).T, L), boxsize=L)
+    wrap = lambda dx: np.where(np.where(dx > L / 2, dx - L, dx) < -L / 2, np.where(dx > L / 2, dx - L, dx) + L,
+                               np.where(dx > L / 2, dx - L, dx))
+    offsets, a = np.zeros([snapshot.cat.size, len(axes)]), 1 / (1 + catalog.redshift)
+    for j in range(catalog.cat.size):
+        M = catalog.cat["M"][j]
+        R_q = np.clip(epsilon_max * ccl.halos.MassDef200c.get_radius(cosmo, M, a) / a, 0, L / 2)
+        pos = [catalog.cat[ax][j] for ax in axes]
+        inds = tree.query_ball_point(pos, R_q)
+        dxs = [wrap(snapshot.cat[ax][inds] - p) for ax, p in zip(axes, pos)]
+        d = np.sqrt(sum(dx**2 for dx in dxs))
+        with np.errstate(invalid="ignore", divide="ignore"):
+            hats = [np.where(d > 0, dx / d, 0) for dx in dxs]
+        offset = model.displacement(d, M, a)
+        offset = np.where(np.isfinite(offset), offset, 0)
+        offsets[inds] += np.vstack([offset * h for h in hats]).T
+    return [np.mod(snapshot.cat[ax] + offsets[:, i], L) for i, ax in enumerate(axes)]
+
+
+@pytest.mark.parametrize("is2D", (False, True))
+def test_snapshot_paths_match_the_kdtree_algorithm(cosmology_parameters, is2D):
+    """The cell-index runner (compiled tabulated path, per-halo path, any n_jobs) matches the KDTree algorithm."""
+    rng = np.random.default_rng(4)
+    N, N_halo = 20000, 25
+    x, y, z = rng.uniform(0, BOX, (3, N))
+    x[:200] = rng.uniform(BOX - 0.5, BOX, 200)  # Near the edge
+    x[200] = BOX                                # Snapshots stored on [0, L] can have x == L
+    halo = np.column_stack([rng.uniform(0, BOX, (N_halo, 3))])
+    halo[0] = [BOX - 0.2, 0.1, 10.0]           # Cutout wrapping across two edges
+    x[201], y[201], z[201] = halo[3]            # A particle exactly at a halo center
+    snapshot = bfg.ParticleSnapshot(x=x, y=y, z=None if is2D else z, M=np.ones(N), L=BOX,
+                                    redshift=REDSHIFT, cosmo=dict(cosmology_parameters))
+    catalog = bfg.HaloNDCatalog(x=halo[:, 0], y=halo[:, 1], z=None if is2D else halo[:, 2],
+                                M=10**rng.uniform(13, 14.5, N_halo), redshift=REDSHIFT, cosmo=dict(cosmology_parameters))
+    axes = ["x", "y"] if is2D else ["x", "y", "z"]
+
+    reference = _kdtree_baryonification(catalog, snapshot, 5, PiecewiseLogDisplacement())
+    runs = {}
+    for label, model, n_jobs in (("per halo", PiecewiseLogDisplacement(), 1),
+                                 ("tabulated", PiecewiseLogDisplacementTabulated(), 1),
+                                 ("tabulated, 3 threads", PiecewiseLogDisplacementTabulated(), 3)):
+        new = bfg.BaryonifySnapshot(catalog, snapshot, epsilon_max=5, model=model, verbose=False, n_jobs=n_jobs).process()
+        runs[label] = new
+        for i, ax in enumerate(axes):
+            moved = np.abs(reference[i] - snapshot.cat[ax])
+            assert moved.max() > 0.05  # The halos do move particles
+            np.testing.assert_allclose(new[ax], reference[i], rtol=0, atol=1e-12, err_msg=f"{label}, axis {ax}")
+            assert np.all((new[ax] >= 0) & (new[ax] < BOX))
+    for ax in axes:
+        np.testing.assert_array_equal(runs["tabulated, 3 threads"][ax], runs["tabulated"][ax])
+    np.testing.assert_array_equal(runs["tabulated"]["M"], snapshot.cat["M"])
