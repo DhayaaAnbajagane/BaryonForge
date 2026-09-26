@@ -320,14 +320,10 @@ def _circular_cutouts(cen, off, nsize, start, Npix, res, want_hats, inds, hid, r
                         r[p] = np.sqrt(gx*gx + gy*gy + gz*gz)
                         if want_hats: hat[p, 0], hat[p, 1], hat[p, 2] = gx/r[p], gy/r[p], gz/r[p]
 
+#The functions above compile on their first call (~1 s each for the regridding), not at import, so that
+#importing BaryonForge stays fast for users who do not run the grid runners.
 
-#Quickly run the functions once so they compile and initialize
-regrid_pixels_2D(np.zeros([5, 5]),    np.ones([2, 2]), np.ones(2))
-regrid_pixels_3D(np.zeros([5, 5, 5]), np.ones([2, 3]), np.ones(2))
-regrid_pixels_2D(np.zeros([8, 8]),    np.ones([2, 2]), np.ones(2))
-regrid_pixels_3D(np.zeros([8, 8, 8]), np.ones([2, 3]), np.ones(2))
 
-                        
 class DefaultRunnerGrid(object):
     """
     A utility class for handling input/output operations related to halo ND catalogs and gridded maps.

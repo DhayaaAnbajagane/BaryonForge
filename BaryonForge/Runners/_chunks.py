@@ -33,10 +33,6 @@ def _add_rows_at(target, index, values):
 
     return target
 
-#Compile once at import
-_add_at(np.zeros(3), np.array([0, 2]), np.ones(2))
-_add_rows_at(np.zeros([3, 3]), np.array([0, 2]), np.ones([2, 3]))
-
 
 def _n_threads(n_jobs):
     """Number of threads for `n_jobs`, following the joblib convention for negative values (-1 = all cores)."""

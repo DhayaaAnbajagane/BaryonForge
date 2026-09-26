@@ -64,10 +64,6 @@ def _unit_vector_shift(x, y, z, pos, diff, r, disp):
 
     return out
 
-#Compile once at import, as for regrid_pixels_hpix below
-for _full in (True, False):
-    _g = _pair_geometry(np.ones(2), np.zeros(2), np.zeros(2), np.array([0, 0]), np.zeros([1, 3]), np.ones(1), _full)
-_unit_vector_shift(np.ones(2), np.zeros(2), np.zeros(2), np.ones([2, 3]), np.ones([2, 3]), np.ones(2), np.ones(2))
 
 @njit
 def regrid_pixels_hpix(hmap, parent_pix_vals, child_pix, child_weights):
