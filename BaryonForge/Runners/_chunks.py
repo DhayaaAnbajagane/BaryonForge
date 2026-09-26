@@ -74,6 +74,63 @@ def _zeros(shape, n_threads):
     return out
 
 
+@njit(nogil = True)
+def _all_close_to_zero(values):
+    """`np.allclose(values, 0)` for a 1D array (|v| <= 1e-8 for all v, NaN counting as not close), stopping at
+    the first value that is not, instead of building map-sized temporaries."""
+
+    for v in values:
+        if not (abs(v) <= 1e-8): return False
+    return True
+
+
+@njit(nogil = True)
+def _count_nonzero(values, lo, hi):
+    n = 0
+    for i in range(lo, hi):
+        if values[i] != 0: n += 1
+    return n
+
+
+@njit(nogil = True)
+def _fill_nonzero(values, lo, hi, out, start):
+    for i in range(lo, hi):
+        if values[i] != 0:
+            out[start] = i
+            start += 1
+    return out
+
+
+def _nonzero(values, n_threads):
+    """`np.flatnonzero(values)` for a 1D array, counted and filled in `n_threads` blocks at once (same result)."""
+
+    bounds = np.linspace(0, values.size, n_threads + 1).astype(np.int64)
+    blocks = list(zip(bounds[:-1], bounds[1:]))
+    if n_threads == 1:
+        counts = [_count_nonzero(values, lo, hi) for lo, hi in blocks]
+    else:
+        with ThreadPoolExecutor(max_workers = n_threads) as pool:
+            counts = list(pool.map(lambda b: _count_nonzero(values, *b), blocks))
+    out   = np.empty(int(sum(counts)), dtype = np.int64)
+    start = np.concatenate([[0], np.cumsum(counts)[:-1]]).astype(np.int64)
+    if n_threads == 1:
+        _fill_nonzero(values, 0, values.size, out, 0)
+    else:
+        with ThreadPoolExecutor(max_workers = n_threads) as pool:
+            list(pool.map(lambda k: _fill_nonzero(values, blocks[k][0], blocks[k][1], out, start[k]), range(n_threads)))
+    return out
+
+
+def _sum(values, n_threads):
+    """`np.sum(values)`; with `n_threads > 1`, the sum of the sums of `n_threads` blocks computed at once (which
+    can differ from `np.sum` in the last bits; used for checks only)."""
+
+    if n_threads == 1: return np.sum(values)
+    blocks = np.array_split(values.ravel(), n_threads)
+    with ThreadPoolExecutor(max_workers = n_threads) as pool:
+        return sum(pool.map(np.sum, blocks))
+
+
 @contextmanager
 def _row_adder(n_threads):
     """

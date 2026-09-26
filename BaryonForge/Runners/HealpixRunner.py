@@ -9,7 +9,7 @@ from scipy import interpolate
 from tqdm import tqdm
 from ..utils.Tabulate import _get_parameter
 from ..utils.misc import _default_mass_def, _runner_cosmology, _check_p_keys, _halo_radius
-from ._chunks import _add_at, _row_adder, _zeros, _n_threads, _chunk_bounds, _run_chunks, _evaluate_pairs
+from ._chunks import _add_at, _row_adder, _zeros, _all_close_to_zero, _nonzero, _sum, _n_threads, _chunk_bounds, _run_chunks, _evaluate_pairs
 
 __all__ = ['DefaultRunner', 'BaryonifyShell', 'PaintProfilesShell', 'PaintProfilesAnisShell',
            'regrid_pixels_hpix']
@@ -63,6 +63,36 @@ def _unit_vector_shift(x, y, z, pos, diff, r, disp):
         out[i, 0], out[i, 1], out[i, 2] = nx/norm - x[i], ny/norm - y[i], nz/norm - z[i]
 
     return out
+
+
+@njit(nogil = True)
+def _split_moved(pix, pix_offsets, values):
+    """
+    Splits the pixels `pix` into those with a non-zero offset (row of `pix_offsets`), returned with their offsets
+    and map `values`, and the others, with their values, both in the original order: the same as selecting with
+    `np.any(pix_offsets[pix] != 0, axis = 1)`, without the intermediate arrays.
+    """
+
+    n = 0
+    for i in range(pix.size):
+        p = pix[i]
+        if (pix_offsets[p, 0] != 0) or (pix_offsets[p, 1] != 0) or (pix_offsets[p, 2] != 0): n += 1
+
+    moved, offsets, moved_values = np.empty(n, dtype = np.int64), np.empty((n, 3)), np.empty(n, dtype = values.dtype)
+    fixed, fixed_values          = np.empty(pix.size - n, dtype = np.int64), np.empty(pix.size - n, dtype = values.dtype)
+    a, b = 0, 0
+    for i in range(pix.size):
+        p = pix[i]
+        o0, o1, o2 = pix_offsets[p, 0], pix_offsets[p, 1], pix_offsets[p, 2]
+        if (o0 != 0) or (o1 != 0) or (o2 != 0):
+            moved[a], moved_values[a] = p, values[p]
+            offsets[a, 0], offsets[a, 1], offsets[a, 2] = o0, o1, o2
+            a += 1
+        else:
+            fixed[b], fixed_values[b] = p, values[p]
+            b += 1
+
+    return moved, offsets, moved_values, fixed, fixed_values
 
 
 def _vec2lonlat(vec):
@@ -460,13 +490,14 @@ class BaryonifyShell(DefaultRunner):
 
         cosmo = _runner_cosmology(self.cosmo)
 
-        orig_map = self.LightconeShell.map
-        NSIDE    = self.LightconeShell.NSIDE
+        orig_map  = self.LightconeShell.map
+        NSIDE     = self.LightconeShell.NSIDE
+        n_threads = self._n_threads()
 
         #If somehow the map is just zeros, then we don't need to
         #do anything and can just return the map back. I don't know
         #why you'd pass a zero-map though....
-        if np.allclose(orig_map, 0):
+        if _all_close_to_zero(orig_map): #np.allclose(orig_map, 0), stopping at the first non-zero pixel
             return orig_map
 
         #Build interpolator between redshift and ang-diam-dist. Assume we never use z > 30
@@ -498,13 +529,13 @@ class BaryonifyShell(DefaultRunner):
         #Accumulate the offsets in the UNIT VECTORS of the hpixels, halo by halo in catalog order. With threads,
         #the map-sized arrays are zeroed by all threads (rather than paged in one pixel at a time by the
         #accumulation), and each thread adds the offsets of one range of pixels, in the same order as a serial loop.
-        n_threads   = self._n_threads()
         pix_offsets = _zeros([orig_map.size, 3], n_threads)
         with _row_adder(n_threads) as add:
             for pix, offset in self._run_chunks(chunk_offsets, self._halo_chunks(H, NSIDE), 'Baryonifying matter'):
                 add(pix_offsets, pix, offset)
 
-        p_pix   = np.where(orig_map != 0)[0] #Only select regions with non-zero map-values. Zero value pixels don't matter
+        #Only select regions with non-zero map-values. Zero value pixels don't matter
+        p_pix   = _nonzero(orig_map, n_threads) #np.where(orig_map != 0)[0], in threaded blocks
 
         #Reassign each displaced pixel to the four pixels around its new position. Done in chunks of pixels
         #(threaded if n_jobs > 1) that are regridded in order, so the result does not depend on n_jobs.
@@ -512,22 +543,21 @@ class BaryonifyShell(DefaultRunner):
         #center, where healpy's weights are not exactly (1, 0, 0, 0): up to ~1e-10 of the value (most near the
         #poles, where angles from unit vectors lose precision) used to leak to the neighbouring pixels.
         def chunk_weights(pix):
-            offset  = pix_offsets[pix]
-            moved   = np.any(offset != 0, axis = 1)
-            new_vec = np.stack( hp.pix2vec(NSIDE, pix[moved]), axis = 1) + offset[moved]
+            moved, offset, moved_values, fixed, fixed_values = _split_moved(pix, pix_offsets, orig_map)
+            new_vec = np.stack( hp.pix2vec(NSIDE, moved), axis = 1) + offset
             new_ang = np.stack( _vec2lonlat(new_vec), axis = 1) #As hp.vec2ang(new_vec, lonlat = True)
             c_pix, c_weight = hp.get_interp_weights(NSIDE, new_ang[:, 0], new_ang[:, 1], lonlat = True)
-            return pix[moved], c_pix.T, c_weight.T, pix[~moved]
+            return moved_values, c_pix.T, c_weight.T, fixed, fixed_values
 
         new_map = _zeros(orig_map.size, n_threads)
         chunks  = np.array_split(p_pix, max(1, int(np.ceil(p_pix.size / 250_000))))
-        for pix, c_pix, c_weight, fixed in self._run_chunks(chunk_weights, chunks):
-            regrid_pixels_hpix(new_map, orig_map[pix], c_pix, c_weight) #GIL-free kernels, so the threads keep working
-            _add_at(new_map, fixed, orig_map[fixed])
+        for moved_values, c_pix, c_weight, fixed, fixed_values in self._run_chunks(chunk_weights, chunks):
+            regrid_pixels_hpix(new_map, moved_values, c_pix, c_weight) #GIL-free kernels, so the threads keep working
+            _add_at(new_map, fixed, fixed_values)
 
         #Do a quick check that the sum is the same
-        new_sum = np.sum(new_map)
-        old_sum = np.sum(orig_map)
+        new_sum = _sum(new_map, n_threads)
+        old_sum = _sum(orig_map, n_threads)
         assert np.isclose(new_sum, old_sum), "ERROR in pixel regridding, sum(new_map) [%0.14e] != sum(oldmap) [%0.14e]" % (new_sum, old_sum)
         
         

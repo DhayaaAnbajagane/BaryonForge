@@ -9,6 +9,7 @@ Test index:
     test_split_join_does_not_create_empty_splits: checks catalogs that do not fill every job.
     test_anisotropic_painting_background_includes_pixel_size: checks the background's pixel-area factor.
     test_runners_do_not_depend_on_batching_or_n_jobs: checks batched/per-halo evaluation and threads agree exactly.
+    test_map_scans_match_numpy: checks the compiled zero-map check, non-zero pixel search and moved-pixel split.
 """
 
 import warnings
@@ -275,3 +276,31 @@ def test_runners_do_not_depend_on_batching_or_n_jobs():
     reference = paint_anisotropic(PerHaloOnly(table), 1)
     np.testing.assert_array_equal(paint_anisotropic(table, 1), reference)
     np.testing.assert_array_equal(paint_anisotropic(table, 3), reference)
+
+
+def test_map_scans_match_numpy():
+    """The compiled map scans of BaryonifyShell give exactly the numpy expressions they replace."""
+    from BaryonForge.Runners._chunks import _all_close_to_zero, _nonzero
+    from BaryonForge.Runners.HealpixRunner import _split_moved
+
+    for values in (np.zeros(50), np.full(50, 1e-9), np.r_[np.zeros(49), 2e-8], np.r_[np.zeros(49), np.nan],
+                   np.r_[-1e-8, np.zeros(49)], np.r_[np.inf, np.zeros(49)], np.arange(50.0)):
+        assert _all_close_to_zero(values) == np.allclose(values, 0)
+
+    rng = np.random.default_rng(7)
+    values = rng.normal(size=10_001) * (rng.random(10_001) < 0.3)
+    values[[3, 7]] = np.nan, -0.0
+    for n_threads in (1, 3, 8):
+        np.testing.assert_array_equal(_nonzero(values, n_threads), np.flatnonzero(values))
+    np.testing.assert_array_equal(_nonzero(np.zeros(5), 3), np.zeros(0, dtype=np.int64))
+
+    offsets = rng.normal(size=(2000, 3)) * (rng.random((2000, 1)) < 0.5)
+    offsets[5] = (0.0, np.nan, 0.0)
+    counts = rng.poisson(3, 2000).astype(np.float32)
+    pix = np.sort(rng.choice(2000, 700, replace=False))
+    moved, off, moved_values, fixed, fixed_values = _split_moved(pix, offsets, counts)
+    mask = np.any(offsets[pix] != 0, axis=1)
+    for got, expected in ((moved, pix[mask]), (off, offsets[pix][mask]), (moved_values, counts[pix[mask]]),
+                          (fixed, pix[~mask]), (fixed_values, counts[pix[~mask]])):
+        np.testing.assert_array_equal(got, expected)
+        assert got.dtype == expected.dtype
