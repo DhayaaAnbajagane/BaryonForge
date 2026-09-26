@@ -54,15 +54,27 @@ def _halo_radius(mass_def, cosmo, M, a):
     return np.array([mass_def.get_radius(cosmo, M_i, a_i) for M_i, a_i in zip(M, a)], dtype = float)
 
 
-def _batch_method(obj, name):
+def _batch_method(obj, name, *methods):
     """
-    Returns `obj.<name>` (eg. the batched readout `_projected_batch`) if it is defined by the class of `obj`
-    itself, and None otherwise. Wrappers such as `ConvolvedProfile` or `CombinedProfile` forward unknown
-    attributes to an inner profile, whose batched readout would skip the wrapper's own operation, so a
-    forwarded attribute must not be used.
+    Returns `obj.<name>` (eg. the batched readout `_projected_batch`) if it can stand in for the per-halo
+    `methods` it batches (eg. `projected`, `_projected`, `_readout`), and None otherwise. That requires
+
+    - that the class of `obj` itself defines it: wrappers such as `ConvolvedProfile` or `CombinedProfile`
+      forward unknown attributes to an inner profile, whose batched readout would skip the wrapper's own
+      operation; and
+    - that no subclass overrides any of `methods` below the class that defines it (eg. a
+      `BaryonificationClass` subclass with its own `displacement`), since the batched readout would
+      bypass the override.
     """
 
-    if getattr(type(obj), name, None) is None: return None
+    cls = type(obj)
+    if getattr(cls, name, None) is None: return None
+
+    owner = next(c for c in cls.__mro__ if name in c.__dict__)
+    for m in methods:
+        defines = next((c for c in cls.__mro__ if m in c.__dict__), None)
+        if (defines is not None) and not issubclass(owner, defines): return None
+
     return getattr(obj, name)
 
 

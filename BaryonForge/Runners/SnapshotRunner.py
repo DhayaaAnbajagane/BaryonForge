@@ -455,7 +455,7 @@ class BaryonifySnapshot(DefaultRunnerSnapshot):
         offsets = np.zeros([self.ParticleSnapshot.cat.size, 3]) #In the original particle order
 
         curves = None
-        if _batch_method(self.model, '_displacement_curves') is not None:
+        if _batch_method(self.model, '_displacement_curves', 'displacement', '_readout') is not None:
             curves = self.model._displacement_curves(M, np.full(M.shape, a), r = R_q, n_threads = self._n_threads(), **other)
 
         if curves is not None: self._offsets_tabulated(index, offsets, pos, R_q, curves, L)

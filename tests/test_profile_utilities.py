@@ -248,3 +248,13 @@ def test_wrappers_do_not_expose_the_batched_readout_of_their_input():
     scaled = bfg.Profiles.misc.ComovingToPhysical(tabulated, factor=0)
     assert _batch_method(scaled, "_projected_batch") is not None
     assert _batch_method(scaled * 2, "_projected_batch") is None
+
+    #A subclass that overrides the per-halo method must not have it bypassed by the inherited batched readout
+    class Doubled(bfg.utils.TabulatedProfile):
+        def _projected(self, cosmo, r, M, a):
+            return 2 * super()._projected(cosmo, r, M, a)
+
+    doubled = Doubled(LogLinearProfile(), cosmo)
+    assert _batch_method(doubled, "_projected_batch", "projected", "_projected", "_readout") is None
+    assert _batch_method(doubled, "_real_batch", "real", "_real", "_readout") is not None
+    assert _batch_method(bfg.Profiles.misc.ComovingToPhysical(doubled, factor=0), "_projected_batch") is None

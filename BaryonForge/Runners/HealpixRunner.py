@@ -41,7 +41,7 @@ def _pair_geometry(x, y, z, hid, hvec, D, full):
     return r, pos, diff
 
 
-@njit(nogil = True)
+@njit(nogil = True, error_model = 'numpy') #numpy semantics: 0/0 = nan for a pixel at the halo center, as before
 def _unit_vector_shift(x, y, z, pos, diff, r, disp):
     """
     Change of each pixel's unit vector when its position `pos` moves by `disp` along `diff / r` (offsets that

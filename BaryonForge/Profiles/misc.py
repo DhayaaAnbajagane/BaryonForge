@@ -504,7 +504,8 @@ class ComovingToPhysical(BaseBFGProfiles):
     #Batched readouts for the runners (see `TabulatedProfile._readout_batch`), available when the
     #input profile itself provides them. `halo` maps every radius to its entry in `M` and `a`.
     def _scaled_batch(self, name, power):
-        inner = _batch_method(self.profile, name)
+        method = name[1:-len('_batch')] #eg. 'projected'
+        inner  = _batch_method(self.profile, name, method, f'_{method}', '_readout')
         if inner is None: return None
         return lambda r, halo, M, a: inner(r, halo, M, a) * np.power(np.asarray(a, dtype = float), power)[halo]
 

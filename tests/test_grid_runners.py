@@ -14,6 +14,7 @@ Test index:
     test_baryonify_grid_does_not_depend_on_bin_origin: checks large cutouts for bins centered on zero.
     test_snapshot_output_is_wrapped_into_the_box: checks outputs lie in [0, L) and can be reused.
     test_snapshot_paths_match_the_kdtree_algorithm: checks the cell index, tabulated/per-halo paths and n_jobs (2D, 3D).
+    test_grid_runners_do_not_depend_on_batching_or_n_jobs: checks batched/per-halo evaluation and threads agree exactly.
 """
 
 import numpy as np
@@ -414,3 +415,71 @@ def test_snapshot_paths_match_the_kdtree_algorithm(cosmology_parameters, is2D):
     for ax in axes:
         np.testing.assert_array_equal(runs["tabulated, 3 threads"][ax], runs["tabulated"][ax])
     np.testing.assert_array_equal(runs["tabulated"]["M"], snapshot.cat["M"])
+
+
+class ScalingDisplacement:
+    """Displacement depending on radius and mass, evaluated halo by halo."""
+
+    def displacement(self, r, M, a):
+        return -0.4 * (M / 1e14)**(1 / 3) * np.exp(-np.atleast_1d(r) / 1.5)
+
+
+class ScalingDisplacementBatched(ScalingDisplacement):
+    """The same displacement through the batched readout that tabulated models provide (each halo's radii
+    are evaluated with the per-halo formula, so the runners' bookkeeping can be checked exactly)."""
+
+    def _displacement_batch(self, r, halo, M, a):
+        out = np.empty(r.size)
+        for h in np.unique(halo):
+            out[halo == h] = self.displacement(r[halo == h], M[h], a[h])
+        return out
+
+
+class PerHaloOnly:
+    """Hides the batched readout of a profile, so the runners call it halo by halo."""
+
+    def __init__(self, profile):
+        self.profile, self.mass_def = profile, profile.mass_def
+
+    def real(self, cosmo, r, M, a):      return self.profile.real(cosmo, r, M, a)
+    def projected(self, cosmo, r, M, a): return self.profile.projected(cosmo, r, M, a)
+
+
+@pytest.mark.parametrize("dim, elliptical", ((2, False), (2, True), (3, False)))
+def test_grid_runners_do_not_depend_on_batching_or_n_jobs(cosmology_parameters, dim, elliptical):
+    """Batched and per-halo model evaluation, and any number of threads, give bit-identical maps."""
+    rng = np.random.default_rng(5)
+    N_halo = 12
+    pos = rng.uniform(0, BOX, (N_halo, 3))
+    pos[0, :] = BINS[7]  # A halo exactly on a pixel center
+    extra = dict(q_ell=rng.uniform(0.5, 1, N_halo), A_ell=rng.normal(size=(N_halo, 2))) if elliptical else {}
+    catalog = bfg.HaloNDCatalog(x=pos[:, 0], y=pos[:, 1], z=None if dim == 2 else pos[:, 2], M=10**rng.uniform(13, 14.5, N_halo),
+                                redshift=REDSHIFT, cosmo=dict(cosmology_parameters), **extra)
+    mass = rng.uniform(1, 2, (N_PIX,) * dim)
+    grid = lambda values: bfg.GriddedMap(map=values, bins=BINS, redshift=REDSHIFT, cosmo=dict(cosmology_parameters))
+
+    table = bfg.utils.TabulatedProfile(GaussianProfile(), ccl.Cosmology(**ccl_dict))
+    table.setup_interpolator(z_min=0.2, z_max=0.3, N_samples_z=2, M_min=1e12, M_max=1e16, N_samples_Mass=8,
+                             R_min=1e-3, R_max=50, N_samples_R=64, verbose=False)
+
+    def run(runner, model, n_jobs, **kwargs):
+        return runner(catalog, grid(mass if runner is bfg.BaryonifyGrid else np.zeros_like(mass)), epsilon_max=5,
+                      model=model, verbose=False, use_ellipticity=elliptical, n_jobs=n_jobs, **kwargs).process()
+
+    reference = run(bfg.BaryonifyGrid, ScalingDisplacement(), 1)
+    assert reference.sum() == pytest.approx(mass.sum())
+    np.testing.assert_array_equal(run(bfg.BaryonifyGrid, ScalingDisplacementBatched(), 1), reference)
+    np.testing.assert_array_equal(run(bfg.BaryonifyGrid, ScalingDisplacementBatched(), 3), reference)
+
+    reference = run(bfg.PaintProfilesGrid, PerHaloOnly(table), 1)
+    assert reference.sum() > 0
+    np.testing.assert_array_equal(run(bfg.PaintProfilesGrid, table, 1), reference)
+    np.testing.assert_array_equal(run(bfg.PaintProfilesGrid, table, 3), reference)
+
+    if dim == 2:
+        anis = lambda model, n_jobs: bfg.PaintProfilesAnisGrid(
+            catalog, grid(mass), epsilon_max=5, model=model, Tracer_model=model, Mtot_model=bfg.Profiles.misc.ComovingToPhysical(table, 0),
+            background_val=1.0, global_tracer_fraction=0.1, use_ellipticity=elliptical, verbose=False, n_jobs=n_jobs).process()
+        reference = anis(PerHaloOnly(table), 1)
+        np.testing.assert_array_equal(anis(table, 1), reference)
+        np.testing.assert_array_equal(anis(table, 3), reference)

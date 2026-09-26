@@ -210,10 +210,14 @@ class ScalingDisplacement:
 
 
 class ScalingDisplacementBatched(ScalingDisplacement):
-    """The same displacement, also offering the batched readout that tabulated models provide."""
+    """The same displacement through the batched readout that tabulated models provide (each halo's radii
+    are evaluated with the per-halo formula, so the runners' bookkeeping can be checked exactly)."""
 
     def _displacement_batch(self, r, halo, M, a):
-        return -0.5 * (M[halo] / 1e14)**(1 / 3) * np.exp(-r / (2 * a[halo]))
+        out = np.empty(r.size)
+        for h in np.unique(halo):
+            out[halo == h] = self.displacement(r[halo == h], M[h], a[h])
+        return out
 
 
 class PerHaloOnly:

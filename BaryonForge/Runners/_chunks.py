@@ -90,7 +90,7 @@ def _evaluate_pairs(model, method, cosmo, r, hid, M, a, other):
     defines one (eg. `Baryonification2D`, `TabulatedProfile`), and otherwise calls the model once per halo.
     """
 
-    batch = _batch_method(model, f'_{method}_batch')
+    batch = _batch_method(model, f'_{method}_batch', method, f'_{method}', '_readout')
     if batch is not None:
         return np.asarray(batch(r, hid, M, a, **other), dtype = float)
 
