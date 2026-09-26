@@ -65,6 +65,22 @@ def _unit_vector_shift(x, y, z, pos, diff, r, disp):
     return out
 
 
+def _vec2lonlat(vec):
+    """
+    `hp.vec2ang(vec, lonlat = True)` for an (N, 3) array of vectors, with the same arithmetic, except that
+    arctan2 gets contiguous copies of the components. With healpy's strided column views, numpy (1.26) skips
+    its vectorised arctan2 for scalar libm (which differs in the last bit) whenever the output array happens to
+    be allocated right after the input, so the longitudes could change from run to run with the memory layout.
+    """
+
+    dnorm = np.sqrt(np.sum(np.square(vec), axis = 1))
+    theta = np.arccos(vec[:, 2] / dnorm)
+    phi   = np.arctan2(np.ascontiguousarray(vec[:, 1]), np.ascontiguousarray(vec[:, 0]))
+    phi[phi < 0] += 2 * np.pi
+
+    return np.degrees(phi), 90.0 - np.degrees(theta)
+
+
 @njit
 def regrid_pixels_hpix(hmap, parent_pix_vals, child_pix, child_weights):
     """
@@ -488,7 +504,7 @@ class BaryonifyShell(DefaultRunner):
         #(threaded if n_jobs > 1) that are regridded in order, so the result is the same as a single pass.
         def chunk_weights(pix):
             new_vec = np.stack( hp.pix2vec(NSIDE, pix), axis = 1) + pix_offsets[pix]
-            new_ang = np.stack( hp.vec2ang(new_vec, lonlat = True), axis = 1)
+            new_ang = np.stack( _vec2lonlat(new_vec), axis = 1) #As hp.vec2ang(new_vec, lonlat = True)
             c_pix, c_weight = hp.get_interp_weights(NSIDE, new_ang[:, 0], new_ang[:, 1], lonlat = True)
             return pix, c_pix.T, c_weight.T
 
