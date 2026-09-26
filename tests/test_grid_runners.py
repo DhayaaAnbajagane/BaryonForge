@@ -18,6 +18,7 @@ Test index:
     test_runners_accept_empty_halo_catalogs: checks maps/snapshots are unchanged without halos (with and without ellipticity).
     test_runner_subclasses_keep_their_helper_methods: checks overridden enforce_periodicity/pick_indices are used.
     test_snapshot_keeps_sub_array_and_string_fields: checks extra catalog fields are copied unchanged.
+    test_cell_index_does_not_depend_on_threads: checks the parallel counting sort and the modulo shortcut (2D, 3D).
 """
 
 import numpy as np
@@ -557,3 +558,31 @@ def test_snapshot_keeps_sub_array_and_string_fields(cosmology_parameters):
                                 model=InwardDisplacement(), verbose=False).process()
     for field in ("vel", "tag", "id"):
         np.testing.assert_array_equal(new[field], cat[field])
+
+
+@pytest.mark.parametrize("ndim", (3, 2))
+def test_cell_index_does_not_depend_on_threads(ndim):
+    """The parallel counting sort of the snapshot index gives exactly the serial one; the modulo shortcut is np.mod."""
+    import numba
+    from BaryonForge.Runners import SnapshotRunner as SR
+
+    rng = np.random.default_rng(10)
+    N = 200_000
+    x, y = rng.uniform(-0.2 * BOX, 1.2 * BOX, N), rng.uniform(0, BOX, N)
+    x[:6] = 0.0, -0.0, BOX, np.nextafter(BOX, 0), -BOX, 3 * BOX
+    z = np.zeros(N) if ndim == 2 else rng.uniform(0, BOX, N)
+    n1 = int(np.round((N / 16) ** (1 / ndim)))
+    n = np.array([n1, n1, 1 if ndim == 2 else n1], dtype=np.int64)
+    order, starts = SR._build_cell_index(x, y, z, BOX, n, 1)
+    previous = numba.get_num_threads()
+    try:
+        numba.set_num_threads(min(3, numba.config.NUMBA_NUM_THREADS))
+        order3, starts3 = SR._build_cell_index(x, y, z, BOX, n, 3)
+    finally:
+        numba.set_num_threads(previous)
+    np.testing.assert_array_equal(order3, order)
+    np.testing.assert_array_equal(starts3, starts)
+
+    wrapped = np.array([SR._wrap(v, BOX) for v in x[:1000]])
+    np.testing.assert_array_equal(wrapped, np.mod(x[:1000], BOX))
+    np.testing.assert_array_equal(np.signbit(wrapped), np.signbit(np.mod(x[:1000], BOX)))

@@ -10,16 +10,44 @@ from ..utils.Tabulate import _find_interval
 __all__ = ['DefaultRunnerSnapshot', 'BaryonifySnapshot']
 
 
+@njit
+def _wrap(v, L):
+    """`v % L` (numba's float `%`, as np.mod), with the slow modulo skipped for values already in (0, L),
+    where it returns `v` exactly. Zero (of either sign), negative, out-of-range and NaN values take the `%`."""
+
+    return v if (v > 0.0) and (v < L) else v % L
+
+
+@njit
+def _cell_of(x, y, z, L, n):
+    """Cell of one particle, with coordinates already wrapped into [0, L)."""
+
+    ix = min(int(x / L * n[0]), n[0] - 1)
+    iy = min(int(y / L * n[1]), n[1] - 1)
+    iz = min(int(z / L * n[2]), n[2] - 1)
+    return (ix*n[1] + iy)*n[2] + iz
+
+
 @njit(parallel = True)
 def _cell_ids(x, y, z, L, n):
-    """Cell `(ix*ny + iy)*nz + iz` of every particle, in a periodic grid of `n = (nx, ny, nz)` cells over [0, L)^3."""
+    """
+    Cell `(ix*ny + iy)*nz + iz` of every particle, in a periodic grid of `n = (nx, ny, nz)` cells over [0, L)^3.
+    Particles inside [0, L)^3 (usually all) need no `% L` (it would return the coordinate itself, up to the sign
+    of zero, which gives the same cell); the loop has none, since the compiler would otherwise evaluate it for
+    every particle. Any others are redone with it.
+    """
 
-    cell = np.empty(x.size, dtype = np.int64)
+    cell, outside = np.empty(x.size, dtype = np.int64), 0
     for i in prange(x.size):
-        ix = min(int((x[i] % L) / L * n[0]), n[0] - 1)
-        iy = min(int((y[i] % L) / L * n[1]), n[1] - 1)
-        iz = min(int((z[i] % L) / L * n[2]), n[2] - 1)
-        cell[i] = (ix*n[1] + iy)*n[2] + iz
+        if (x[i] >= 0.0) and (x[i] < L) and (y[i] >= 0.0) and (y[i] < L) and (z[i] >= 0.0) and (z[i] < L):
+            cell[i] = _cell_of(x[i], y[i], z[i], L, n)
+        else:
+            cell[i] = -1
+            outside += 1
+
+    if outside > 0:
+        for i in prange(x.size):
+            if cell[i] < 0: cell[i] = _cell_of(x[i] % L, y[i] % L, z[i] % L, L, n)
 
     return cell
 
@@ -35,6 +63,55 @@ def _counting_sort(cell, starts):
         fill[cell[i]] += 1
 
     return order
+
+
+@njit(parallel = True)
+def _counting_sort_parallel(cell, n_planes, cells_per_plane, n_blocks):
+    """
+    The stable counting sort of `_counting_sort`, in parallel: the particles are first split by plane of cells
+    (`cell // cells_per_plane`, the leading index of the cell) in `n_blocks` blocks of consecutive particles,
+    then each plane is sorted by cell on its own. Both steps keep the particles in their original order, so
+    `order` is exactly that of `_counting_sort`. Returns `order` and `starts` (the cumulative cell counts).
+    """
+
+    N      = cell.size
+    counts = np.zeros((n_blocks, n_planes), dtype = np.int64)
+    for b in prange(n_blocks): #Particles per (block, plane)
+        for i in range(b * N // n_blocks, (b + 1) * N // n_blocks): counts[b, cell[i] // cells_per_plane] += 1
+
+    offsets, plane_start, total = np.empty((n_blocks, n_planes), dtype = np.int64), np.empty(n_planes + 1, dtype = np.int64), 0
+    for p in range(n_planes): #Positions in plane order, and within a plane in block order
+        plane_start[p] = total
+        for b in range(n_blocks):
+            offsets[b, p] = total
+            total += counts[b, p]
+    plane_start[n_planes] = total
+
+    by_plane = np.empty(N, dtype = np.int64)
+    for b in prange(n_blocks):
+        fill = offsets[b].copy()
+        for i in range(b * N // n_blocks, (b + 1) * N // n_blocks):
+            p = cell[i] // cells_per_plane
+            by_plane[fill[p]] = i
+            fill[p] += 1
+
+    order       = np.empty(N, dtype = np.int64)
+    cell_counts = np.zeros(n_planes * cells_per_plane + 1, dtype = np.int64) #Particles per cell, shifted by one
+    for p in prange(n_planes):
+        s, e, base = plane_start[p], plane_start[p + 1], p * cells_per_plane
+        fill = np.zeros(cells_per_plane, dtype = np.int64)
+        for k in range(s, e): fill[cell[by_plane[k]] - base] += 1
+        for c in range(cells_per_plane): cell_counts[base + c + 1] = fill[c]
+        run = s
+        for c in range(cells_per_plane): #Start of every cell of the plane
+            run, fill[c] = run + fill[c], run
+        for k in range(s, e):
+            i = by_plane[k]
+            c = cell[i] - base
+            order[fill[c]] = i
+            fill[c] += 1
+
+    return order, np.cumsum(cell_counts)
 
 
 @njit(parallel = True)
@@ -54,9 +131,9 @@ def _shift_and_wrap(x, y, z, offsets, L):
     """
 
     for i in prange(x.size):
-        x[i] = (x[i] + offsets[i, 0]) % L
-        y[i] = (y[i] + offsets[i, 1]) % L
-        if z.size > 0: z[i] = (z[i] + offsets[i, 2]) % L
+        x[i] = _wrap(x[i] + offsets[i, 0], L)
+        y[i] = _wrap(y[i] + offsets[i, 1], L)
+        if z.size > 0: z[i] = _wrap(z[i] + offsets[i, 2], L)
 
 
 @njit(parallel = True)
@@ -67,14 +144,17 @@ def _copy(values, out):
     return out
 
 
-def _build_cell_index(x, y, z, L, n):
+def _build_cell_index(x, y, z, L, n, n_threads = 1):
     """
     Sorts particles into a periodic grid of `n = (nx, ny, nz)` cells over the box [0, L)^3 (a stable counting
-    sort). Returns `order`, the particle indices sorted by cell, and `starts`, such that the particles of cell
-    `c = (ix*ny + iy)*nz + iz` are `order[starts[c]:starts[c+1]]`.
+    sort, in parallel if `n_threads > 1`, with the same result). Returns `order`, the particle indices sorted by
+    cell, and `starts`, such that the particles of cell `c = (ix*ny + iy)*nz + iz` are `order[starts[c]:starts[c+1]]`.
     """
 
-    cell   = _cell_ids(x, y, z, L, n)
+    cell = _cell_ids(x, y, z, L, n)
+    if n_threads > 1:
+        return _counting_sort_parallel(cell, int(n[0]), int(n[1] * n[2]), 4 * n_threads)
+
     starts = np.concatenate([[0], np.cumsum(np.bincount(cell, minlength = int(np.prod(n))))]).astype(np.int64)
 
     return _counting_sort(cell, starts), starts
@@ -326,7 +406,7 @@ class DefaultRunnerSnapshot(object):
             y = Snap.cat['y'].astype(np.float64, copy = False)
             z = np.zeros(N) if Snap.is2D else Snap.cat['z'].astype(np.float64, copy = False)
             with self._threads():
-                order, starts = _build_cell_index(x, y, z, float(Snap.L), n)
+                order, starts = _build_cell_index(x, y, z, float(Snap.L), n, self._n_threads())
                 self._index = {'n' : n, 'order' : order, 'starts' : starts,
                                'xs' : _gather(x, order), 'ys' : _gather(y, order), 'zs' : _gather(z, order)}
 
