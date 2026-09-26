@@ -56,6 +56,9 @@ def _linear_regular_grid(grid, start, size, values, strides, points, fill, use_f
     upper = np.empty(d, dtype = np.int64)
     y     = np.empty(d)
     ym    = np.empty(d)
+    n_c   = 1 << d
+    pw    = np.empty(n_c)                   #Weight of every corner
+    fi    = np.empty(n_c, dtype = np.int64) #Flat index of every corner
 
     for p in range(P):
         has_nan = False
@@ -98,18 +101,148 @@ def _linear_regular_grid(grid, start, size, values, strides, points, fill, use_f
                 out[p] = value
             continue
 
+        #The weights and flat indices of the corners, built one dimension at a time, so the products over the
+        #leading dimensions are shared between corners. Corner c has the bit of dimension 0 as its most
+        #significant bit (the order of itertools.product, as in scipy), and its weight is multiplied in
+        #dimension order, ((1*w_0)*w_1)*..., so every weight, and the sum, are exactly those of scipy.
+        pw[0], fi[0] = 1.0, 0
+        for k in range(d):
+            for c in range((1 << k) - 1, -1, -1): #Downwards, so that pw[c] and fi[c] are read before being replaced
+                w, f = pw[c], fi[c]
+                pw[2*c],     fi[2*c]     = w * ym[k], f + lower[k] * strides[k]
+                pw[2*c + 1], fi[2*c + 1] = w * y[k],  f + upper[k] * strides[k]
+
         value = 0.0
-        for c in range(1 << d):
-            weight = 1.0
-            flat   = 0
-            for k in range(d):
-                if (c >> (d - 1 - k)) & 1:
-                    weight = weight * y[k]
-                    flat  += upper[k] * strides[k]
-                else:
-                    weight = weight * ym[k]
-                    flat  += lower[k] * strides[k]
-            value = value + values[flat] * weight
+        for c in range(n_c):
+            value = value + values[fi[c]] * pw[c]
+        out[p] = value
+
+    return out
+
+
+@njit(nogil = True)
+def _find_interval_scaled(grid, s, n, x, inv):
+    """`_find_interval`, with the uniform-grid guess computed with `inv = (n - 1)/(hi - lo)` (a multiplication
+    instead of a division) and checked against the neighbouring intervals first. Same result for any grid."""
+
+    lo, hi = grid[s], grid[s + n - 1]
+    if not (lo <= x <= hi):
+        return 0 if x < lo else n - 2
+    if x == hi:
+        return n - 2
+
+    i = min(max(int((x - lo) * inv), 0), n - 2)
+    if x < grid[s + i]:
+        if (i > 0) and (x >= grid[s + i - 1]): return i - 1
+    elif x < grid[s + i + 1]:
+        return i
+    elif (i < n - 2) and (x < grid[s + i + 2]):
+        return i + 1
+    return _find_interval(grid, s, n, x)
+
+
+@njit(nogil = True)
+def _axis_nodes(grid, s, n, x, stride, inv):
+    """Flat offsets of the lower and upper node of `x` along one axis (both the single node for a length-one
+    axis), and its normalised distance from the lower node, as in `_linear_regular_grid`."""
+
+    if n == 1: return 0, 0, 0.0
+    i = _find_interval_scaled(grid, s, n, x, inv)
+    return i * stride, (i + 1) * stride, (x - grid[s + i]) / (grid[s + i + 1] - grid[s + i])
+
+
+@njit(nogil = True)
+def _inverse_spacings(grid, start, size):
+    """(n - 1)/(hi - lo) of every axis (0 for length-one axes), for `_find_interval_scaled`."""
+
+    inv = np.zeros(size.size)
+    for k in range(size.size):
+        if size[k] > 1: inv[k] = (size[k] - 1) / (grid[start[k] + size[k] - 1] - grid[start[k]])
+    return inv
+
+
+@njit(nogil = True)
+def _outside_or_nan(grid, start, size, points, p):
+    """(has a NaN coordinate, is outside the grid) for point `p`, as in `_linear_regular_grid`."""
+
+    has_nan, outside = False, False
+    for k in range(points.shape[1]):
+        x = points[p, k]
+        if x != x: has_nan = True
+        if (x < grid[start[k]]) or (x > grid[start[k] + size[k] - 1]): outside = True
+    return has_nan, outside
+
+
+@njit(nogil = True)
+def _linear_regular_grid_3d(grid, start, size, values, strides, points, fill, use_fill, out):
+    """`_linear_regular_grid` for 3D tables, with the per-point work in registers. The corner weights are
+    multiplied in dimension order and the corners summed in the same order, so the result is the same."""
+
+    inv = _inverse_spacings(grid, start, size)
+    s0, s1, s2 = start[0], start[1], start[2]
+    n0, n1, n2 = size[0], size[1], size[2]
+    lo0, lo1, lo2 = grid[s0], grid[s1], grid[s2]
+    hi0, hi1, hi2 = grid[s0 + n0 - 1], grid[s1 + n1 - 1], grid[s2 + n2 - 1]
+
+    for p in range(points.shape[0]):
+        x0, x1, x2 = points[p, 0], points[p, 1], points[p, 2]
+        if (x0 != x0) or (x1 != x1) or (x2 != x2):
+            out[p] = np.nan
+            continue
+        if use_fill and ((x0 < lo0) or (x0 > hi0) or (x1 < lo1) or (x1 > hi1) or (x2 < lo2) or (x2 > hi2)):
+            out[p] = fill
+            continue
+
+        L0, U0, y0 = _axis_nodes(grid, s0, n0, x0, strides[0], inv[0])
+        L1, U1, y1 = _axis_nodes(grid, s1, n1, x1, strides[1], inv[1])
+        L2, U2, y2 = _axis_nodes(grid, s2, n2, x2, strides[2], inv[2])
+        m0, m1, m2 = 1 - y0, 1 - y1, 1 - y2
+        a, b, c, d = m0 * m1, m0 * y1, y0 * m1, y0 * y1 #(1*w_0)*w_1 is exactly w_0*w_1
+
+        #The 8 corners in the order of itertools.product (dimension 0 slowest)
+        value = 0.0
+        value = value + values[L0 + L1 + L2] * (a * m2)
+        value = value + values[L0 + L1 + U2] * (a * y2)
+        value = value + values[L0 + U1 + L2] * (b * m2)
+        value = value + values[L0 + U1 + U2] * (b * y2)
+        value = value + values[U0 + L1 + L2] * (c * m2)
+        value = value + values[U0 + L1 + U2] * (c * y2)
+        value = value + values[U0 + U1 + L2] * (d * m2)
+        value = value + values[U0 + U1 + U2] * (d * y2)
+        out[p] = value
+
+    return out
+
+
+@njit(nogil = True)
+def _linear_regular_grid_4d(grid, start, size, values, strides, points, fill, use_fill, out):
+    """`_linear_regular_grid` for 4D tables (eg. with one extra tabulated parameter); see `_linear_regular_grid_3d`."""
+
+    inv = _inverse_spacings(grid, start, size)
+    for p in range(points.shape[0]):
+        has_nan, outside = _outside_or_nan(grid, start, size, points, p)
+        if has_nan:
+            out[p] = np.nan
+            continue
+        if outside and use_fill:
+            out[p] = fill
+            continue
+
+        l0, u0, y0 = _axis_nodes(grid, start[0], size[0], points[p, 0], strides[0], inv[0])
+        l1, u1, y1 = _axis_nodes(grid, start[1], size[1], points[p, 1], strides[1], inv[1])
+        l2, u2, y2 = _axis_nodes(grid, start[2], size[2], points[p, 2], strides[2], inv[2])
+        l3, u3, y3 = _axis_nodes(grid, start[3], size[3], points[p, 3], strides[3], inv[3])
+        w0, w1, w2, w3 = (1 - y0, y0), (1 - y1, y1), (1 - y2, y2), (1 - y3, y3)
+        f0, f1, f2, f3 = (l0, u0), (l1, u1), (l2, u2), (l3, u3)
+
+        value = 0.0
+        for b0 in range(2):
+            for b1 in range(2):
+                w01, f01 = w0[b0] * w1[b1], f0[b0] + f1[b1]
+                for b2 in range(2):
+                    w012, f012 = w01 * w2[b2], f01 + f2[b2]
+                    for b3 in range(2):
+                        value = value + values[f012 + f3[b3]] * (w012 * w3[b3])
         out[p] = value
 
     return out
@@ -264,8 +397,12 @@ def _interpolate(table, points):
     start  = np.concatenate([[0], np.cumsum(size)[:-1]]).astype(np.int64)
     fill   = np.nan if table.fill_value is None else float(table.fill_value)
     two_d  = (len(table.grid) == 2) and table.values.flags.writeable and (table.values.dtype.byteorder in ('=', '|'))
-    out    = _linear_regular_grid(grid, start, size, values.ravel(), np.array(values.strides, dtype = np.int64) // 8,
-                                  pts, fill, table.fill_value is not None, two_d, np.empty(pts.shape[0]))
+    stride = np.array(values.strides, dtype = np.int64) // 8
+    use    = table.fill_value is not None
+    out    = np.empty(pts.shape[0])
+    if len(table.grid) == 3:   _linear_regular_grid_3d(grid, start, size, values.ravel(), stride, pts, fill, use, out)
+    elif len(table.grid) == 4: _linear_regular_grid_4d(grid, start, size, values.ravel(), stride, pts, fill, use, out)
+    else:                      _linear_regular_grid(grid, start, size, values.ravel(), stride, pts, fill, use, two_d, out)
 
     return out.reshape(shape)
 
