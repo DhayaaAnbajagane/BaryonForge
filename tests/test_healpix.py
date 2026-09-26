@@ -5,7 +5,7 @@ Test index:
     test_painting_skips_halos_smaller_than_a_pixel: checks halos with no pixels in their cutout.
     test_split_join_preserves_runner_settings: checks split runners inherit the painting settings.
     test_anisotropic_painting_assigns_all_tracer_to_single_halo: checks tracer/mass units in PaintProfilesAnisShell.
-    test_baryonification_moves_mass_inward_and_conserves_it: checks BaryonifyShell end to end.
+    test_baryonification_moves_mass_inward_and_conserves_it: checks BaryonifyShell end to end (undisplaced pixels exact).
     test_split_join_does_not_create_empty_splits: checks catalogs that do not fill every job.
     test_anisotropic_painting_background_includes_pixel_size: checks the background's pixel-area factor.
     test_runners_do_not_depend_on_batching_or_n_jobs: checks batched/per-halo evaluation and threads agree exactly.
@@ -199,7 +199,7 @@ def test_baryonification_moves_mass_inward_and_conserves_it():
     disc = hp.query_disc(NSIDE, hp.ang2vec(30.0, 10.0, lonlat=True), np.radians(8 / 60))
     assert result[disc].sum() > 1.5 * original[disc].sum()
     far = hp.query_disc(NSIDE, hp.ang2vec(60.0, -20.0, lonlat=True), np.radians(8 / 60))
-    np.testing.assert_allclose(result[far], original[far])
+    np.testing.assert_array_equal(result[far], original[far])  # Pixels no halo displaces keep their values exactly
 
 
 class ScalingDisplacement:

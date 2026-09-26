@@ -516,17 +516,23 @@ class BaryonifyShell(DefaultRunner):
 
         #Reassign each displaced pixel to the four pixels around its new position. Done in chunks of pixels
         #(threaded if n_jobs > 1) that are regridded in order, so the result does not depend on n_jobs.
+        #Pixels that no halo displaced keep their value exactly, instead of being interpolated at their own
+        #center, where healpy's weights are not exactly (1, 0, 0, 0): up to ~1e-10 of the value (most near the
+        #poles, where angles from unit vectors lose precision) used to leak to the neighbouring pixels.
         def chunk_weights(pix):
-            new_vec = np.stack( hp.pix2vec(NSIDE, pix), axis = 1) + pix_offsets[pix]
+            offset  = pix_offsets[pix]
+            moved   = np.any(offset != 0, axis = 1)
+            new_vec = np.stack( hp.pix2vec(NSIDE, pix[moved]), axis = 1) + offset[moved]
             new_ang = np.stack( _vec2lonlat(new_vec), axis = 1) #As hp.vec2ang(new_vec, lonlat = True)
             c_pix, c_weight = hp.get_interp_weights(NSIDE, new_ang[:, 0], new_ang[:, 1], lonlat = True)
-            return pix, c_pix.T, c_weight.T
+            return pix[moved], c_pix.T, c_weight.T, pix[~moved]
 
         new_map = np.zeros(orig_map.size, dtype = float)
         chunks  = np.array_split(p_pix, max(1, int(np.ceil(p_pix.size / 250_000))))
         with _range_adder(self._n_threads()) as add:
-            for pix, c_pix, c_weight in self._run_chunks(chunk_weights, chunks):
+            for pix, c_pix, c_weight, fixed in self._run_chunks(chunk_weights, chunks):
                 add(_regrid_pixels_hpix_range, new_map, orig_map[pix], c_pix, c_weight)
+                add(_add_at_range, new_map, fixed, orig_map[fixed])
 
         #Do a quick check that the sum is the same
         new_sum = np.sum(new_map)
