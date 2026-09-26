@@ -1,6 +1,7 @@
 
 import numpy as np
 import pyccl as ccl
+import pickle, warnings, joblib
 from tqdm import tqdm
 from itertools import product
 from scipy import interpolate
@@ -140,6 +141,72 @@ def _interpolate(table, points):
                                   pts, fill, table.fill_value is not None, two_d, np.empty(pts.shape[0]))
 
     return out.reshape(shape)
+
+
+def _pickle_without_Pk(obj, cosmologies):
+    """
+    Pickles `obj` while the P(k) caches of `cosmologies` (the CCL cosmologies it holds) are emptied, since
+    those caches cannot be pickled, and puts the caches back afterwards. Worker processes recompute P(k)
+    when needed, with the same result.
+    """
+
+    cosmologies = [c for c in cosmologies if c is not None]
+    saved = [(c._pk_lin, c._pk_nl) for c in cosmologies]
+    try:
+        for c in cosmologies: destory_Pk(c)
+        return pickle.dumps(obj)
+    finally:
+        for c, (lin, nl) in zip(cosmologies, saved): c._pk_lin, c._pk_nl = lin, nl
+
+
+def _run_table_slices(payload, method, tasks):
+    """
+    Worker for `_map_table_slices`: unpickles the object and returns `[obj.<method>(*task) for task in tasks]`,
+    with the warnings they raised (so the calling process can re-emit them).
+    """
+
+    obj = pickle.loads(payload)
+    with warnings.catch_warnings(record = True) as caught:
+        warnings.simplefilter('always')
+        out = [getattr(obj, method)(*task) for task in tasks]
+    return out, [(str(w.message), w.category) for w in caught]
+
+
+def _map_table_slices(obj, method, tasks, n_jobs, cosmologies, pbar = None):
+    """
+    `[obj.<method>(*task) for task in tasks]`, the slices of a table, in order. With `n_jobs > 1` they are
+    computed by joblib (loky) worker processes, each on its own copy of `obj`, since computing a slice sets
+    the model parameters. The copies are identical to `obj`, so the slices are the same as in serial.
+    """
+
+    n_jobs = 1 if n_jobs in (None, 0) else int(n_jobs)
+    n_jobs = max(1, joblib.cpu_count() + 1 + n_jobs) if n_jobs < 0 else n_jobs
+    n_jobs = min(n_jobs, len(tasks))
+
+    if n_jobs <= 1:
+        out = []
+        for task in tasks:
+            out.append(getattr(obj, method)(*task))
+            if pbar is not None: pbar.update(1)
+        return out
+
+    try:
+        payload = _pickle_without_Pk(obj, cosmologies)
+    except Exception as e:
+        warnings.warn(f"The table could not be sent to worker processes ({type(e).__name__}: {e}). "
+                      "Building it serially instead.", UserWarning)
+        return _map_table_slices(obj, method, tasks, 1, cosmologies, pbar)
+
+    batches = [b for b in np.array_split(np.arange(len(tasks)), min(len(tasks), 4 * n_jobs)) if b.size > 0]
+    results = joblib.Parallel(n_jobs = n_jobs, backend = 'loky', return_as = 'generator')(
+                  joblib.delayed(_run_table_slices)(payload, method, [tasks[i] for i in b]) for b in batches)
+    out = []
+    for b, (values, caught) in zip(batches, results):
+        out += values
+        for message, category in caught: warnings.warn(message, category)
+        if pbar is not None: pbar.update(b.size)
+    return out
+
 
 def _set_parameter(obj, key, value):
     """
@@ -386,11 +453,17 @@ class TabulatedProfile(ccl.halos.profiles.HaloProfile):
     
     def __str_par__(self): return self.model.__str_par__()
 
-    def setup_interpolator(self, z_min = 1e-2, z_max = 5, N_samples_z = 30, z_linear_sampling = False, 
-                           M_min = 1e12, M_max = 1e16, N_samples_Mass = 30, 
-                           R_min = 1e-3, R_max = 1e2,  N_samples_R = 100, 
-                           other_params = {}, verbose = True):
-        
+    def _table_slice(self, r, M, a):
+        """One redshift slice of the tables: the 3D and projected profiles at scale factor `a`."""
+
+        return self.model.real(self.cosmo, r, M, a), self.model.projected(self.cosmo, r, M, a)
+
+
+    def setup_interpolator(self, z_min = 1e-2, z_max = 5, N_samples_z = 30, z_linear_sampling = False,
+                           M_min = 1e12, M_max = 1e16, N_samples_Mass = 30,
+                           R_min = 1e-3, R_max = 1e2,  N_samples_R = 100,
+                           other_params = {}, verbose = True, n_jobs = 1):
+
         """
         Sets up the interpolators for the 3D and 2D profiles based on the specified parameter ranges.
 
@@ -436,6 +509,10 @@ class TabulatedProfile(ccl.halos.profiles.HaloProfile):
         verbose : bool, optional
             If `True`, display a progress bar during the tabulation process. Default is `True`.
 
+        n_jobs : int, optional
+            Number of worker processes (joblib/loky) computing the redshift slices of the table. Default is 1
+            (serial); -1 uses all available cores. The table does not depend on `n_jobs`.
+
         """
 
         M_range  = np.geomspace(M_min, M_max, N_samples_Mass)
@@ -444,14 +521,13 @@ class TabulatedProfile(ccl.halos.profiles.HaloProfile):
 
         interp3D = np.zeros([z_range.size, M_range.size, r.size])
         interp2D = np.zeros([z_range.size, M_range.size, r.size])
-        
-        with tqdm(total = z_range.size, desc = 'Building Table', disable = not verbose) as pbar:
-            for j in range(z_range.size):                
-                a_j = 1/(1 + z_range[j])
 
-                interp3D[j, :, :] = self.model.real(self.cosmo, r, M_range, a_j)
-                interp2D[j, :, :] = self.model.projected(self.cosmo, r, M_range, a_j)
-                pbar.update(1)
+        with tqdm(total = z_range.size, desc = 'Building Table', disable = not verbose) as pbar:
+            tasks  = [(r, M_range, 1/(1 + z_range[j])) for j in range(z_range.size)]
+            slices = _map_table_slices(self, '_table_slice', tasks, n_jobs, [self.cosmo], pbar)
+        for j, (prof3D, prof2D) in enumerate(slices):
+            interp3D[j, :, :] = prof3D
+            interp2D[j, :, :] = prof2D
 
         input_grid_1 = (np.log(1 + z_range), np.log(M_range), np.log(r))
 
@@ -708,10 +784,20 @@ class ParamTabulatedProfile(object):
         assert not isinstance(model, TabulatedProfile), "Input model cannot be 'TabulatedProfile' object."
 
         
-    def setup_interpolator(self, z_min = 1e-2, z_max = 5, N_samples_z = 30, z_linear_sampling = False, 
-                           M_min = 1e12, M_max = 1e16, N_samples_Mass = 30, 
-                           R_min = 1e-3, R_max = 1e2,  N_samples_R = 100, 
-                           other_params = {}, verbose = True):
+    def _table_slice(self, r, M, a, keys, values):
+        """One slice of the tables: the 3D and projected profiles at scale factor `a`, with the model's
+        parameters `keys` set to `values`."""
+
+        #Modify the model input params so that they are run with the right parameters
+        for k, v in zip(keys, values): _set_parameter(self.model, k, v)
+
+        return self.model.real(self.cosmo, r, M, a), self.model.projected(self.cosmo, r, M, a)
+
+
+    def setup_interpolator(self, z_min = 1e-2, z_max = 5, N_samples_z = 30, z_linear_sampling = False,
+                           M_min = 1e12, M_max = 1e16, N_samples_Mass = 30,
+                           R_min = 1e-3, R_max = 1e2,  N_samples_R = 100,
+                           other_params = {}, verbose = True, n_jobs = 1):
         """
         Sets up the interpolators for the 3D and 2D profiles based on the specified parameter ranges.
 
@@ -754,9 +840,13 @@ class ParamTabulatedProfile(object):
             A dictionary of other parameters to be tabulated. The keys are parameter names, and the values are
             arrays (or lists) of parameter values. Default is an empty dictionary. The model's parameters are
             set to these values while tabulating, and restored to their original values afterwards.
-        
+
         verbose : bool, optional
             If `True`, display a progress bar during the tabulation process. Default is `True`.
+
+        n_jobs : int, optional
+            Number of worker processes (joblib/loky) computing the (redshift, parameter) slices of the table.
+            Default is 1 (serial); -1 uses all available cores. The table does not depend on `n_jobs`.
 
         """
 
@@ -772,28 +862,21 @@ class ParamTabulatedProfile(object):
         #If other_params is empty then iterator will be empty and the code still works fine
         iterator = [p for p in product(*[np.arange(other_params[k].size) for k in p_keys])]
 
-        #The loop below changes the model's parameters. Save them, so the model is returned unchanged.
+        #The slices below change the model's parameters. Save them, so the model is returned unchanged.
         original_params = _record_parameters(self.model, p_keys)
 
         #Loop over params to build table
+        tasks = [(r, M_range, 1/(1 + z_range[j]), p_keys, [other_params[p_keys[k_i]][c[k_i]] for k_i in range(len(p_keys))])
+                 for j in range(z_range.size) for c in iterator]
         with tqdm(total = interp3D.size//(M_range.size*r.size), desc = 'Building Table', disable = not verbose) as pbar:
-            for j in range(z_range.size):                
-                a_j = 1/(1 + z_range[j])
-                
-                for c in iterator:
-                    
-                    #Modify the model input params so that they are run with the right parameters
-                    for k_i in range(len(p_keys)):
-                        _set_parameter(self.model, p_keys[k_i], other_params[p_keys[k_i]][c[k_i]])
-                    
-                    #Build a custom index into the array
-                    index = tuple([j, slice(None), slice(None)] + list(c))
-                    
-                    interp3D[index] = self.model.real(self.cosmo, r, M_range, a_j)
-                    interp2D[index] = self.model.projected(self.cosmo, r, M_range, a_j)
-                    pbar.update(1)
+            slices = _map_table_slices(self, '_table_slice', tasks, n_jobs, [self.cosmo], pbar)
 
         _restore_parameters(original_params)
+
+        for (j, c), (prof3D, prof2D) in zip([(j, c) for j in range(z_range.size) for c in iterator], slices):
+            index = tuple([j, slice(None), slice(None)] + list(c)) #Build a custom index into the array
+            interp3D[index] = prof3D
+            interp2D[index] = prof2D
 
 
         input_grid_1 = tuple([np.log(1 + z_range), np.log(M_range), np.log(r)] + [other_params[k] for k in p_keys])

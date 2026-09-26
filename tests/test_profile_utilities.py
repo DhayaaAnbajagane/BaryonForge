@@ -9,6 +9,7 @@ Test index:
     test_table_interpolation_matches_scipy_exactly: checks the numba table readout against scipy.
     test_batched_table_readout_matches_per_halo_readout: checks the runners' batched readouts.
     test_wrappers_do_not_expose_the_batched_readout_of_their_input: checks the batched-readout guard.
+    test_tables_built_in_worker_processes_are_identical: checks setup_interpolator(n_jobs = 2).
 """
 
 import numpy as np
@@ -258,3 +259,27 @@ def test_wrappers_do_not_expose_the_batched_readout_of_their_input():
     assert _batch_method(doubled, "_projected_batch", "projected", "_projected", "_readout") is None
     assert _batch_method(doubled, "_real_batch", "real", "_real", "_readout") is not None
     assert _batch_method(bfg.Profiles.misc.ComovingToPhysical(doubled, factor=0), "_projected_batch") is None
+
+
+def test_tables_built_in_worker_processes_are_identical():
+    """setup_interpolator(n_jobs = 2) builds the same tables as in serial, and restores the model parameters."""
+    from defaults import bpar_S19
+
+    cosmo = ccl.Cosmology(**ccl_dict)
+    fast = dict(r_steps=64, cutoff=20, proj_cutoff=20, n_per_decade_proj=4)
+    grid = dict(z_min=0.1, z_max=0.5, N_samples_z=2, M_min=1e13, M_max=1e15, N_samples_Mass=3, verbose=False)
+
+    tables = []
+    for n_jobs in (1, 2):
+        gas = bfg.Profiles.Schneider19.Gas(**bpar_S19, **fast)
+        table = bfg.utils.ParamTabulatedProfile(gas, cosmo)
+        table.setup_interpolator(R_min=0.01, R_max=10, N_samples_R=16, other_params={"theta_ej": [3.0, 5.0]}, n_jobs=n_jobs, **grid)
+        assert gas.theta_ej == bpar_S19["theta_ej"]
+
+        B3 = bfg.Baryonification3D(bfg.Profiles.Schneider19.DarkMatterOnly(**bpar_S19, **fast),
+                                   bfg.Profiles.Schneider19.DarkMatterBaryon(**bpar_S19, **fast), cosmo, N_int=200)
+        B3.setup_interpolator(R_min=1e-3, R_max=20, N_samples_R=50, other_params={"theta_ej": [3.0, 5.0]}, n_jobs=n_jobs, **grid)
+        tables.append((table.raw_input_3D, table.raw_input_2D, B3.raw_input_d))
+
+    for serial, parallel in zip(*tables):
+        np.testing.assert_array_equal(parallel, serial)
