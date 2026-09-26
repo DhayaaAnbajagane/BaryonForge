@@ -1,6 +1,7 @@
 import numpy as np
 import numba
 from contextlib import contextmanager
+from concurrent.futures import ThreadPoolExecutor
 from numba import njit, prange
 from scipy.spatial import KDTree
 from tqdm import tqdm
@@ -29,12 +30,12 @@ def _cell_of(x, y, z, L, n):
 
 
 @njit(parallel = True)
-def _cell_ids(x, y, z, L, n):
+def _cell_ids_in_box(x, y, z, L, n):
     """
-    Cell `(ix*ny + iy)*nz + iz` of every particle, in a periodic grid of `n = (nx, ny, nz)` cells over [0, L)^3.
-    Particles inside [0, L)^3 (usually all) need no `% L` (it would return the coordinate itself, up to the sign
-    of zero, which gives the same cell); the loop has none, since the compiler would otherwise evaluate it for
-    every particle. Any others are redone with it.
+    Cell `(ix*ny + iy)*nz + iz` of every particle inside [0, L)^3, in a periodic grid of `n = (nx, ny, nz)`
+    cells, and -1 for the others. Returns the cells and the number of particles outside. Particles inside need
+    no `% L` (it would return the coordinate itself, up to the sign of zero, which gives the same cell); the
+    loop has none, since the compiler would otherwise evaluate it for every particle.
     """
 
     cell, outside = np.empty(x.size, dtype = np.int64), 0
@@ -45,10 +46,23 @@ def _cell_ids(x, y, z, L, n):
             cell[i] = -1
             outside += 1
 
-    if outside > 0:
-        for i in prange(x.size):
-            if cell[i] < 0: cell[i] = _cell_of(x[i] % L, y[i] % L, z[i] % L, L, n)
+    return cell, outside
 
+
+@njit(parallel = True)
+def _cell_ids_outside(x, y, z, L, n, cell):
+    """Fills in the cells (-1) of the particles outside the box, wrapping their coordinates with `% L`."""
+
+    for i in prange(x.size):
+        if cell[i] < 0: cell[i] = _cell_of(x[i] % L, y[i] % L, z[i] % L, L, n)
+    return cell
+
+
+def _cell_ids(x, y, z, L, n):
+    """Cell of every particle in a periodic grid of `n = (nx, ny, nz)` cells over [0, L)^3 (see `_cell_ids_in_box`)."""
+
+    cell, outside = _cell_ids_in_box(x, y, z, L, n)
+    if outside > 0: _cell_ids_outside(x, y, z, L, n, cell) #Compiled only if ever needed
     return cell
 
 
@@ -65,51 +79,73 @@ def _counting_sort(cell, starts):
     return order
 
 
-@njit(parallel = True)
-def _counting_sort_parallel(cell, n_planes, cells_per_plane, n_blocks):
-    """
-    The stable counting sort of `_counting_sort`, in parallel: the particles are first split by plane of cells
-    (`cell // cells_per_plane`, the leading index of the cell) in `n_blocks` blocks of consecutive particles,
-    then each plane is sorted by cell on its own. Both steps keep the particles in their original order, so
-    `order` is exactly that of `_counting_sort`. Returns `order` and `starts` (the cumulative cell counts).
-    """
+@njit(nogil = True)
+def _plane_counts(cell, lo, hi, cells_per_plane, counts):
+    """Adds to `counts` the number of particles `lo:hi` in every plane of cells (`cell // cells_per_plane`)."""
 
-    N      = cell.size
-    counts = np.zeros((n_blocks, n_planes), dtype = np.int64)
-    for b in prange(n_blocks): #Particles per (block, plane)
-        for i in range(b * N // n_blocks, (b + 1) * N // n_blocks): counts[b, cell[i] // cells_per_plane] += 1
+    for i in range(lo, hi): counts[cell[i] // cells_per_plane] += 1
 
-    offsets, plane_start, total = np.empty((n_blocks, n_planes), dtype = np.int64), np.empty(n_planes + 1, dtype = np.int64), 0
-    for p in range(n_planes): #Positions in plane order, and within a plane in block order
-        plane_start[p] = total
-        for b in range(n_blocks):
-            offsets[b, p] = total
-            total += counts[b, p]
-    plane_start[n_planes] = total
 
-    by_plane = np.empty(N, dtype = np.int64)
-    for b in prange(n_blocks):
-        fill = offsets[b].copy()
-        for i in range(b * N // n_blocks, (b + 1) * N // n_blocks):
-            p = cell[i] // cells_per_plane
-            by_plane[fill[p]] = i
-            fill[p] += 1
+@njit(nogil = True)
+def _scatter_by_plane(cell, lo, hi, cells_per_plane, fill, by_plane, local):
+    """Writes particles `lo:hi`, in order, to their plane's next free position (`fill`), with their cell
+    within the plane, so the sort of each plane reads both in sequence."""
 
-    order       = np.empty(N, dtype = np.int64)
-    cell_counts = np.zeros(n_planes * cells_per_plane + 1, dtype = np.int64) #Particles per cell, shifted by one
-    for p in prange(n_planes):
+    for i in range(lo, hi):
+        p = cell[i] // cells_per_plane
+        by_plane[fill[p]] = i
+        local[fill[p]]    = cell[i] - p * cells_per_plane
+        fill[p] += 1
+
+
+@njit(nogil = True)
+def _sort_planes(by_plane, local, plane_start, p_lo, p_hi, cells_per_plane, order, cell_counts):
+    """Counting sort, by cell, of the particles of planes `p_lo:p_hi` (stable), into `order`."""
+
+    fill = np.empty(cells_per_plane, dtype = np.int64)
+    for p in range(p_lo, p_hi):
         s, e, base = plane_start[p], plane_start[p + 1], p * cells_per_plane
-        fill = np.zeros(cells_per_plane, dtype = np.int64)
-        for k in range(s, e): fill[cell[by_plane[k]] - base] += 1
+        fill[:] = 0
+        for k in range(s, e): fill[local[k]] += 1
         for c in range(cells_per_plane): cell_counts[base + c + 1] = fill[c]
         run = s
         for c in range(cells_per_plane): #Start of every cell of the plane
             run, fill[c] = run + fill[c], run
         for k in range(s, e):
-            i = by_plane[k]
-            c = cell[i] - base
-            order[fill[c]] = i
+            c = local[k]
+            order[fill[c]] = by_plane[k]
             fill[c] += 1
+
+
+def _counting_sort_threads(cell, n_planes, cells_per_plane, n_threads):
+    """
+    The stable counting sort of `_counting_sort`, with `n_threads` threads: the particles are first split by
+    plane of cells (`cell // cells_per_plane`, the leading index of the cell) in `n_threads` blocks of
+    consecutive particles, then each plane is sorted by cell on its own. Both steps keep the particles in their
+    original order, so `order` is exactly that of `_counting_sort`. Returns `order` and `starts` (the cumulative
+    cell counts). The kernels are plain (not parallel = True) loops, which compile in a fraction of the time.
+    """
+
+    N      = cell.size
+    blocks = np.linspace(0, N, n_threads + 1).astype(np.int64)
+    counts = np.zeros((n_threads, n_planes), dtype = np.int64) #Particles per (block, plane)
+    with ThreadPoolExecutor(max_workers = n_threads) as pool: #The kernels release the GIL
+        run = lambda f, args: [job.result() for job in [pool.submit(f, *a) for a in args]]
+        run(_plane_counts, [(cell, blocks[b], blocks[b + 1], cells_per_plane, counts[b]) for b in range(n_threads)])
+
+        flat        = counts.T.ravel() #Positions in plane order, and within a plane in block order
+        offsets     = (np.cumsum(flat) - flat).reshape(n_planes, n_threads).T.copy()
+        plane_start = np.concatenate([[0], np.cumsum(counts.sum(axis = 0))]).astype(np.int64)
+
+        by_plane = np.empty(N, dtype = np.int64)
+        local    = np.empty(N, dtype = np.int64 if cells_per_plane > 2**31 else np.int32)
+        run(_scatter_by_plane, [(cell, blocks[b], blocks[b + 1], cells_per_plane, offsets[b], by_plane, local) for b in range(n_threads)])
+
+        order       = np.empty(N, dtype = np.int64)
+        cell_counts = np.zeros(n_planes * cells_per_plane + 1, dtype = np.int64) #Particles per cell, shifted by one
+        planes      = np.linspace(0, n_planes, min(4 * n_threads, n_planes) + 1).astype(np.int64)
+        run(_sort_planes, [(by_plane, local, plane_start, planes[k], planes[k + 1], cells_per_plane, order, cell_counts)
+                           for k in range(planes.size - 1)])
 
     return order, np.cumsum(cell_counts)
 
@@ -147,13 +183,14 @@ def _copy(values, out):
 def _build_cell_index(x, y, z, L, n, n_threads = 1):
     """
     Sorts particles into a periodic grid of `n = (nx, ny, nz)` cells over the box [0, L)^3 (a stable counting
-    sort, in parallel if `n_threads > 1`, with the same result). Returns `order`, the particle indices sorted by
-    cell, and `starts`, such that the particles of cell `c = (ix*ny + iy)*nz + iz` are `order[starts[c]:starts[c+1]]`.
+    sort, in parallel if `n_threads > 2`, with the same result; with two threads the parallel sort's extra pass
+    costs more than it saves). Returns `order`, the particle indices sorted by cell, and `starts`, such that the
+    particles of cell `c = (ix*ny + iy)*nz + iz` are `order[starts[c]:starts[c+1]]`.
     """
 
     cell = _cell_ids(x, y, z, L, n)
-    if n_threads > 1:
-        return _counting_sort_parallel(cell, int(n[0]), int(n[1] * n[2]), 4 * n_threads)
+    if n_threads > 2:
+        return _counting_sort_threads(cell, int(n[0]), int(n[1] * n[2]), n_threads)
 
     starts = np.concatenate([[0], np.cumsum(np.bincount(cell, minlength = int(np.prod(n))))]).astype(np.int64)
 
