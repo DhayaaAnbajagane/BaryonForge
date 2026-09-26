@@ -7,6 +7,7 @@ from scipy.spatial import KDTree
 from tqdm import tqdm
 from ..utils.misc import _default_mass_def, _runner_cosmology, _check_p_keys, _halo_radius, _batch_method
 from ..utils.Tabulate import _find_interval
+from ._chunks import _zeros
 
 __all__ = ['DefaultRunnerSnapshot', 'BaryonifySnapshot']
 
@@ -151,12 +152,15 @@ def _counting_sort_threads(cell, n_planes, cells_per_plane, n_threads):
 
 
 @njit(parallel = True)
-def _gather(values, order):
-    """`values[order]`, in parallel (`values` may be a strided view, eg. a field of a structured array)."""
+def _gather(x, y, z, order):
+    """`x[order], y[order], z[order]`, in one parallel pass (the arrays may be strided views, eg. fields of a
+    structured array, where the three values of a particle share a cache line that is then read only once)."""
 
-    out = np.empty(order.size)
-    for i in prange(order.size): out[i] = values[order[i]]
-    return out
+    xs, ys, zs = np.empty(order.size), np.empty(order.size), np.empty(order.size)
+    for i in prange(order.size):
+        o = order[i]
+        xs[i], ys[i], zs[i] = x[o], y[o], z[o]
+    return xs, ys, zs
 
 
 @njit(parallel = True)
@@ -444,8 +448,8 @@ class DefaultRunnerSnapshot(object):
             z = np.zeros(N) if Snap.is2D else Snap.cat['z'].astype(np.float64, copy = False)
             with self._threads():
                 order, starts = _build_cell_index(x, y, z, float(Snap.L), n, self._n_threads())
-                self._index = {'n' : n, 'order' : order, 'starts' : starts,
-                               'xs' : _gather(x, order), 'ys' : _gather(y, order), 'zs' : _gather(z, order)}
+                xs, ys, zs    = _gather(x, y, z, order)
+                self._index   = {'n' : n, 'order' : order, 'starts' : starts, 'xs' : xs, 'ys' : ys, 'zs' : zs}
 
         return self._index
 
@@ -574,7 +578,9 @@ class BaryonifySnapshot(DefaultRunnerSnapshot):
         for i, ax in enumerate(axes): pos[:, i] = cat[ax] #CARTESIAN COORDINATES (z is not redshift)
         other = {key : np.asarray(cat[key]) for key in keys} #Other properties
 
-        offsets = np.zeros([self.ParticleSnapshot.cat.size, 3]) #In the original particle order
+        #In the original particle order. With threads, zeroed by all of them: the loop would otherwise map the
+        #pages at its first (scattered) writes, which took more than half of its time with 24 threads
+        offsets = _zeros([self.ParticleSnapshot.cat.size, 3], self._n_threads())
 
         #A subclass that changes the distance/periodicity helpers gets them used, with the KDTree, halo by halo
         custom = any(getattr(type(self), f) is not getattr(DefaultRunnerSnapshot, f) for f in ('compute_distance', 'enforce_periodicity'))

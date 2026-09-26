@@ -1,5 +1,5 @@
 """
-Helpers shared by the HEALPix and grid runners: halos are processed in chunks (one model call per chunk, or
+Helpers shared by the HEALPix and grid runners (and `_zeros` by the snapshot runner): halos are processed in chunks (one model call per chunk, or
 one per halo for models without a batched readout), optionally in threads, and their contributions are added
 to the output in catalog order, so the result does not depend on the chunking or on the number of threads.
 """
