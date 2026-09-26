@@ -36,17 +36,6 @@ def _add_rows_at(target, index, values):
 
 
 @njit(nogil = True)
-def _add_at_range(target, index, values, lo, hi):
-    """`_add_at` for the entries with `lo <= index[i] < hi` only (in the same order)."""
-
-    for i in range(index.size):
-        j = index[i]
-        if (j >= lo) and (j < hi): target[j] += values[i]
-
-    return target
-
-
-@njit(nogil = True)
 def _add_rows_at_range(target, index, values, lo, hi):
     """`_add_rows_at` for the entries with `lo <= index[i] < hi` only (in the same order)."""
 
@@ -59,23 +48,48 @@ def _add_rows_at_range(target, index, values, lo, hi):
     return target
 
 
-@contextmanager
-def _range_adder(n_threads):
+@njit(nogil = True)
+def _fill_zeros(flat, lo, hi):
+    """`flat[lo:hi] = 0`."""
+
+    for i in range(lo, hi): flat[i] = 0.0
+    return flat
+
+
+def _zeros(shape, n_threads):
     """
-    Yields `add(kernel, target, *args)`, which runs `kernel(target, *args, lo, hi)` (a GIL-free `*_range` kernel)
-    over `n_threads` consecutive ranges [lo, hi) of the target's entries at once, and waits for all of them.
-    Every entry is updated by one thread only, with the contributions in their original order, so a sequence
-    of `add` calls gives exactly the result of the serial loops.
+    `np.zeros(shape)`, with the memory written by `n_threads` threads at once if `n_threads > 1`. Freshly
+    allocated pages are otherwise mapped when first written, one page fault at a time, which for map-sized
+    arrays filled pixel by pixel in the (serial) accumulation took a large part of the threaded runs.
+    """
+
+    if n_threads == 1: return np.zeros(shape)
+
+    out    = np.empty(shape)
+    flat   = out.reshape(-1)
+    bounds = np.linspace(0, flat.size, n_threads + 1).astype(np.int64)
+    with ThreadPoolExecutor(max_workers = n_threads) as pool:
+        for f in [pool.submit(_fill_zeros, flat, bounds[t], bounds[t + 1]) for t in range(n_threads)]: f.result()
+
+    return out
+
+
+@contextmanager
+def _row_adder(n_threads):
+    """
+    Yields `add(target, index, values)`, the same as `_add_rows_at`, which with `n_threads > 1` splits the target's
+    rows into `n_threads` ranges handled by separate threads (the GIL-free kernel scans the pairs for its range).
+    Every row receives its contributions in the original order, so the result is exactly that of `_add_rows_at`.
     """
 
     if n_threads == 1:
-        yield lambda kernel, target, *args: kernel(target, *args, 0, target.shape[0])
+        yield _add_rows_at
         return
 
     with ThreadPoolExecutor(max_workers = n_threads) as pool:
-        def add(kernel, target, *args):
+        def add(target, index, values):
             bounds  = np.linspace(0, target.shape[0], n_threads + 1).astype(np.int64)
-            futures = [pool.submit(kernel, target, *args, bounds[t], bounds[t + 1]) for t in range(n_threads)]
+            futures = [pool.submit(_add_rows_at_range, target, index, values, bounds[t], bounds[t + 1]) for t in range(n_threads)]
             for f in futures: f.result()
         yield add
 

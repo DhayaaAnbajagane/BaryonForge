@@ -9,7 +9,7 @@ from scipy import interpolate
 from tqdm import tqdm
 from ..utils.Tabulate import _get_parameter
 from ..utils.misc import _default_mass_def, _runner_cosmology, _check_p_keys, _halo_radius
-from ._chunks import _add_at_range, _add_rows_at_range, _range_adder, _n_threads, _chunk_bounds, _run_chunks, _evaluate_pairs
+from ._chunks import _add_at, _row_adder, _zeros, _n_threads, _chunk_bounds, _run_chunks, _evaluate_pairs
 
 __all__ = ['DefaultRunner', 'BaryonifyShell', 'PaintProfilesShell', 'PaintProfilesAnisShell',
            'regrid_pixels_hpix']
@@ -141,16 +141,6 @@ def regrid_pixels_hpix(hmap, parent_pix_vals, child_pix, child_weights):
 regrid_pixels_hpix(np.zeros(10), np.ones(5), np.ones([5, 4], dtype = int), np.ones([5, 4]) * 0.25)
 
 
-@njit(nogil = True)
-def _regrid_pixels_hpix_range(hmap, parent_pix_vals, child_pix, child_weights, lo, hi):
-    """`regrid_pixels_hpix` for the target pixels with `lo <= child_pix[i, j] < hi` only (in the same order)."""
-
-    for i in range(parent_pix_vals.size):
-        for j in range(4):
-            c = child_pix[i, j]
-            if (c >= lo) and (c < hi): hmap[c] += child_weights[i, j] * parent_pix_vals[i]
-
-    return hmap
 
 
 
@@ -506,11 +496,13 @@ class BaryonifyShell(DefaultRunner):
             return pix, _unit_vector_shift(*vec, pos, diff, r_sep, np.asarray(disp, dtype = float))
 
         #Accumulate the offsets in the UNIT VECTORS of the hpixels, halo by halo in catalog order. With threads,
-        #each thread updates one range of pixels, adding the contributions in the same order as a serial loop.
-        pix_offsets = np.zeros([orig_map.size, 3])
-        with _range_adder(self._n_threads()) as add:
+        #the map-sized arrays are zeroed by all threads (rather than paged in one pixel at a time by the
+        #accumulation), and each thread adds the offsets of one range of pixels, in the same order as a serial loop.
+        n_threads   = self._n_threads()
+        pix_offsets = _zeros([orig_map.size, 3], n_threads)
+        with _row_adder(n_threads) as add:
             for pix, offset in self._run_chunks(chunk_offsets, self._halo_chunks(H, NSIDE), 'Baryonifying matter'):
-                add(_add_rows_at_range, pix_offsets, pix, offset)
+                add(pix_offsets, pix, offset)
 
         p_pix   = np.where(orig_map != 0)[0] #Only select regions with non-zero map-values. Zero value pixels don't matter
 
@@ -527,12 +519,11 @@ class BaryonifyShell(DefaultRunner):
             c_pix, c_weight = hp.get_interp_weights(NSIDE, new_ang[:, 0], new_ang[:, 1], lonlat = True)
             return pix[moved], c_pix.T, c_weight.T, pix[~moved]
 
-        new_map = np.zeros(orig_map.size, dtype = float)
+        new_map = _zeros(orig_map.size, n_threads)
         chunks  = np.array_split(p_pix, max(1, int(np.ceil(p_pix.size / 250_000))))
-        with _range_adder(self._n_threads()) as add:
-            for pix, c_pix, c_weight, fixed in self._run_chunks(chunk_weights, chunks):
-                add(_regrid_pixels_hpix_range, new_map, orig_map[pix], c_pix, c_weight)
-                add(_add_at_range, new_map, fixed, orig_map[fixed])
+        for pix, c_pix, c_weight, fixed in self._run_chunks(chunk_weights, chunks):
+            regrid_pixels_hpix(new_map, orig_map[pix], c_pix, c_weight) #GIL-free kernels, so the threads keep working
+            _add_at(new_map, fixed, orig_map[fixed])
 
         #Do a quick check that the sum is the same
         new_sum = np.sum(new_map)
@@ -621,10 +612,9 @@ class PaintProfilesShell(DefaultRunner):
 
             return pix, Paint
 
-        #Add the profiles to the new healpix map, halo by halo in catalog order (see BaryonifyShell for the threads)
-        with _range_adder(self._n_threads()) as add:
-            for pix, Paint in self._run_chunks(chunk_paint, self._halo_chunks(H, NSIDE), 'Painting Profile'):
-                add(_add_at_range, new_map, pix, Paint)
+        #Add the profiles to the new healpix map, halo by halo in catalog order (a GIL-free kernel, so the threads keep working)
+        for pix, Paint in self._run_chunks(chunk_paint, self._halo_chunks(H, NSIDE), 'Painting Profile'):
+            _add_at(new_map, pix, Paint)
 
         return new_map
     
@@ -757,10 +747,9 @@ class PaintProfilesAnisShell(DefaultRunner):
 
             return pix, Painting * Mfrac
 
-        #Add the profiles to the new healpix map, halo by halo in catalog order (see BaryonifyShell for the threads)
-        with _range_adder(self._n_threads()) as add:
-            for pix, values in self._run_chunks(chunk_paint, self._halo_chunks(H, NSIDE), 'Painting Profile'):
-                add(_add_at_range, new_map, pix, values)
+        #Add the profiles to the new healpix map, halo by halo in catalog order (a GIL-free kernel, so the threads keep working)
+        for pix, values in self._run_chunks(chunk_paint, self._halo_chunks(H, NSIDE), 'Painting Profile'):
+            _add_at(new_map, pix, values)
 
         #Missing mass was assigned to uniform background. Here we account for that background's contribution
         Mfrac    = np.divide(dV * drho_m, Mtot_map, out = np.zeros_like(Mtot_map), where = Mtot_map > 0)
