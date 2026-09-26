@@ -6,6 +6,7 @@ from tqdm import tqdm
 from itertools import product
 from scipy import interpolate
 from numba import njit
+from concurrent.futures import ThreadPoolExecutor
 from .misc import destory_Pk
 
 __all__ = ['_set_parameter', '_get_parameter', 'TabulatedProfile', 'ParamTabulatedProfile']
@@ -110,6 +111,132 @@ def _linear_regular_grid(grid, start, size, values, strides, points, fill, use_f
                     flat  += lower[k] * strides[k]
             value = value + values[flat] * weight
         out[p] = value
+
+    return out
+
+
+@njit(nogil = True)
+def _linear_curves(grid, start, size, values, strides, points, axis, fill, use_fill, out):
+    """
+    `_linear_regular_grid` (for tables of 3 or more dimensions) at every node of dimension `axis`: `out[p, i]`
+    is the table at the coordinates `points[p]` (one per dimension other than `axis`, in order) with the
+    coordinate of `axis` set to its i-th node. The intervals and weights of the other dimensions are found
+    once per row, and so are, for every corner, the product of the weights of the dimensions before `axis`
+    and the flat index of the other dimensions. The weights are still multiplied in dimension order and the
+    corners summed in the same order as `_linear_regular_grid`, so the result is the same.
+    """
+
+    P      = points.shape[0]
+    d      = points.shape[1] + 1
+    s_ax   = start[axis]
+    n_ax   = size[axis]
+    n_c    = 1 << d
+    n_post = d - 1 - axis
+    lower  = np.empty(d, dtype = np.int64)
+    upper  = np.empty(d, dtype = np.int64)
+    y      = np.empty(d)
+    ym     = np.empty(d)
+    pre    = np.empty(n_c)                    #Product of the weights of dimensions before `axis`
+    post   = np.empty((n_c, max(n_post, 1)))  #Weights of dimensions after `axis`
+    base   = np.empty(n_c, dtype = np.int64)  #Flat index over the dimensions other than `axis`
+    a_bit  = np.empty(n_c, dtype = np.int64)  #Whether the corner is at the upper node of `axis`
+
+    for p in range(P):
+        has_nan = False
+        outside = False
+        for k in range(d):
+            if k == axis: continue
+            x = points[p, k if k < axis else k - 1]
+            s = start[k]
+            n = size[k]
+            if x != x: has_nan = True
+            if (x < grid[s]) or (x > grid[s + n - 1]): outside = True
+            if n == 1:
+                lower[k], upper[k], y[k] = 0, 0, 0.0
+            else:
+                i = _find_interval(grid, s, n, x)
+                lower[k], upper[k] = i, i + 1
+                y[k] = (x - grid[s + i]) / (grid[s + i + 1] - grid[s + i])
+            ym[k] = 1 - y[k]
+
+        if has_nan or (outside and use_fill):
+            for j in range(n_ax): out[p, j] = np.nan if has_nan else fill
+            continue
+
+        for c in range(n_c):
+            weight = 1.0
+            flat   = 0
+            m      = 0
+            for k in range(d):
+                bit = (c >> (d - 1 - k)) & 1
+                if k == axis:
+                    a_bit[c] = bit
+                    continue
+                w     = y[k] if bit else ym[k]
+                flat += (upper[k] if bit else lower[k]) * strides[k]
+                if k < axis: weight = weight * w
+                else:
+                    post[c, m] = w
+                    m += 1
+            pre[c], base[c] = weight, flat
+
+        for j in range(n_ax):
+            #The node's interval, as _find_interval gives for x = grid[s_ax + j] (the last one for the top node)
+            if n_ax == 1:
+                i, y_ax = 0, 0.0
+                i_up    = 0
+            else:
+                i    = min(j, n_ax - 2)
+                i_up = i + 1
+                y_ax = (grid[s_ax + j] - grid[s_ax + i]) / (grid[s_ax + i + 1] - grid[s_ax + i])
+            ym_ax = 1 - y_ax
+
+            value = 0.0
+            for c in range(n_c):
+                if a_bit[c]:
+                    weight = pre[c] * y_ax
+                    flat   = base[c] + i_up * strides[axis]
+                else:
+                    weight = pre[c] * ym_ax
+                    flat   = base[c] + i * strides[axis]
+                for m in range(n_post): weight = weight * post[c, m]
+                value = value + values[flat] * weight
+            out[p, j] = value
+
+    return out
+
+
+def _interpolate_curves(table, points, axis, n_threads = 1):
+    """
+    Evaluates `table` (a linear scipy `RegularGridInterpolator` of 3 or more dimensions) along all the nodes of
+    dimension `axis`, for each row of `points` (the coordinates of the other dimensions, in order). Returns an
+    array of shape (len(points), number of nodes of `axis`), equal to `_interpolate` at those points, or None
+    if the table is not one that `_interpolate` evaluates itself. Rows are split over `n_threads` threads.
+    """
+
+    values = getattr(table, 'values', None)
+    if not (isinstance(table, interpolate.RegularGridInterpolator) and (table.method == 'linear') and
+            (not table.bounds_error) and (values is not None) and (values.dtype == np.float64) and
+            (values.ndim == len(table.grid)) and (values.ndim >= 3)):
+        return None
+
+    pts    = np.ascontiguousarray(np.asarray(points, dtype = float).reshape(-1, len(table.grid) - 1))
+    values = np.ascontiguousarray(values)
+    grid   = np.concatenate([np.asarray(g, dtype = float) for g in table.grid])
+    size   = np.array([len(g) for g in table.grid], dtype = np.int64)
+    start  = np.concatenate([[0], np.cumsum(size)[:-1]]).astype(np.int64)
+    fill   = np.nan if table.fill_value is None else float(table.fill_value)
+    stride = np.array(values.strides, dtype = np.int64) // 8
+    out    = np.empty((pts.shape[0], size[axis]))
+
+    run    = lambda rows: _linear_curves(grid, start, size, values.ravel(), stride, pts[rows], axis, fill,
+                                         table.fill_value is not None, out[rows])
+    groups = [g for g in np.array_split(np.arange(pts.shape[0]), max(1, int(n_threads))) if g.size > 0]
+    if len(groups) <= 1:
+        run(slice(None))
+    else:
+        with ThreadPoolExecutor(max_workers = len(groups)) as executor: #The kernel releases the GIL
+            list(executor.map(lambda g: run(slice(g[0], g[-1] + 1)), groups))
 
     return out
 

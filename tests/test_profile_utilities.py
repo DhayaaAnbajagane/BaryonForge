@@ -7,6 +7,7 @@ Test index:
     test_comoving_to_physical_applies_expected_scale_factor_powers: checks scale-factor conversion.
     test_tabulated_profile_uses_a_tiny_analytic_grid: checks tiny analytic tabulation.
     test_table_interpolation_matches_scipy_exactly: checks the numba table readout against scipy.
+    test_table_curves_match_the_table_readout_exactly: checks the readout along all nodes of one axis.
     test_batched_table_readout_matches_per_halo_readout: checks the runners' batched readouts.
     test_wrappers_do_not_expose_the_batched_readout_of_their_input: checks the batched-readout guard.
     test_tables_built_in_worker_processes_are_identical: checks setup_interpolator(n_jobs = 2).
@@ -198,6 +199,32 @@ def test_table_interpolation_matches_scipy_exactly(sizes, fill_value):
         points.append(c)
 
     np.testing.assert_array_equal(_interpolate(table, tuple(points)), table(tuple(points)))
+
+
+@pytest.mark.parametrize("sizes, axis", (([3, 5, 7], 2), ([2, 1, 6], 2), ([3, 2, 4, 5], 2), ([4, 3, 1], 1), ([3, 1, 4], 1),
+                                         ([2, 3, 4, 2, 3], 0)))
+@pytest.mark.parametrize("fill_value", (np.nan, None, 0.0))
+def test_table_curves_match_the_table_readout_exactly(sizes, axis, fill_value):
+    """The readout along all nodes of one axis (the snapshot runner's displacement curves) matches the table
+    readout at those points bit for bit, including non-finite table values and coordinates."""
+    from scipy.interpolate import RegularGridInterpolator
+    from BaryonForge.utils.Tabulate import _interpolate, _interpolate_curves
+
+    rng = np.random.default_rng(len(sizes) * 10 + axis)
+    grids = tuple(np.sort(rng.uniform(-2, 2, n)) if n > 1 else np.array([0.3]) for n in sizes)
+    values = rng.normal(size=sizes)
+    values.flat[rng.integers(values.size, size=2)] = (np.nan, np.inf)
+    table = RegularGridInterpolator(grids, values, bounds_error=False, fill_value=fill_value)
+
+    rows = np.column_stack([rng.uniform(g[0] - 0.5, g[-1] + 0.5, 60) for k, g in enumerate(grids) if k != axis])
+    rows[:10] = [[rng.choice(g) for k, g in enumerate(grids) if k != axis] for _ in range(10)]  # on the nodes
+    rows[10, 0] = np.nan
+    nodes = grids[axis]
+    points = [np.repeat(rows[:, k if k < axis else k - 1], nodes.size) if k != axis else np.tile(nodes, len(rows))
+              for k in range(len(sizes))]
+    expected = _interpolate(table, tuple(points)).reshape(len(rows), nodes.size)
+    for n_threads in (1, 3):
+        np.testing.assert_array_equal(_interpolate_curves(table, rows, axis, n_threads=n_threads), expected)
 
 
 def _tiny_table(cls=None, **kwargs):

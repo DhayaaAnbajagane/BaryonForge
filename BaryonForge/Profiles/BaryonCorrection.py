@@ -6,7 +6,7 @@ import warnings
 from itertools import product
 from concurrent.futures import ThreadPoolExecutor
 
-from ..utils.Tabulate import _set_parameter, _record_parameters, _restore_parameters, _interpolate, _map_table_slices
+from ..utils.Tabulate import _set_parameter, _record_parameters, _restore_parameters, _interpolate, _interpolate_curves, _map_table_slices
 from ..utils.misc     import destory_Pk, _default_mass_def, _halo_radius
 
 __all__ = ['BaryonificationClass', 'Baryonification3D', 'Baryonification2D']
@@ -487,17 +487,21 @@ class BaryonificationClass(object):
         n      = nodes.size
         k_all  = [np.broadcast_to(np.asarray(kwargs[k], dtype = float), M.shape) for k in self.p_keys]
 
+        #The table along its radial nodes, for each halo's (log(1 + z), log(M), extra parameters)
+        curves = _interpolate_curves(table, np.column_stack([np.log(1/a), np.log(M)] + k_all), axis = 2, n_threads = n_threads)
+
         def read(halos):
             k_in   = [np.repeat(k[halos], n) for k in k_all]
             points = tuple([np.repeat(np.log(1/a[halos]), n), np.repeat(np.log(M[halos]), n), np.tile(nodes, halos.size)] + k_in)
             return _interpolate(table, points).reshape(halos.size, n)
 
-        groups = np.array_split(np.arange(M.size), max(1, min(int(n_threads), M.size)))
-        if len(groups) == 1:
-            curves = read(groups[0])
-        else:
-            with ThreadPoolExecutor(max_workers = len(groups)) as executor: #The table readout releases the GIL
-                curves = np.concatenate(list(executor.map(read, groups)), axis = 0)
+        if curves is None: #Tables that the compiled readout does not handle
+            groups = np.array_split(np.arange(M.size), max(1, min(int(n_threads), M.size)))
+            if len(groups) == 1:
+                curves = read(groups[0])
+            else:
+                with ThreadPoolExecutor(max_workers = len(groups)) as executor: #The table readout releases the GIL
+                    curves = np.concatenate(list(executor.map(read, groups)), axis = 0)
         shift  = np.log(R) if self.Rdelta_sampling else np.zeros(M.size)
 
         return nodes, curves, shift, self.epsilon_max*R

@@ -47,11 +47,16 @@ def _gather(values, order):
 
 
 @njit(parallel = True)
-def _shift_and_wrap(values, offsets, L, out):
-    """`out = np.mod(values + offsets, L)`, in parallel (numba's float `%` matches np.mod)."""
+def _shift_and_wrap(x, y, z, offsets, L):
+    """
+    In place, in one pass over the particles: `x = np.mod(x + offsets[:, 0], L)`, and likewise `y` and `z`
+    (`z` is skipped if empty, for 2D snapshots). In parallel; numba's float `%` matches np.mod.
+    """
 
-    for i in prange(values.size): out[i] = (values[i] + offsets[i]) % L
-    return out
+    for i in prange(x.size):
+        x[i] = (x[i] + offsets[i, 0]) % L
+        y[i] = (y[i] + offsets[i, 1]) % L
+        if z.size > 0: z[i] = (z[i] + offsets[i, 2]) % L
 
 
 @njit(parallel = True)
@@ -475,11 +480,11 @@ class BaryonifySnapshot(DefaultRunnerSnapshot):
         cat     = self.ParticleSnapshot.cat
         new_cat = np.empty_like(cat)
         with self._threads():
-            for field in cat.dtype.names:
-                dtype = cat.dtype[field]
-                if field in axes: _shift_and_wrap(cat[field], offsets[:, axes.index(field)], L, new_cat[field])
-                elif (dtype.shape == ()) and (dtype.kind in 'biuf'): _copy(cat[field], new_cat[field])
-                else: new_cat[field] = cat[field] #eg. fields holding sub-arrays or strings
+            if cat.flags.c_contiguous and new_cat.flags.c_contiguous and (cat.dtype.itemsize % 8 == 0) and (not cat.dtype.hasobject):
+                _copy(cat.view(np.uint64), new_cat.view(np.uint64)) #The raw bytes of all fields, in parallel
+            else:
+                new_cat[...] = cat
+            _shift_and_wrap(new_cat['x'], new_cat['y'], np.empty(0) if self.ParticleSnapshot.is2D else new_cat['z'], offsets, L)
 
         return new_cat
 
