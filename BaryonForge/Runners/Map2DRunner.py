@@ -581,12 +581,14 @@ class DefaultRunnerGrid(object):
         a = np.full(M.shape, 1/(1 + self.HaloNDCatalog.redshift))
         R = _halo_radius(self.mass_def, cosmo, M, a) #in physical Mpc
 
-        #The pixel nearest to each halo, ie. np.argmin(np.abs(bins - x)) (ties go to the lower index)
+        #The pixel nearest to each halo, ie. np.argmin(np.abs(bins - x)) (ties go to the lower index,
+        #and a non-finite position gives pixel 0, as argmin does)
         cen, off = [], []
         for ax in axes:
             x = np.asarray(cat[ax], dtype = float) #THIS IS A CARTESIAN COORDINATE, NOT REDSHIFT
             i = np.clip(np.searchsorted(bins, x), 1, bins.size - 1)
             i = np.where(np.abs(bins[i - 1] - x) <= np.abs(bins[i] - x), i - 1, i)
+            i = np.where(np.isfinite(x), i, 0)
             cen.append(i)
             off.append(bins[i] - x) #Offsets between halo position and pixel center
 
@@ -625,13 +627,16 @@ class DefaultRunnerGrid(object):
         is2D      = self.GriddedMap.is2D
         out       = {'inds' : [], 'hid' : [], 'r' : [], 'hat' : []}
 
-        if not (self.use_ellipticity and is2D):
-            #Without ellipticity, build all the cutouts in one compiled (GIL-free) call
+        #Without ellipticity, build all the cutouts in one compiled (GIL-free) call, unless a subclass
+        #changes how the cutout pixels are chosen (pick_indices), which the per-halo loop below calls
+        compiled = (not (self.use_ellipticity and is2D)) and (type(self).pick_indices is DefaultRunnerGrid.pick_indices)
+        if compiled or (len(halos) == 0):
             ndim  = 2 if is2D else 3
             nsize = np.array([self._cutout_size(width[j]) for j in halos], dtype = np.int64)
             off   = np.ascontiguousarray(H['off'][halos])
-            if is2D and np.any(np.abs(off) > res):
-                j = halos[np.flatnonzero(np.any(np.abs(off) > res, axis = 1))[0]]
+            bad   = ~np.all(np.abs(off) <= res, axis = 1) #Also catches NaN offsets, as the assert below
+            if is2D and np.any(bad):
+                j = halos[np.flatnonzero(bad)[0]]
                 raise AssertionError("Halo offsets (%0.2f, %0.2f) are larger than res (%0.2f)" % (H['off'][j][0], H['off'][j][1], res))
             count = nsize**ndim
             start = np.concatenate([[0], np.cumsum(count)[:-1]]).astype(np.int64)
@@ -1001,8 +1006,11 @@ class PaintProfilesAnisGrid(PaintProfilesGrid):
 
             Painting = np.where(mask, Painting, 0) #Set bad regions of mask to 0
 
+            #Halos with no valid pixel are skipped (so a non-finite Mfrac there does not reach the map)
+            keep = (np.bincount(C['hid'][mask], minlength = len(halos)) > 0)[C['hid']]
+
             #The profiles weighted by the mass fractions of the tracer particles
-            return C['inds'], Painting * Mfrac
+            return C['inds'][keep], (Painting * Mfrac)[keep]
 
         #Add them to the new map at the right indices, halo by halo in catalog order
         for inds, values in _run_chunks(chunk_paint, self._halo_chunks(width), self._n_threads(), self.verbose, 'Painting field'):

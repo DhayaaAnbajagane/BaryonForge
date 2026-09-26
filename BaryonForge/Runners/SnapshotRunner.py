@@ -225,7 +225,8 @@ class DefaultRunnerSnapshot(object):
 
     KDTree_kwargs : dict, optional
         Arguments for the `scipy.spatial.KDTree` of the particles, which is only built if the `tree`
-        attribute is accessed. The runners themselves use the grid of cells described above.
+        attribute is accessed. The runners themselves use the grid of cells described above (except for
+        subclasses that redefine `compute_distance` or `enforce_periodicity`, which use the tree).
 
     n_jobs : int, optional
         Number of threads used when the model is a tabulated displacement (eg. `Baryonification3D`).
@@ -257,7 +258,7 @@ class DefaultRunnerSnapshot(object):
         Whether verbose output is enabled.
 
     tree : KDTree
-        A KDTree built from the particle coordinates (built on first access; not used by the runners).
+        A KDTree built from the particle coordinates (built on first access; see `KDTree_kwargs`).
 
     Methods
     -------
@@ -290,7 +291,7 @@ class DefaultRunnerSnapshot(object):
 
     @property
     def tree(self):
-        """A periodic `scipy.spatial.KDTree` of the particles, built on first access (the runners do not use it)."""
+        """A periodic `scipy.spatial.KDTree` of the particles, built on first access (see `KDTree_kwargs`)."""
 
         if self._tree is None:
             Snap   = self.ParticleSnapshot
@@ -451,15 +452,23 @@ class BaryonifySnapshot(DefaultRunnerSnapshot):
         for i, ax in enumerate(axes): pos[:, i] = cat[ax] #CARTESIAN COORDINATES (z is not redshift)
         other = {key : np.asarray(cat[key]) for key in keys} #Other properties
 
-        index   = self._particle_index()
         offsets = np.zeros([self.ParticleSnapshot.cat.size, 3]) #In the original particle order
 
-        curves = None
-        if _batch_method(self.model, '_displacement_curves', 'displacement', '_readout') is not None:
-            curves = self.model._displacement_curves(M, np.full(M.shape, a), r = R_q, n_threads = self._n_threads(), **other)
+        #A subclass that changes the distance/periodicity helpers gets them used, with the KDTree, halo by halo
+        custom = any(getattr(type(self), f) is not getattr(DefaultRunnerSnapshot, f) for f in ('compute_distance', 'enforce_periodicity'))
 
-        if curves is not None: self._offsets_tabulated(index, offsets, pos, R_q, curves, L)
-        else:                  self._offsets_per_halo(index, offsets, pos, R_q, M, a, other, L)
+        if M.size == 0:
+            pass #No halos, so no displacements
+        elif custom:
+            self._offsets_kdtree(offsets, pos, R_q, M, a, other, axes)
+        else:
+            index  = self._particle_index()
+            curves = None
+            if _batch_method(self.model, '_displacement_curves', 'displacement', '_readout') is not None:
+                curves = self.model._displacement_curves(M, np.full(M.shape, a), r = R_q, n_threads = self._n_threads(), **other)
+
+            if curves is not None: self._offsets_tabulated(index, offsets, pos, R_q, curves, L)
+            else:                  self._offsets_per_halo(index, offsets, pos, R_q, M, a, other, L)
 
         #Apply the offsets, and wrap into [0, L), so x == L maps to 0 (as periodic KDTrees expect).
         #Same as new_cat = cat.copy(); new_cat[ax] = np.mod(new_cat[ax] + offsets, L), but in parallel.
@@ -467,8 +476,10 @@ class BaryonifySnapshot(DefaultRunnerSnapshot):
         new_cat = np.empty_like(cat)
         with self._threads():
             for field in cat.dtype.names:
+                dtype = cat.dtype[field]
                 if field in axes: _shift_and_wrap(cat[field], offsets[:, axes.index(field)], L, new_cat[field])
-                else:             _copy(cat[field], new_cat[field])
+                elif (dtype.shape == ()) and (dtype.kind in 'biuf'): _copy(cat[field], new_cat[field])
+                else: new_cat[field] = cat[field] #eg. fields holding sub-arrays or strings
 
         return new_cat
 
@@ -514,3 +525,28 @@ class BaryonifySnapshot(DefaultRunnerSnapshot):
             offset = self.model.displacement(d, M[j], a, **o_j)
             offset = np.where(np.isfinite(offset), offset, 0)
             offsets[index['order'][idx]] += np.vstack([offset*h for h in hats]).T
+
+
+    def _offsets_kdtree(self, offsets, pos, R_q, M, a, other, axes):
+        """
+        Offsets found halo by halo with the KDTree and the `compute_distance`/`enforce_periodicity` methods,
+        for subclasses that redefine those.
+        """
+
+        cat = self.ParticleSnapshot.cat
+        for j in tqdm(range(M.size), desc = 'Baryonifying matter', disable = not self.verbose):
+
+            o_j   = {key : v[j] for key, v in other.items()} #Other properties
+            pos_j = pos[j, :len(axes)]
+            inds  = self.tree.query_ball_point(pos_j, R_q[j])
+            dxs   = [cat[ax][inds] - p for ax, p in zip(axes, pos_j)]
+            d     = self.compute_distance(*dxs)
+
+            #A particle exactly at the halo center has no direction. Give it zero displacement.
+            with np.errstate(invalid = 'ignore', divide = 'ignore'):
+                hats = [np.where(d > 0, self.enforce_periodicity(dx)/d, 0) for dx in dxs]
+
+            #Compute the displacement needed
+            offset = self.model.displacement(d, M[j], a, **o_j)
+            offset = np.where(np.isfinite(offset), offset, 0)
+            offsets[inds, :len(axes)] += np.vstack([offset*h for h in hats]).T

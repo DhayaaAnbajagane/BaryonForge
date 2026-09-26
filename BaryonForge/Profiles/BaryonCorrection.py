@@ -388,6 +388,8 @@ class BaryonificationClass(object):
     def _warn_outside_table(self, z, M, r):
         """Warn if the requested redshifts, masses or radii fall outside the tabulated ranges."""
 
+        if (np.size(z) == 0) or (np.size(M) == 0): return #No halos requested
+
         #Get the ranges we used as input, so we can check if requested
         #ranges are contained within the input/tabulated ranges.
         #We saved log(1 + z) so converting back to z here...
@@ -466,12 +468,14 @@ class BaryonificationClass(object):
         `displacement(x, M[i], a[i], ...)` up to floating-point rounding. `M`, `a` and the values of `kwargs`
         hold one entry per halo, and `r` (optional) are the radii that will be requested, used only for the
         usual out-of-range warnings. The table is read by `n_threads` threads (the result does not depend on
-        it). Returns None if the table is not a linear `RegularGridInterpolator`.
+        it). Returns None unless the table is a linear `RegularGridInterpolator` giving NaN outside its range
+        (as built by `setup_interpolator`), since the curves do not extrapolate.
         """
 
         self._check_table_kwargs(kwargs)
         table = self.interp_d
-        if not (isinstance(table, interpolate.RegularGridInterpolator) and (table.method == 'linear')):
+        if not (isinstance(table, interpolate.RegularGridInterpolator) and (table.method == 'linear') and
+                (not table.bounds_error) and (table.fill_value is not None) and np.isnan(table.fill_value)):
             return None
 
         M     = np.atleast_1d(np.asarray(M, dtype = float))
