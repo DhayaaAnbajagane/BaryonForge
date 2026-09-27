@@ -5,9 +5,11 @@ Test index:
     test_painting_skips_halos_smaller_than_a_pixel: checks halos with no pixels in their cutout.
     test_split_join_preserves_runner_settings: checks split runners inherit the painting settings.
     test_anisotropic_painting_assigns_all_tracer_to_single_halo: checks tracer/mass units in PaintProfilesAnisShell.
-    test_baryonification_moves_mass_inward_and_conserves_it: checks BaryonifyShell end to end.
+    test_baryonification_moves_mass_inward_and_conserves_it: checks BaryonifyShell end to end (undisplaced pixels exact).
     test_split_join_does_not_create_empty_splits: checks catalogs that do not fill every job.
     test_anisotropic_painting_background_includes_pixel_size: checks the background's pixel-area factor.
+    test_runners_do_not_depend_on_batching_or_n_jobs: checks batched/per-halo evaluation and threads agree exactly.
+    test_map_scans_match_numpy: checks the compiled zero-map check, non-zero pixel search and moved-pixel split.
 """
 
 import warnings
@@ -198,4 +200,107 @@ def test_baryonification_moves_mass_inward_and_conserves_it():
     disc = hp.query_disc(NSIDE, hp.ang2vec(30.0, 10.0, lonlat=True), np.radians(8 / 60))
     assert result[disc].sum() > 1.5 * original[disc].sum()
     far = hp.query_disc(NSIDE, hp.ang2vec(60.0, -20.0, lonlat=True), np.radians(8 / 60))
-    np.testing.assert_allclose(result[far], original[far])
+    np.testing.assert_array_equal(result[far], original[far])  # Pixels no halo displaces keep their values exactly
+
+
+class ScalingDisplacement:
+    """Displacement that depends on radius, mass and scale factor, evaluated halo by halo."""
+
+    def displacement(self, r, M, a):
+        return -0.5 * (M / 1e14)**(1 / 3) * np.exp(-np.atleast_1d(r) / (2 * a))
+
+
+class ScalingDisplacementBatched(ScalingDisplacement):
+    """The same displacement through the batched readout that tabulated models provide (each halo's radii
+    are evaluated with the per-halo formula, so the runners' bookkeeping can be checked exactly)."""
+
+    def _displacement_batch(self, r, halo, M, a):
+        out = np.empty(r.size)
+        for h in np.unique(halo):
+            out[halo == h] = self.displacement(r[halo == h], M[h], a[h])
+        return out
+
+
+class PerHaloOnly:
+    """Hides the batched readout of a profile, so the runners call it halo by halo."""
+
+    def __init__(self, profile):
+        self.profile = profile
+        self.mass_def = profile.mass_def
+
+    def projected(self, cosmo, r, M, a):
+        return self.profile.projected(cosmo, r, M, a)
+
+
+def test_runners_do_not_depend_on_batching_or_n_jobs():
+    """Batched and per-halo model evaluation, and any number of threads, give bit-identical maps."""
+    cosmology = _cosmology()
+    cosmology_parameters = bfg.utils.build_cosmodict(cosmology)
+    rng = np.random.default_rng(3)
+    N, NSIDE = 40, 64
+    catalog = bfg.HaloLightConeCatalog(rng.uniform(0, 360, N), rng.uniform(-60, 60, N), 10**rng.uniform(13, 15, N),
+                                       rng.uniform(0.2, 0.5, N), cosmology_parameters.copy())
+    counts = rng.poisson(5, hp.nside2npix(NSIDE)).astype(float)
+
+    def baryonify(model, n_jobs):
+        shell = bfg.LightconeShell(map=counts, cosmo=cosmology_parameters.copy())
+        return bfg.BaryonifyShell(catalog, shell, epsilon_max=5, model=model, verbose=False, n_jobs=n_jobs).process()
+
+    reference = baryonify(ScalingDisplacement(), 1)
+    np.testing.assert_array_equal(baryonify(ScalingDisplacementBatched(), 1), reference)
+    np.testing.assert_array_equal(baryonify(ScalingDisplacementBatched(), 3), reference)
+    assert reference.sum() == pytest.approx(counts.sum())
+
+    table = bfg.utils.TabulatedProfile(GaussianProfile(), cosmology)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        table.setup_interpolator(z_min=0.1, z_max=0.6, N_samples_z=4, M_min=1e12, M_max=1e16, N_samples_Mass=8,
+                                 R_min=1e-3, R_max=50, N_samples_R=64, verbose=False)
+
+    def paint(model, n_jobs):
+        shell = bfg.LightconeShell(map=np.zeros_like(counts), cosmo=cosmology_parameters.copy())
+        return bfg.PaintProfilesShell(catalog, shell, epsilon_max=5, model=model, verbose=False,
+                                      include_pixel_size=True, n_jobs=n_jobs).process()
+
+    reference = paint(PerHaloOnly(table), 1)
+    assert reference.sum() > 0
+    np.testing.assert_array_equal(paint(table, 1), reference)
+    np.testing.assert_array_equal(paint(table, 3), reference)
+
+    def paint_anisotropic(model, n_jobs):
+        shell = bfg.LightconeShell(map=counts, cosmo=cosmology_parameters.copy(), redshift=0.35)
+        return bfg.PaintProfilesAnisShell(catalog, shell, epsilon_max=5, model=model, Tracer_model=model,
+                                          Mtot_model=table, background_val=1.0, global_tracer_fraction=0.1,
+                                          verbose=False, n_jobs=n_jobs).process()
+
+    reference = paint_anisotropic(PerHaloOnly(table), 1)
+    np.testing.assert_array_equal(paint_anisotropic(table, 1), reference)
+    np.testing.assert_array_equal(paint_anisotropic(table, 3), reference)
+
+
+def test_map_scans_match_numpy():
+    """The compiled map scans of BaryonifyShell give exactly the numpy expressions they replace."""
+    from BaryonForge.Runners._chunks import _all_close_to_zero, _nonzero
+    from BaryonForge.Runners.HealpixRunner import _split_moved
+
+    for values in (np.zeros(50), np.full(50, 1e-9), np.r_[np.zeros(49), 2e-8], np.r_[np.zeros(49), np.nan],
+                   np.r_[-1e-8, np.zeros(49)], np.r_[np.inf, np.zeros(49)], np.arange(50.0)):
+        assert _all_close_to_zero(values) == np.allclose(values, 0)
+
+    rng = np.random.default_rng(7)
+    values = rng.normal(size=10_001) * (rng.random(10_001) < 0.3)
+    values[[3, 7]] = np.nan, -0.0
+    for n_threads in (1, 3, 8):
+        np.testing.assert_array_equal(_nonzero(values, n_threads), np.flatnonzero(values))
+    np.testing.assert_array_equal(_nonzero(np.zeros(5), 3), np.zeros(0, dtype=np.int64))
+
+    offsets = rng.normal(size=(2000, 3)) * (rng.random((2000, 1)) < 0.5)
+    offsets[5] = (0.0, np.nan, 0.0)
+    counts = rng.poisson(3, 2000).astype(np.float32)
+    pix = np.sort(rng.choice(2000, 700, replace=False))
+    moved, off, moved_values, fixed, fixed_values = _split_moved(pix, offsets, counts)
+    mask = np.any(offsets[pix] != 0, axis=1)
+    for got, expected in ((moved, pix[mask]), (off, offsets[pix][mask]), (moved_values, counts[pix[mask]]),
+                          (fixed, pix[~mask]), (fixed_values, counts[pix[~mask]])):
+        np.testing.assert_array_equal(got, expected)
+        assert got.dtype == expected.dtype

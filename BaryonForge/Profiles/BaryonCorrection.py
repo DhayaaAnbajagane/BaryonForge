@@ -4,9 +4,10 @@ from tqdm import tqdm
 from scipy import interpolate, integrate
 import warnings
 from itertools import product
+from concurrent.futures import ThreadPoolExecutor
 
-from ..utils.Tabulate import _set_parameter, _record_parameters, _restore_parameters
-from ..utils.misc     import destory_Pk, _default_mass_def
+from ..utils.Tabulate import _set_parameter, _record_parameters, _restore_parameters, _interpolate, _interpolate_curves, _map_table_slices
+from ..utils.misc     import destory_Pk, _default_mass_def, _halo_radius
 
 __all__ = ['BaryonificationClass', 'Baryonification3D', 'Baryonification2D']
 
@@ -175,12 +176,107 @@ class BaryonificationClass(object):
         return M_f
 
 
-    def setup_interpolator(self, 
-                           z_min = 1e-2, z_max = 5, N_samples_z = 30, z_linear_sampling = False, 
-                           M_min = 1e12, M_max = 1e16, N_samples_Mass = 30, 
+    def _table_slice(self, a, keys, values, r, M_range, rdelta_range = None):
+        """
+        One slice of the displacement table: the displacements of all masses `M_range` at radii `r` and scale
+        factor `a`, with the DMO/DMB parameters `keys` set to `values`. If `rdelta_range` is given, the
+        displacements are resampled at r/Rdelta = `rdelta_range` (see `Rdelta_sampling`).
+        """
+
+        #Modify the model input params so that they are run with the right parameters
+        for k, v in zip(keys, values):
+            _set_parameter(self.DMO, k, v)
+            _set_parameter(self.DMB, k, v)
+
+        M_DMO = self.get_masses(self.DMO, r, M_range, a)
+        M_DMB = self.get_masses(self.DMB, r, M_range, a)
+        out   = np.zeros([M_range.size, r.size])
+
+        for i in range(M_range.size):
+            ln_DMB    = np.log(M_DMB[i])
+            ln_DMO    = np.log(M_DMO[i])
+
+
+            #Require mass to always increase w/ radius, using iterative conditions
+            #And remove pts of DMO = DMB, improves large-scale convergence (while making
+            #sure it does not fail just because DMO is NaN values, which happens in some profs)
+            #And also require at least 1e-6 difference in DMB else the interpolator breaks :/
+            #We will handle DMO mask later separately
+
+            min_diff  = -np.inf
+            diff_mask = np.ones_like(ln_DMB).astype(bool)
+            iterate   = 0
+            while (min_diff < 1e-5) & (diff_mask.sum() > 5):
+
+                new_mask  = ( (np.diff(ln_DMB[diff_mask], prepend = 0) > 1e-5) &
+                              ((np.abs(ln_DMB - ln_DMO)[diff_mask] > 1e-6) | np.isnan(ln_DMO)[diff_mask]) &
+                              np.isfinite(ln_DMB)[diff_mask]
+                            )
+
+                diff_mask[diff_mask] = new_mask
+                diff_mask[0] = True
+
+                iterate += 1
+
+                if iterate > 30:
+                    diff_mask  = np.zeros_like(diff_mask).astype(bool) #Set everything to False and skip the building step next
+                    warn_text  = (f"Mass profile of log10(M) = {np.log10(M_range[i])} is nearly constant over radius. "
+                                  "Suggests density is negative or zero for most of the range. If using convolutions,"
+                                  "consider changing the fft precision params in the CCL profile:"
+                                  "padding_lo_fftlog, padding_hi_fftlog, or n_per_decade. Otherwise, consider changing"
+                                  "the grid spacing to be finer using the N_int parameter")
+                    warnings.warn(warn_text, UserWarning)
+                    break
+
+                if diff_mask.sum() < 5:
+                    warn_text  = (f"Mass profile of log10(M) = {np.log10(M_range[i])} is nearly constant over radius. "
+                                  "Or it is broken. Less than 5 datapoints are usable.")
+                    warnings.warn(warn_text, UserWarning)
+                    break
+
+                min_diff  = np.min(np.diff(ln_DMB[diff_mask], prepend = 0)[1:])
+
+            #If we have enough usable mass values, then proceed as usual
+            #This generally breaks for very small halos, where projection
+            #can be catastrophicall broken (eg. only negative densities)
+            if diff_mask.sum() > 5:
+
+                #Same mask as DMB but for DMO. No need for iterations, since
+                #the x-axis in interpolator is still radius, so the requirements are more lax.
+                fini_mask  = ( (np.diff(ln_DMO, prepend = 0) > 1e-5) &
+                               ((np.abs(ln_DMB - ln_DMO) > 1e-6) | np.isnan(ln_DMB))&
+                               np.isfinite(ln_DMO)
+                            )
+                interp_DMB = interpolate.PchipInterpolator(ln_DMB[diff_mask], np.log(r)[diff_mask], extrapolate = False)
+                interp_DMO = interpolate.PchipInterpolator(np.log(r)[fini_mask], ln_DMO[fini_mask], extrapolate = False)
+
+                offset = np.exp(interp_DMB(interp_DMO(np.log(r)))) - r
+                offset = np.where(np.isfinite(offset), offset, 0)
+
+                if rdelta_range is not None:
+                    Rdelta  = self.mass_def.get_radius(self.cosmo, M_range[i], a) / a
+                    offset = np.interp(rdelta_range, r/Rdelta, offset)
+
+            #If broken, then these halos contribute nothing to the displacement function.
+            #Just provide a warning saying this is happening
+            else:
+                offset = np.zeros_like(r)
+                warn_text = (f"Displacement function for halo with log10(M) = {np.log10(M_range[i])} failed to compute."
+                             "Defaulting to d = 0. If using convolutions, consider changing the fft precision "
+                             "params in the CCL profile: padding_lo_fftlog, padding_hi_fftlog, or n_per_decade")
+                warnings.warn(warn_text, UserWarning)
+
+            out[i] = offset
+
+        return out
+
+
+    def setup_interpolator(self,
+                           z_min = 1e-2, z_max = 5, N_samples_z = 30, z_linear_sampling = False,
+                           M_min = 1e12, M_max = 1e16, N_samples_Mass = 30,
                            R_min = 1e-3, R_max = 1e2, N_samples_R = 100,
                            Rdelta_min = 1e-3, Rdelta_max = 10, Rdelta_sampling = False,
-                           other_params = {}, verbose = True):
+                           other_params = {}, verbose = True, n_jobs = 1):
         
         """
         Sets up interpolation tables for the displacement function.
@@ -228,6 +324,9 @@ class BaryonificationClass(object):
             and restored to their original values afterwards.
         verbose : bool, optional
             If True, display progress information using `tqdm`. Default is True.
+        n_jobs : int, optional
+            Number of worker processes (joblib/loky) computing the (redshift, parameter) slices of the table.
+            Default is 1 (serial); -1 uses all available cores. The table does not depend on `n_jobs`.
 
 
         Notes
@@ -254,103 +353,18 @@ class BaryonificationClass(object):
         #If other_params is empty then iterator will be empty and the code still works fine
         iterator = [p for p in product(*[np.arange(other_params[k].size) for k in p_keys])]
 
-        #The loop below changes the DMO/DMB parameters. Save them, so the profiles are returned unchanged.
+        #The slices below change the DMO/DMB parameters. Save them, so the profiles are returned unchanged.
         original_params = _record_parameters(self.DMO, p_keys) + _record_parameters(self.DMB, p_keys)
 
+        tasks = [(a_range[j], p_keys, [other_params[p_keys[k_i]][c[k_i]] for k_i in range(len(p_keys))], r, M_range,
+                  rdelta_range if Rdelta_sampling else None) for j in range(z_range.size) for c in iterator]
         with tqdm(total = d_interp.size//(M_range.size*r.size), desc = 'Building Table', disable = not verbose) as pbar:
-            for j in range(z_range.size):
-                
-                for c in iterator:
-                    
-                    #Modify the model input params so that they are run with the right parameters
-                    for k_i in range(len(p_keys)):
-                        _set_parameter(self.DMO, p_keys[k_i], other_params[p_keys[k_i]][c[k_i]])
-                        _set_parameter(self.DMB, p_keys[k_i], other_params[p_keys[k_i]][c[k_i]])
-                    
-                    M_DMO = self.get_masses(self.DMO, r, M_range, a_range[j])
-                    M_DMB = self.get_masses(self.DMB, r, M_range, a_range[j])
-                    
-                    for i in range(M_range.size):
-                        ln_DMB    = np.log(M_DMB[i])
-                        ln_DMO    = np.log(M_DMO[i])
-                        
-
-                        #Require mass to always increase w/ radius, using iterative conditions
-                        #And remove pts of DMO = DMB, improves large-scale convergence (while making
-                        #sure it does not fail just because DMO is NaN values, which happens in some profs)
-                        #And also require at least 1e-6 difference in DMB else the interpolator breaks :/
-                        #We will handle DMO mask later separately
-                        
-                        min_diff  = -np.inf
-                        diff_mask = np.ones_like(ln_DMB).astype(bool)
-                        iterate   = 0
-                        while (min_diff < 1e-5) & (diff_mask.sum() > 5):
-                            
-                            new_mask  = ( (np.diff(ln_DMB[diff_mask], prepend = 0) > 1e-5) & 
-                                          ((np.abs(ln_DMB - ln_DMO)[diff_mask] > 1e-6) | np.isnan(ln_DMO)[diff_mask]) & 
-                                          np.isfinite(ln_DMB)[diff_mask]
-                                        )
-                            
-                            diff_mask[diff_mask] = new_mask
-                            diff_mask[0] = True
-                            
-                            iterate += 1
-                            
-                            if iterate > 30:
-                                diff_mask  = np.zeros_like(diff_mask).astype(bool) #Set everything to False and skip the building step next
-                                warn_text  = (f"Mass profile of log10(M) = {np.log10(M_range[i])} is nearly constant over radius. " 
-                                              "Suggests density is negative or zero for most of the range. If using convolutions,"
-                                              "consider changing the fft precision params in the CCL profile:"
-                                              "padding_lo_fftlog, padding_hi_fftlog, or n_per_decade. Otherwise, consider changing"
-                                              "the grid spacing to be finer using the N_int parameter")
-                                warnings.warn(warn_text, UserWarning)
-                                break
-                                
-                            if diff_mask.sum() < 5: 
-                                warn_text  = (f"Mass profile of log10(M) = {np.log10(M_range[i])} is nearly constant over radius. " 
-                                              "Or it is broken. Less than 5 datapoints are usable.")
-                                warnings.warn(warn_text, UserWarning)
-                                break
-                            
-                            min_diff  = np.min(np.diff(ln_DMB[diff_mask], prepend = 0)[1:])                                                       
-                            
-                        #If we have enough usable mass values, then proceed as usual
-                        #This generally breaks for very small halos, where projection
-                        #can be catastrophicall broken (eg. only negative densities)
-                        if diff_mask.sum() > 5:
-                                
-                            #Same mask as DMB but for DMO. No need for iterations, since
-                            #the x-axis in interpolator is still radius, so the requirements are more lax.
-                            fini_mask  = ( (np.diff(ln_DMO, prepend = 0) > 1e-5) & 
-                                           ((np.abs(ln_DMB - ln_DMO) > 1e-6) | np.isnan(ln_DMB))& 
-                                           np.isfinite(ln_DMO)
-                                        )
-                            interp_DMB = interpolate.PchipInterpolator(ln_DMB[diff_mask], np.log(r)[diff_mask], extrapolate = False)
-                            interp_DMO = interpolate.PchipInterpolator(np.log(r)[fini_mask], ln_DMO[fini_mask], extrapolate = False)
-
-                            offset = np.exp(interp_DMB(interp_DMO(np.log(r)))) - r
-                            offset = np.where(np.isfinite(offset), offset, 0)
-
-                            if Rdelta_sampling: 
-                                Rdelta  = self.mass_def.get_radius(self.cosmo, M_range[i], a_range[j]) / a_range[j]
-                                offset = np.interp(rdelta_range, r/Rdelta, offset)
-
-                        #If broken, then these halos contribute nothing to the displacement function.
-                        #Just provide a warning saying this is happening
-                        else:
-                            offset = np.zeros_like(r)
-                            warn_text = (f"Displacement function for halo with log10(M) = {np.log10(M_range[i])} failed to compute." 
-                                         "Defaulting to d = 0. If using convolutions, consider changing the fft precision "
-                                         "params in the CCL profile: padding_lo_fftlog, padding_hi_fftlog, or n_per_decade")
-                            warnings.warn(warn_text, UserWarning)
-                        
-                        #Build a custom index into the array
-                        index = tuple([j, i, slice(None)] + list(c))
-                        d_interp[index] = offset
-
-                    pbar.update(1)
+            slices = _map_table_slices(self, '_table_slice', tasks, n_jobs, [self.cosmo], pbar)
 
         _restore_parameters(original_params)
+
+        for (j, c), offsets in zip([(j, c) for j in range(z_range.size) for c in iterator], slices):
+            d_interp[tuple([j, slice(None), slice(None)] + list(c))] = offsets #Build a custom index into the array
 
 
         input_rad  = np.log(r) if not Rdelta_sampling else np.log(rdelta_range)
@@ -371,6 +385,128 @@ class BaryonificationClass(object):
         self.cosmo = destory_Pk(self.cosmo)
 
     
+    def _warn_outside_table(self, z, M, r):
+        """Warn if the requested redshifts, masses or radii fall outside the tabulated ranges."""
+
+        if (np.size(z) == 0) or (np.size(M) == 0): return #No halos requested
+
+        #Get the ranges we used as input, so we can check if requested
+        #ranges are contained within the input/tabulated ranges.
+        #We saved log(1 + z) so converting back to z here...
+        z_tab = np.exp(self.raw_input_z_range) - 1
+        M_tab = np.exp(self.raw_input_M_range)
+        r_tab = np.exp(self.raw_input_r_range)
+
+        if (np.min(z) < np.min(z_tab)) | (np.max(z) > np.max(z_tab)):
+            warn_text = f"Requested redshift range [{np.min(z)}, {np.max(z)}] outside table's range [{np.min(z_tab)}, {np.max(z_tab)}]"
+            warnings.warn(warn_text, UserWarning)
+
+        if (np.min(M) < np.min(M_tab)) | (np.max(M) > np.max(M_tab)):
+            warn_text = (f"Requested log_Mass range [{np.log10(np.min(M))}, {np.log10(np.max(M))}] outside "
+                         f"table's range [{np.log10(np.min(M_tab))}, {np.log10(np.max(M_tab))}]")
+            warnings.warn(warn_text, UserWarning)
+
+        if not self.Rdelta_sampling:
+            if (np.min(r) < np.min(r_tab)) | (np.max(r) > np.max(r_tab)):
+                warn_text = f"Requested Radius range [{np.min(r)}, {np.max(r)}] outside table's range [{np.min(r_tab)}, {np.max(r_tab)}]"
+                warnings.warn(warn_text, UserWarning)
+
+
+    def _check_table_kwargs(self, kwargs, method = 'displacement'):
+        """Check that exactly the tabulated extra parameters were passed."""
+
+        if not hasattr(self, 'interp_d'):
+            raise NameError("No Table created. Run setup_interpolator() method first")
+
+        for k in self.p_keys:
+            assert k in kwargs.keys(), "Need to provide %s as input into `%s'. Table was built with this." % (k, method)
+
+        extra = [k for k in kwargs.keys() if k not in self.p_keys]
+        if len(extra) > 0:
+            raise ValueError(f"Parameters {extra} were passed to `{method}', but the table was only built with {self.p_keys}.")
+
+
+    def _displacement_batch(self, r, halo, M, a, **kwargs):
+        """
+        Displacements of many halos in a single read of the table, as used by the runners.
+
+        `M`, `a` and the values of `kwargs` hold one entry per halo, and `halo` gives, for every radius
+        in `r`, the index of the halo it belongs to. The result has the shape of `r`, and each entry equals
+        `displacement(r[i], M[halo[i]], a[halo[i]], ...)` up to floating-point rounding. Reading the table
+        once for all halos avoids the per-call overhead of the interpolator, which otherwise dominates
+        when each halo has only a few hundred radii.
+        """
+
+        self._check_table_kwargs(kwargs)
+
+        r     = np.asarray(r, dtype = float)
+        halo  = np.asarray(halo, dtype = int)
+        M     = np.atleast_1d(np.asarray(M, dtype = float))
+        a     = np.broadcast_to(np.asarray(a, dtype = float), M.shape)
+        if r.size == 0: return np.zeros(0)
+
+        R     = _halo_radius(self.mass_def, self.cosmo, M, a)/a #in comoving Mpc
+        used  = np.zeros(M.size, dtype = bool); used[halo] = True #Halos with at least one radius
+        self._warn_outside_table(1/a[used] - 1, M[used], r)
+
+        z_in  = np.log(1/a)[halo] #This is log(1 + z)
+        M_in  = np.log(M)[halo]
+        r_in  = np.log(r) - np.log(R)[halo] if self.Rdelta_sampling else np.log(r)
+        k_in  = [np.broadcast_to(np.asarray(kwargs[k], dtype = float), M.shape)[halo] for k in self.p_keys]
+        displ = _interpolate(self.interp_d, tuple([z_in, M_in, r_in] + k_in))
+
+        return np.where(r < self.epsilon_max*R[halo], displ, 0) #Set large-scale displacements to 0
+
+
+    def _displacement_curves(self, M, a, r = None, n_threads = 1, **kwargs):
+        """
+        Displacement of every halo tabulated along the table's radial nodes, as used by the snapshot runner.
+
+        Returns `(nodes, curves, shift, R_cut)`: for halo `i` at comoving radius `x`, the displacement is the
+        linear interpolation of `curves[i]` over `nodes` at `log(x) - shift[i]` (NaN outside the nodes), and
+        zero for `x >= R_cut[i]`. Since the table is linear in the radial coordinate, this equals
+        `displacement(x, M[i], a[i], ...)` up to floating-point rounding. `M`, `a` and the values of `kwargs`
+        hold one entry per halo, and `r` (optional) are the radii that will be requested, used only for the
+        usual out-of-range warnings. The table is read by `n_threads` threads (the result does not depend on
+        it). Returns None unless the table is a linear `RegularGridInterpolator` giving NaN outside its range
+        (as built by `setup_interpolator`), since the curves do not extrapolate.
+        """
+
+        self._check_table_kwargs(kwargs)
+        table = self.interp_d
+        if not (isinstance(table, interpolate.RegularGridInterpolator) and (table.method == 'linear') and
+                (not table.bounds_error) and (table.fill_value is not None) and np.isnan(table.fill_value)):
+            return None
+
+        M     = np.atleast_1d(np.asarray(M, dtype = float))
+        a     = np.broadcast_to(np.asarray(a, dtype = float), M.shape)
+        R     = _halo_radius(self.mass_def, self.cosmo, M, a)/a #in comoving Mpc
+        self._warn_outside_table(1/a - 1, M, np.atleast_1d(r) if r is not None else np.exp(self.raw_input_r_range[[0, -1]]))
+
+        nodes  = np.asarray(table.grid[2], dtype = float)
+        n      = nodes.size
+        k_all  = [np.broadcast_to(np.asarray(kwargs[k], dtype = float), M.shape) for k in self.p_keys]
+
+        #The table along its radial nodes, for each halo's (log(1 + z), log(M), extra parameters)
+        curves = _interpolate_curves(table, np.column_stack([np.log(1/a), np.log(M)] + k_all), axis = 2, n_threads = n_threads)
+
+        def read(halos):
+            k_in   = [np.repeat(k[halos], n) for k in k_all]
+            points = tuple([np.repeat(np.log(1/a[halos]), n), np.repeat(np.log(M[halos]), n), np.tile(nodes, halos.size)] + k_in)
+            return _interpolate(table, points).reshape(halos.size, n)
+
+        if curves is None: #Tables that the compiled readout does not handle
+            groups = np.array_split(np.arange(M.size), max(1, min(int(n_threads), M.size)))
+            if len(groups) == 1:
+                curves = read(groups[0])
+            else:
+                with ThreadPoolExecutor(max_workers = len(groups)) as executor: #The table readout releases the GIL
+                    curves = np.concatenate(list(executor.map(read, groups)), axis = 0)
+        shift  = np.log(R) if self.Rdelta_sampling else np.zeros(M.size)
+
+        return nodes, curves, shift, self.epsilon_max*R
+
+
     def _readout(self, r, M, a, **kwargs):
 
         """
@@ -415,28 +551,8 @@ class BaryonificationClass(object):
         r_in  = np.log(r_use)
         k_in  = [kwargs[k] * empty for k in self.p_keys] #Same order as the table axes, not the kwargs order
 
-        #Get the ranges we used as input, so we can check if requested
-        #ranges are contained within the input/tabulated ranges.
-        #We saved log(1 + z) so converting back to z here...
-        z_tab = np.exp(self.raw_input_z_range) - 1
-        M_tab = np.exp(self.raw_input_M_range)
-        r_tab = np.exp(self.raw_input_r_range)
+        self._warn_outside_table(z_use, M_use, r_use)
 
-        if (np.min(z_use) < np.min(z_tab)) | (np.max(z_use) > np.max(z_tab)):
-            warn_text = f"Requested redshift range [{np.min(z_use)}, {np.max(z_use)}] outside table's range [{np.min(z_tab)}, {np.max(z_tab)}]"            
-            warnings.warn(warn_text, UserWarning)
-        
-        if (np.min(M_use) < np.min(M_tab)) | (np.max(M_use) > np.max(M_tab)):
-            warn_text = (f"Requested log_Mass range [{np.log10(np.min(M_use))}, {np.log10(np.max(M_use))}] outside "
-                         f"table's range [{np.log10(np.min(M_tab))}, {np.log10(np.max(M_tab))}]")          
-            warnings.warn(warn_text, UserWarning)
-
-        if not self.Rdelta_sampling:
-            if (np.min(r_use) < np.min(r_tab)) | (np.max(r_use) > np.max(r_tab)):
-                warn_text = f"Requested Radius range [{np.min(r_use)}, {np.max(r_use)}] outside table's range [{np.min(r_tab)}, {np.max(r_tab)}]"            
-                warnings.warn(warn_text, UserWarning)
-
-        
         for i in range(M_use.size):
             M_in  = np.log(M_use[i])*empty
             R     = self.mass_def.get_radius(self.cosmo, M_use[i], a)/a #in comoving Mpc
@@ -444,7 +560,7 @@ class BaryonificationClass(object):
             #If Rdelta sampling, the sample in r/Rdelta not r.
             #The table would have been constructed appropriately
             r_tab_in = r_in - np.log(R) if self.Rdelta_sampling else r_in
-            displ[i] = table(tuple([z_in, M_in, r_tab_in] + k_in))
+            displ[i] = _interpolate(table, tuple([z_in, M_in, r_tab_in] + k_in))
             
             inside   = (r < self.epsilon_max*R)
             displ[i] = np.where(inside, displ[i], 0) #Set large-scale displacements to 0
@@ -490,15 +606,7 @@ class BaryonificationClass(object):
             If required parameters are not provided in `kwargs`.
         """
         
-        if not hasattr(self, 'interp_d'):
-            raise NameError("No Table created. Run setup_interpolator() method first")
-            
-        for k in self.p_keys:
-            assert k in kwargs.keys(), "Need to provide %s as input into `displacement'. Table was built with this." % k
-
-        extra = [k for k in kwargs.keys() if k not in self.p_keys]
-        if len(extra) > 0:
-            raise ValueError(f"Parameters {extra} were passed to `displacement', but the table was only built with {self.p_keys}.")
+        self._check_table_kwargs(kwargs)
 
         return self._readout(r, M, a, **kwargs)
 

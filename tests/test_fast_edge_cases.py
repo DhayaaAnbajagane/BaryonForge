@@ -12,6 +12,7 @@ Test index:
     test_comoving_conversion_and_mass_integration_are_shape_safe: checks conversion and mass integration.
     test_simple_array_cache_supports_arrays_and_lru_behavior: checks array cache eviction.
     test_simple_array_cache_caches_none_results: checks caching of None results.
+    test_simple_array_cache_is_safe_across_threads: checks concurrent lookups and evictions.
     test_cached_profile_caches_only_selected_methods: checks selected-method caching.
     test_tiny_tabulation_has_expected_grids_and_boundary_readout: checks tiny table readout.
     test_parameterized_tiny_tabulation_interpolates_extra_parameters: checks parameterized tables.
@@ -255,6 +256,22 @@ def test_simple_array_cache_caches_none_results():
     assert cached("input") is None
     assert cached("input") is None
     assert calls["evaluate"] == 1
+
+
+def test_simple_array_cache_is_safe_across_threads():
+    """Runner threads (n_jobs > 1) share a model's cache: evictions by one thread must not break another."""
+    import sys
+    from concurrent.futures import ThreadPoolExecutor
+
+    cached = SimpleArrayCache(maxsize=1)(lambda value: value * 2.0)
+    interval = sys.getswitchinterval()
+    sys.setswitchinterval(1e-6)  # Switch threads often, to expose check-then-read races
+    try:
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            results = list(executor.map(lambda i: cached(float(i % 3)), range(100_000)))
+    finally:
+        sys.setswitchinterval(interval)
+    assert results == [2.0 * (i % 3) for i in range(100_000)]
 
 
 def test_cached_profile_caches_only_selected_methods():

@@ -37,6 +37,47 @@ def _runner_cosmology(cosmo):
     return cosmo_out
 
 
+def _halo_radius(mass_def, cosmo, M, a):
+    """
+    Halo radius (physical Mpc) of many halos at once, `mass_def.get_radius(cosmo, M[i], a[i])` for every i,
+    where `M` and `a` are arrays of the same length. CCL's `get_radius` is elementwise in (M, a), so a single
+    call is used; mass definitions that do not accept an array of scale factors are evaluated halo by halo.
+    """
+
+    M = np.atleast_1d(np.asarray(M, dtype = float))
+    a = np.broadcast_to(np.asarray(a, dtype = float), M.shape)
+    try:
+        R = np.asarray(mass_def.get_radius(cosmo, M, a), dtype = float)
+        if R.shape == M.shape: return R
+    except Exception:
+        pass
+    return np.array([mass_def.get_radius(cosmo, M_i, a_i) for M_i, a_i in zip(M, a)], dtype = float)
+
+
+def _batch_method(obj, name, *methods):
+    """
+    Returns `obj.<name>` (eg. the batched readout `_projected_batch`) if it can stand in for the per-halo
+    `methods` it batches (eg. `projected`, `_projected`, `_readout`), and None otherwise. That requires
+
+    - that the class of `obj` itself defines it: wrappers such as `ConvolvedProfile` or `CombinedProfile`
+      forward unknown attributes to an inner profile, whose batched readout would skip the wrapper's own
+      operation; and
+    - that no subclass overrides any of `methods` below the class that defines it (eg. a
+      `BaryonificationClass` subclass with its own `displacement`), since the batched readout would
+      bypass the override.
+    """
+
+    cls = type(obj)
+    if getattr(cls, name, None) is None: return None
+
+    owner = next(c for c in cls.__mro__ if name in c.__dict__)
+    for m in methods:
+        defines = next((c for c in cls.__mro__ if m in c.__dict__), None)
+        if (defines is not None) and not issubclass(owner, defines): return None
+
+    return getattr(obj, name)
+
+
 def _check_p_keys(model):
     """
     Returns the extra (tabulated) parameter names of a runner model, `model.p_keys`, and checks that

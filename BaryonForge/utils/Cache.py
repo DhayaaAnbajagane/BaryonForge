@@ -8,6 +8,8 @@ from .Tabulate import _get_parameter
 
 __all__ = ['SimpleArrayCache', 'CachedProfile']
 
+_MISSING = object() #Marks a key absent from the cache
+
 
 class _CachedFunction:
     """Pickleable callable used by :class:`SimpleArrayCache`."""
@@ -22,8 +24,9 @@ class _CachedFunction:
 
         #Always hand out copies, so that callers modifying the output in-place
         #cannot corrupt the cached value
-        if self.cache.contains(*key):
-            return copy.deepcopy(self.cache.get(*key))
+        found, value = self.cache.lookup(*key)
+        if found:
+            return copy.deepcopy(value)
 
         value = self.func(*args, **kwargs)
         self.cache.set(copy.deepcopy(value), *key)
@@ -109,12 +112,30 @@ class SimpleArrayCache:
         """Return whether an entry exists, including entries valued ``None``."""
         return self._key(*args) in self._store
 
+    def lookup(self, *args):
+        """
+        Return ``(True, value)`` if an entry exists (including entries valued ``None``), else ``(False, None)``.
+        The entry is read in a single step, so this is safe when runner threads (``n_jobs > 1``) share the
+        cache, unlike ``contains`` followed by ``get``, between which another thread may evict the entry.
+        """
+        k = self._key(*args)
+        value = self._store.get(k, _MISSING)
+        if value is _MISSING: return False, None
+        try:
+            self._store.move_to_end(k)
+        except KeyError:
+            pass #Evicted by another thread in the meantime
+        return True, value
+
     def set(self, value, *args):
         k = self._key(*args)
         self._store[k] = value
-        self._store.move_to_end(k)
-        if len(self._store) > self.maxsize:
-            self._store.popitem(last=False)
+        try:
+            self._store.move_to_end(k)
+            if len(self._store) > self.maxsize:
+                self._store.popitem(last=False)
+        except KeyError:
+            pass #Another thread evicted/emptied entries in the meantime
 
 
     def __call__(self, func):

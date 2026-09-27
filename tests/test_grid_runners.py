@@ -13,6 +13,12 @@ Test index:
     test_baryonify_grid_accepts_parameterized_baryonification: checks BaryonificationClass with p_keys.
     test_baryonify_grid_does_not_depend_on_bin_origin: checks large cutouts for bins centered on zero.
     test_snapshot_output_is_wrapped_into_the_box: checks outputs lie in [0, L) and can be reused.
+    test_snapshot_paths_match_the_kdtree_algorithm: checks the cell index, tabulated/per-halo paths and n_jobs (2D, 3D).
+    test_grid_runners_do_not_depend_on_batching_or_n_jobs: checks batched/per-halo evaluation and threads agree exactly.
+    test_runners_accept_empty_halo_catalogs: checks maps/snapshots are unchanged without halos (with and without ellipticity).
+    test_runner_subclasses_keep_their_helper_methods: checks overridden enforce_periodicity/pick_indices are used.
+    test_snapshot_keeps_sub_array_and_string_fields: checks extra catalog fields are copied unchanged.
+    test_cell_index_does_not_depend_on_threads: checks the parallel counting sort and the modulo shortcut (2D, 3D).
 """
 
 import numpy as np
@@ -330,3 +336,253 @@ def test_snapshot_output_is_wrapped_into_the_box(cosmology_parameters):
     again = bfg.ParticleSnapshot(x=new_catalog["x"], y=new_catalog["y"], z=new_catalog["z"], M=np.ones(500),
                                  L=BOX, redshift=REDSHIFT, cosmo=dict(cosmology_parameters))
     bfg.BaryonifySnapshot(catalog, again, epsilon_max=5, model=OutwardDisplacement(), verbose=False).process()
+
+
+class PiecewiseLogDisplacement:
+    """Inward displacement that is linear in log(r) between nodes (like a table), and zero beyond 3 Mpc."""
+
+    nodes = np.linspace(np.log(1e-3), np.log(10), 400)
+
+    def _curve(self, M):
+        return -0.3 * (M / 1e14)**(1 / 3) * np.exp(-np.exp(self.nodes) / 1.5)
+
+    def displacement(self, r, M, a):
+        u = np.log(np.atleast_1d(r))
+        d = np.interp(u, self.nodes, self._curve(M))
+        d = np.where((u >= self.nodes[0]) & (u <= self.nodes[-1]), d, np.nan)
+        return np.where(np.atleast_1d(r) < 3, d, 0)
+
+
+class PiecewiseLogDisplacementTabulated(PiecewiseLogDisplacement):
+    """The same displacement, also offering the per-halo curves that tabulated models provide."""
+
+    def _displacement_curves(self, M, a, r=None, n_threads=1):
+        M = np.atleast_1d(M)
+        return self.nodes, np.stack([self._curve(m) for m in M]), np.zeros(M.size), np.full(M.size, 3.0)
+
+
+def _kdtree_baryonification(catalog, snapshot, epsilon_max, model):
+    """The KDTree algorithm the snapshot runner used before the cell index, as a reference."""
+    from scipy.spatial import KDTree
+    from BaryonForge.utils.misc import _runner_cosmology
+
+    cosmo, L = _runner_cosmology(catalog.cosmology), snapshot.L
+    axes = ["x", "y"] if snapshot.is2D else ["x", "y", "z"]
+    tree = KDTree(np.mod(np.vstack([snapshot.cat[ax] for ax in axes]).T, L), boxsize=L)
+    wrap = lambda dx: np.where(np.where(dx > L / 2, dx - L, dx) < -L / 2, np.where(dx > L / 2, dx - L, dx) + L,
+                               np.where(dx > L / 2, dx - L, dx))
+    offsets, a = np.zeros([snapshot.cat.size, len(axes)]), 1 / (1 + catalog.redshift)
+    for j in range(catalog.cat.size):
+        M = catalog.cat["M"][j]
+        R_q = np.clip(epsilon_max * ccl.halos.MassDef200c.get_radius(cosmo, M, a) / a, 0, L / 2)
+        pos = [catalog.cat[ax][j] for ax in axes]
+        inds = tree.query_ball_point(pos, R_q)
+        dxs = [wrap(snapshot.cat[ax][inds] - p) for ax, p in zip(axes, pos)]
+        d = np.sqrt(sum(dx**2 for dx in dxs))
+        with np.errstate(invalid="ignore", divide="ignore"):
+            hats = [np.where(d > 0, dx / d, 0) for dx in dxs]
+        offset = model.displacement(d, M, a)
+        offset = np.where(np.isfinite(offset), offset, 0)
+        offsets[inds] += np.vstack([offset * h for h in hats]).T
+    return [np.mod(snapshot.cat[ax] + offsets[:, i], L) for i, ax in enumerate(axes)]
+
+
+@pytest.mark.parametrize("is2D", (False, True))
+def test_snapshot_paths_match_the_kdtree_algorithm(cosmology_parameters, is2D):
+    """The cell-index runner (compiled tabulated path, per-halo path, any n_jobs) matches the KDTree algorithm."""
+    rng = np.random.default_rng(4)
+    N, N_halo = 20000, 25
+    x, y, z = rng.uniform(0, BOX, (3, N))
+    x[:200] = rng.uniform(BOX - 0.5, BOX, 200)  # Near the edge
+    x[200] = BOX                                # Snapshots stored on [0, L] can have x == L
+    halo = np.column_stack([rng.uniform(0, BOX, (N_halo, 3))])
+    halo[0] = [BOX - 0.2, 0.1, 10.0]           # Cutout wrapping across two edges
+    x[201], y[201], z[201] = halo[3]            # A particle exactly at a halo center
+    snapshot = bfg.ParticleSnapshot(x=x, y=y, z=None if is2D else z, M=np.ones(N), L=BOX,
+                                    redshift=REDSHIFT, cosmo=dict(cosmology_parameters))
+    catalog = bfg.HaloNDCatalog(x=halo[:, 0], y=halo[:, 1], z=None if is2D else halo[:, 2],
+                                M=10**rng.uniform(13, 14.5, N_halo), redshift=REDSHIFT, cosmo=dict(cosmology_parameters))
+    axes = ["x", "y"] if is2D else ["x", "y", "z"]
+
+    reference = _kdtree_baryonification(catalog, snapshot, 5, PiecewiseLogDisplacement())
+    runs = {}
+    for label, model, n_jobs in (("per halo", PiecewiseLogDisplacement(), 1),
+                                 ("tabulated", PiecewiseLogDisplacementTabulated(), 1),
+                                 ("tabulated, 3 threads", PiecewiseLogDisplacementTabulated(), 3)):
+        new = bfg.BaryonifySnapshot(catalog, snapshot, epsilon_max=5, model=model, verbose=False, n_jobs=n_jobs).process()
+        runs[label] = new
+        for i, ax in enumerate(axes):
+            moved = np.abs(reference[i] - snapshot.cat[ax])
+            assert moved.max() > 0.05  # The halos do move particles
+            np.testing.assert_allclose(new[ax], reference[i], rtol=0, atol=1e-12, err_msg=f"{label}, axis {ax}")
+            assert np.all((new[ax] >= 0) & (new[ax] < BOX))
+    for ax in axes:
+        np.testing.assert_array_equal(runs["tabulated, 3 threads"][ax], runs["tabulated"][ax])
+    np.testing.assert_array_equal(runs["tabulated"]["M"], snapshot.cat["M"])
+
+
+class ScalingDisplacement:
+    """Displacement depending on radius and mass, evaluated halo by halo."""
+
+    def displacement(self, r, M, a):
+        return -0.4 * (M / 1e14)**(1 / 3) * np.exp(-np.atleast_1d(r) / 1.5)
+
+
+class ScalingDisplacementBatched(ScalingDisplacement):
+    """The same displacement through the batched readout that tabulated models provide (each halo's radii
+    are evaluated with the per-halo formula, so the runners' bookkeeping can be checked exactly)."""
+
+    def _displacement_batch(self, r, halo, M, a):
+        out = np.empty(r.size)
+        for h in np.unique(halo):
+            out[halo == h] = self.displacement(r[halo == h], M[h], a[h])
+        return out
+
+
+class PerHaloOnly:
+    """Hides the batched readout of a profile, so the runners call it halo by halo."""
+
+    def __init__(self, profile):
+        self.profile, self.mass_def = profile, profile.mass_def
+
+    def real(self, cosmo, r, M, a):      return self.profile.real(cosmo, r, M, a)
+    def projected(self, cosmo, r, M, a): return self.profile.projected(cosmo, r, M, a)
+
+
+@pytest.mark.parametrize("dim, elliptical", ((2, False), (2, True), (3, False)))
+def test_grid_runners_do_not_depend_on_batching_or_n_jobs(cosmology_parameters, dim, elliptical):
+    """Batched and per-halo model evaluation, and any number of threads, give bit-identical maps."""
+    rng = np.random.default_rng(5)
+    N_halo = 12
+    pos = rng.uniform(0, BOX, (N_halo, 3))
+    pos[0, :] = BINS[7]  # A halo exactly on a pixel center
+    extra = dict(q_ell=rng.uniform(0.5, 1, N_halo), A_ell=rng.normal(size=(N_halo, 2))) if elliptical else {}
+    catalog = bfg.HaloNDCatalog(x=pos[:, 0], y=pos[:, 1], z=None if dim == 2 else pos[:, 2], M=10**rng.uniform(13, 14.5, N_halo),
+                                redshift=REDSHIFT, cosmo=dict(cosmology_parameters), **extra)
+    mass = rng.uniform(1, 2, (N_PIX,) * dim)
+    grid = lambda values: bfg.GriddedMap(map=values, bins=BINS, redshift=REDSHIFT, cosmo=dict(cosmology_parameters))
+
+    table = bfg.utils.TabulatedProfile(GaussianProfile(), ccl.Cosmology(**ccl_dict))
+    table.setup_interpolator(z_min=0.2, z_max=0.3, N_samples_z=2, M_min=1e12, M_max=1e16, N_samples_Mass=8,
+                             R_min=1e-3, R_max=50, N_samples_R=64, verbose=False)
+
+    def run(runner, model, n_jobs, **kwargs):
+        return runner(catalog, grid(mass if runner is bfg.BaryonifyGrid else np.zeros_like(mass)), epsilon_max=5,
+                      model=model, verbose=False, use_ellipticity=elliptical, n_jobs=n_jobs, **kwargs).process()
+
+    reference = run(bfg.BaryonifyGrid, ScalingDisplacement(), 1)
+    assert reference.sum() == pytest.approx(mass.sum())
+    np.testing.assert_array_equal(run(bfg.BaryonifyGrid, ScalingDisplacementBatched(), 1), reference)
+    np.testing.assert_array_equal(run(bfg.BaryonifyGrid, ScalingDisplacementBatched(), 3), reference)
+
+    reference = run(bfg.PaintProfilesGrid, PerHaloOnly(table), 1)
+    assert reference.sum() > 0
+    np.testing.assert_array_equal(run(bfg.PaintProfilesGrid, table, 1), reference)
+    np.testing.assert_array_equal(run(bfg.PaintProfilesGrid, table, 3), reference)
+
+    if dim == 2:
+        anis = lambda model, n_jobs: bfg.PaintProfilesAnisGrid(
+            catalog, grid(mass), epsilon_max=5, model=model, Tracer_model=model, Mtot_model=bfg.Profiles.misc.ComovingToPhysical(table, 0),
+            background_val=1.0, global_tracer_fraction=0.1, use_ellipticity=elliptical, verbose=False, n_jobs=n_jobs).process()
+        reference = anis(PerHaloOnly(table), 1)
+        np.testing.assert_array_equal(anis(table, 1), reference)
+        np.testing.assert_array_equal(anis(table, 3), reference)
+
+
+@pytest.mark.parametrize("elliptical", (False, True))
+def test_runners_accept_empty_halo_catalogs(cosmology_parameters, elliptical):
+    """With no halos, the maps and the snapshot come back unchanged (the snapshot wrapped into the box)."""
+    extra = dict(q_ell=np.zeros(0), A_ell=np.zeros((0, 2))) if elliptical else {}
+    catalog = bfg.HaloNDCatalog(x=np.zeros(0), y=np.zeros(0), M=np.zeros(0), redshift=REDSHIFT,
+                                cosmo=dict(cosmology_parameters), **extra)
+    mass = np.random.default_rng(6).uniform(1, 2, (N_PIX, N_PIX))
+    kwargs = dict(epsilon_max=5, verbose=False, use_ellipticity=elliptical)
+
+    np.testing.assert_array_equal(bfg.BaryonifyGrid(catalog, _grid(cosmology_parameters, mass), model=InwardDisplacement(), **kwargs).process(), mass)
+    np.testing.assert_array_equal(bfg.PaintProfilesGrid(catalog, _grid(cosmology_parameters), model=GaussianProfile(), **kwargs).process(), 0)
+    bfg.PaintProfilesAnisGrid(catalog, _grid(cosmology_parameters, mass), model=GaussianProfile(), Tracer_model=GaussianProfile(),
+                              Mtot_model=GaussianProfile(proj_cutoff=10), background_val=1.0, global_tracer_fraction=0.1, **kwargs).process()
+
+    x = np.random.default_rng(7).uniform(0, BOX, (3, 100))
+    snapshot = bfg.ParticleSnapshot(x=x[0], y=x[1], z=x[2], L=BOX, redshift=REDSHIFT, cosmo=dict(cosmology_parameters))
+    catalog3 = bfg.HaloNDCatalog(x=np.zeros(0), y=np.zeros(0), z=np.zeros(0), M=np.zeros(0), redshift=REDSHIFT, cosmo=dict(cosmology_parameters))
+    new = bfg.BaryonifySnapshot(catalog3, snapshot, epsilon_max=5, model=PiecewiseLogDisplacementTabulated(), verbose=False).process()
+    for i, ax in enumerate("xyz"):
+        np.testing.assert_array_equal(new[ax], x[i])
+
+
+class NonPeriodicSnapshot(bfg.BaryonifySnapshot):
+    """A runner subclass that measures separations without wrapping them across the box."""
+
+    def enforce_periodicity(self, dx):
+        return dx
+
+
+class ClippedGrid(bfg.PaintProfilesGrid):
+    """A runner subclass whose cutouts stop at the map edge instead of wrapping around it."""
+
+    def pick_indices(self, center, width, Npix):
+        return np.clip(np.arange(center - width, center + width), 0, Npix - 1)
+
+
+def test_runner_subclasses_keep_their_helper_methods(cosmology_parameters):
+    """Subclasses redefining the runners' public helpers get them used (the compiled paths step aside)."""
+    x, y, z = np.random.default_rng(8).uniform(0, BOX, (3, 4000))
+    snapshot = bfg.ParticleSnapshot(x=x, y=y, z=z, L=BOX, redshift=REDSHIFT, cosmo=dict(cosmology_parameters))
+    catalog = _catalog(0.2, 10.0, cosmology_parameters, z=np.array([10.0]))
+    periodic = bfg.BaryonifySnapshot(catalog, snapshot, epsilon_max=5, model=InwardDisplacement(), verbose=False).process()
+    unwrapped = NonPeriodicSnapshot(catalog, snapshot, epsilon_max=5, model=InwardDisplacement(), verbose=False).process()
+    far_side, near_side = x > BOX - 1, x < 1
+    assert np.any(periodic["x"][far_side] != x[far_side])  # Moved across the edge by the periodic runner
+    np.testing.assert_array_equal(unwrapped["x"][far_side], x[far_side])  # Too far away without wrapping
+    np.testing.assert_allclose(unwrapped["x"][near_side], periodic["x"][near_side], rtol=0, atol=1e-12)
+
+    catalog = _catalog(BINS[0], BINS[20], cosmology_parameters)
+    wrapped = bfg.PaintProfilesGrid(catalog, _grid(cosmology_parameters), epsilon_max=3, model=GaussianProfile(), verbose=False).process()
+    clipped = ClippedGrid(catalog, _grid(cosmology_parameters), epsilon_max=3, model=GaussianProfile(), verbose=False).process()
+    assert wrapped[-1].sum() > 0
+    assert clipped[-1].sum() == 0
+    np.testing.assert_array_equal(clipped[1:N_PIX // 2], wrapped[1:N_PIX // 2])
+
+
+def test_snapshot_keeps_sub_array_and_string_fields(cosmology_parameters):
+    """Extra fields of a user-built snapshot catalog, including sub-arrays and strings, are copied unchanged."""
+    x, y, z = np.random.default_rng(9).uniform(0, BOX, (3, 500))
+    snapshot = bfg.ParticleSnapshot(x=x, y=y, z=z, L=BOX, redshift=REDSHIFT, cosmo=dict(cosmology_parameters))
+    cat = np.zeros(500, snapshot.cat.dtype.descr + [("vel", np.float32, (3,)), ("tag", "U4"), ("id", np.int64)])
+    for field in snapshot.cat.dtype.names:
+        cat[field] = snapshot.cat[field]
+    cat["vel"], cat["tag"], cat["id"] = np.arange(1500).reshape(500, 3), "ab", np.arange(500)
+    snapshot.cat = cat
+    new = bfg.BaryonifySnapshot(_catalog(10.0, 10.0, cosmology_parameters, z=np.array([10.0])), snapshot, epsilon_max=5,
+                                model=InwardDisplacement(), verbose=False).process()
+    for field in ("vel", "tag", "id"):
+        np.testing.assert_array_equal(new[field], cat[field])
+
+
+@pytest.mark.parametrize("ndim", (3, 2))
+def test_cell_index_does_not_depend_on_threads(ndim):
+    """The parallel counting sort of the snapshot index gives exactly the serial one; the modulo shortcut is np.mod."""
+    import numba
+    from BaryonForge.Runners import SnapshotRunner as SR
+
+    rng = np.random.default_rng(10)
+    N = 200_000
+    x, y = rng.uniform(-0.2 * BOX, 1.2 * BOX, N), rng.uniform(0, BOX, N)
+    x[:6] = 0.0, -0.0, BOX, np.nextafter(BOX, 0), -BOX, 3 * BOX
+    z = np.zeros(N) if ndim == 2 else rng.uniform(0, BOX, N)
+    n1 = int(np.round((N / 16) ** (1 / ndim)))
+    n = np.array([n1, n1, 1 if ndim == 2 else n1], dtype=np.int64)
+    order, starts = SR._build_cell_index(x, y, z, BOX, n, 1)
+    previous = numba.get_num_threads()
+    try:
+        numba.set_num_threads(min(3, numba.config.NUMBA_NUM_THREADS))
+        order3, starts3 = SR._build_cell_index(x, y, z, BOX, n, 3)
+    finally:
+        numba.set_num_threads(previous)
+    np.testing.assert_array_equal(order3, order)
+    np.testing.assert_array_equal(starts3, starts)
+
+    wrapped = np.array([SR._wrap(v, BOX) for v in x[:1000]])
+    np.testing.assert_array_equal(wrapped, np.mod(x[:1000], BOX))
+    np.testing.assert_array_equal(np.signbit(wrapped), np.signbit(np.mod(x[:1000], BOX)))

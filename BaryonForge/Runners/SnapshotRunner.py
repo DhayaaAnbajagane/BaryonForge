@@ -1,104 +1,479 @@
 import numpy as np
+import numba
+from contextlib import contextmanager
+from concurrent.futures import ThreadPoolExecutor
+from numba import njit, prange
 from scipy.spatial import KDTree
 from tqdm import tqdm
-from ..utils.misc import _default_mass_def, _runner_cosmology, _check_p_keys
+from ..utils.misc import _default_mass_def, _runner_cosmology, _check_p_keys, _halo_radius, _batch_method
+from ..utils.Tabulate import _find_interval
+from ._chunks import _zeros
 
 __all__ = ['DefaultRunnerSnapshot', 'BaryonifySnapshot']
+
+
+@njit
+def _wrap(v, L):
+    """`v % L` (numba's float `%`, as np.mod), with the slow modulo skipped for values already in (0, L),
+    where it returns `v` exactly. Zero (of either sign), negative, out-of-range and NaN values take the `%`."""
+
+    return v if (v > 0.0) and (v < L) else v % L
+
+
+@njit
+def _cell_of(x, y, z, L, n):
+    """Cell of one particle, with coordinates already wrapped into [0, L)."""
+
+    ix = min(int(x / L * n[0]), n[0] - 1)
+    iy = min(int(y / L * n[1]), n[1] - 1)
+    iz = min(int(z / L * n[2]), n[2] - 1)
+    return (ix*n[1] + iy)*n[2] + iz
+
+
+@njit(parallel = True)
+def _cell_ids_in_box(x, y, z, L, n):
+    """
+    Cell `(ix*ny + iy)*nz + iz` of every particle inside [0, L)^3, in a periodic grid of `n = (nx, ny, nz)`
+    cells, and -1 for the others. Returns the cells and the number of particles outside. Particles inside need
+    no `% L` (it would return the coordinate itself, up to the sign of zero, which gives the same cell); the
+    loop has none, since the compiler would otherwise evaluate it for every particle.
+    """
+
+    cell, outside = np.empty(x.size, dtype = np.int64), 0
+    for i in prange(x.size):
+        if (x[i] >= 0.0) and (x[i] < L) and (y[i] >= 0.0) and (y[i] < L) and (z[i] >= 0.0) and (z[i] < L):
+            cell[i] = _cell_of(x[i], y[i], z[i], L, n)
+        else:
+            cell[i] = -1
+            outside += 1
+
+    return cell, outside
+
+
+@njit(parallel = True)
+def _cell_ids_outside(x, y, z, L, n, cell):
+    """Fills in the cells (-1) of the particles outside the box, wrapping their coordinates with `% L`."""
+
+    for i in prange(x.size):
+        if cell[i] < 0: cell[i] = _cell_of(x[i] % L, y[i] % L, z[i] % L, L, n)
+    return cell
+
+
+def _cell_ids(x, y, z, L, n):
+    """Cell of every particle in a periodic grid of `n = (nx, ny, nz)` cells over [0, L)^3 (see `_cell_ids_in_box`)."""
+
+    cell, outside = _cell_ids_in_box(x, y, z, L, n)
+    if outside > 0: _cell_ids_outside(x, y, z, L, n, cell) #Compiled only if ever needed
+    return cell
+
+
+@njit
+def _counting_sort(cell, starts):
+    """Particle indices sorted by cell (stable), given `starts`, the cumulative counts of the cells."""
+
+    order = np.empty(cell.size, dtype = np.int64)
+    fill  = starts[:-1].copy()
+    for i in range(cell.size):
+        order[fill[cell[i]]] = i
+        fill[cell[i]] += 1
+
+    return order
+
+
+@njit(nogil = True)
+def _plane_counts(cell, lo, hi, cells_per_plane, counts):
+    """Adds to `counts` the number of particles `lo:hi` in every plane of cells (`cell // cells_per_plane`)."""
+
+    for i in range(lo, hi): counts[cell[i] // cells_per_plane] += 1
+
+
+@njit(nogil = True)
+def _scatter_by_plane(cell, lo, hi, cells_per_plane, fill, by_plane, local):
+    """Writes particles `lo:hi`, in order, to their plane's next free position (`fill`), with their cell
+    within the plane, so the sort of each plane reads both in sequence."""
+
+    for i in range(lo, hi):
+        p = cell[i] // cells_per_plane
+        by_plane[fill[p]] = i
+        local[fill[p]]    = cell[i] - p * cells_per_plane
+        fill[p] += 1
+
+
+@njit(nogil = True)
+def _sort_planes(by_plane, local, plane_start, p_lo, p_hi, cells_per_plane, order, cell_counts):
+    """Counting sort, by cell, of the particles of planes `p_lo:p_hi` (stable), into `order`."""
+
+    fill = np.empty(cells_per_plane, dtype = np.int64)
+    for p in range(p_lo, p_hi):
+        s, e, base = plane_start[p], plane_start[p + 1], p * cells_per_plane
+        fill[:] = 0
+        for k in range(s, e): fill[local[k]] += 1
+        for c in range(cells_per_plane): cell_counts[base + c + 1] = fill[c]
+        run = s
+        for c in range(cells_per_plane): #Start of every cell of the plane
+            run, fill[c] = run + fill[c], run
+        for k in range(s, e):
+            c = local[k]
+            order[fill[c]] = by_plane[k]
+            fill[c] += 1
+
+
+def _counting_sort_threads(cell, n_planes, cells_per_plane, n_threads):
+    """
+    The stable counting sort of `_counting_sort`, with `n_threads` threads: the particles are first split by
+    plane of cells (`cell // cells_per_plane`, the leading index of the cell) in `n_threads` blocks of
+    consecutive particles, then each plane is sorted by cell on its own. Both steps keep the particles in their
+    original order, so `order` is exactly that of `_counting_sort`. Returns `order` and `starts` (the cumulative
+    cell counts). The kernels are plain (not parallel = True) loops, which compile in a fraction of the time.
+    """
+
+    N      = cell.size
+    blocks = np.linspace(0, N, n_threads + 1).astype(np.int64)
+    counts = np.zeros((n_threads, n_planes), dtype = np.int64) #Particles per (block, plane)
+    with ThreadPoolExecutor(max_workers = n_threads) as pool: #The kernels release the GIL
+        run = lambda f, args: [job.result() for job in [pool.submit(f, *a) for a in args]]
+        run(_plane_counts, [(cell, blocks[b], blocks[b + 1], cells_per_plane, counts[b]) for b in range(n_threads)])
+
+        flat        = counts.T.ravel() #Positions in plane order, and within a plane in block order
+        offsets     = (np.cumsum(flat) - flat).reshape(n_planes, n_threads).T.copy()
+        plane_start = np.concatenate([[0], np.cumsum(counts.sum(axis = 0))]).astype(np.int64)
+
+        by_plane = np.empty(N, dtype = np.int64)
+        local    = np.empty(N, dtype = np.int64 if cells_per_plane > 2**31 else np.int32)
+        run(_scatter_by_plane, [(cell, blocks[b], blocks[b + 1], cells_per_plane, offsets[b], by_plane, local) for b in range(n_threads)])
+
+        order       = np.empty(N, dtype = np.int64)
+        cell_counts = np.zeros(n_planes * cells_per_plane + 1, dtype = np.int64) #Particles per cell, shifted by one
+        planes      = np.linspace(0, n_planes, min(4 * n_threads, n_planes) + 1).astype(np.int64)
+        run(_sort_planes, [(by_plane, local, plane_start, planes[k], planes[k + 1], cells_per_plane, order, cell_counts)
+                           for k in range(planes.size - 1)])
+
+    return order, np.cumsum(cell_counts)
+
+
+@njit(parallel = True)
+def _gather(x, y, z, order):
+    """`x[order], y[order], z[order]`, in one parallel pass (the arrays may be strided views, eg. fields of a
+    structured array, where the three values of a particle share a cache line that is then read only once)."""
+
+    xs, ys, zs = np.empty(order.size), np.empty(order.size), np.empty(order.size)
+    for i in prange(order.size):
+        o = order[i]
+        xs[i], ys[i], zs[i] = x[o], y[o], z[o]
+    return xs, ys, zs
+
+
+@njit(parallel = True)
+def _shift_and_wrap(x, y, z, offsets, L):
+    """
+    In place, in one pass over the particles: `x = np.mod(x + offsets[:, 0], L)`, and likewise `y` and `z`
+    (`z` is skipped if empty, for 2D snapshots). In parallel; numba's float `%` matches np.mod.
+    """
+
+    for i in prange(x.size):
+        x[i] = _wrap(x[i] + offsets[i, 0], L)
+        y[i] = _wrap(y[i] + offsets[i, 1], L)
+        if z.size > 0: z[i] = _wrap(z[i] + offsets[i, 2], L)
+
+
+@njit(parallel = True)
+def _copy(values, out):
+    """`out[:] = values`, in parallel (either may be a strided view)."""
+
+    for i in prange(values.size): out[i] = values[i]
+    return out
+
+
+def _build_cell_index(x, y, z, L, n, n_threads = 1):
+    """
+    Sorts particles into a periodic grid of `n = (nx, ny, nz)` cells over the box [0, L)^3 (a stable counting
+    sort, in parallel if `n_threads > 2`, with the same result; with two threads the parallel sort's extra pass
+    costs more than it saves). Returns `order`, the particle indices sorted by cell, and `starts`, such that the
+    particles of cell `c = (ix*ny + iy)*nz + iz` are `order[starts[c]:starts[c+1]]`.
+    """
+
+    cell = _cell_ids(x, y, z, L, n)
+    if n_threads > 2:
+        return _counting_sort_threads(cell, int(n[0]), int(n[1] * n[2]), n_threads)
+
+    starts = np.concatenate([[0], np.cumsum(np.bincount(cell, minlength = int(np.prod(n))))]).astype(np.int64)
+
+    return _counting_sort(cell, starts), starts
+
+
+@njit
+def _cell_range(center, R, L, n):
+    """
+    First and last (unwrapped) cell overlapping [center - R, center + R], covering at most `n` cells. The range
+    is padded by 1e-9 of a cell, so a particle on a cell boundary is found whichever way its cell was rounded.
+    """
+
+    lo = int(np.floor((center - R) / L * n - 1e-9))
+    hi = int(np.floor((center + R) / L * n + 1e-9))
+    if hi - lo + 1 > n: return 0, n - 1
+    return lo, hi
+
+
+@njit
+def _periodic(dx, L):
+    """Same as `DefaultRunnerSnapshot.enforce_periodicity`, for one value."""
+
+    dx = dx - L if dx >  L/2 else dx
+    dx = dx + L if dx < -L/2 else dx
+    return dx
+
+
+@njit(parallel = True)
+def _snapshot_offsets(xs, ys, zs, order, starts, n, L, centers, R_q, R_cut, shift, nodes, curves,
+                      plane_start, plane_halo, plane_order, out):
+    """
+    Adds the displacement of every halo to the particles within its query radius `R_q`. Particles are sorted by
+    cell (`xs`, `ys`, `zs`, `starts`), and `out` is in the original particle order (`order` maps sorted positions
+    to it). The work is split by planes of cells along x, each handled by one thread
+    (`plane_halo[plane_start[ix]:plane_start[ix+1]]` are the halos overlapping plane `ix`). A thread only
+    writes to the particles of its planes, and adds the halos in catalog order, so the result does not depend
+    on the number of threads.
+
+    The displacement of halo `h` at comoving distance `d` is the linear interpolation of `curves[h]` over
+    `nodes` at `log(d) - shift[h]`, zero for `d >= R_cut[h]` and for non-finite values; it is applied along
+    the (periodic) separation vector, as in `BaryonifySnapshot.process`.
+    """
+
+    nx, ny, nz = n[0], n[1], n[2]
+    n_nodes    = nodes.size
+
+    for k in prange(nx):
+        ix = plane_order[k]
+        for q in range(plane_start[ix], plane_start[ix + 1]):
+            h  = plane_halo[q]
+            cx, cy, cz = centers[h, 0], centers[h, 1], centers[h, 2]
+            R  = R_q[h]
+            y_lo, y_hi = _cell_range(cy, R, L, ny)
+            z_lo, z_hi = _cell_range(cz, R, L, nz)
+
+            for jy in range(y_lo, y_hi + 1):
+                iy = jy % ny
+                for jz in range(z_lo, z_hi + 1):
+                    iz = jz % nz
+                    c  = (ix*ny + iy)*nz + iz
+                    for p in range(starts[c], starts[c + 1]):
+                        dx = _periodic(xs[p] - cx, L)
+                        dy = _periodic(ys[p] - cy, L)
+                        dz = _periodic(zs[p] - cz, L)
+                        d  = np.sqrt((dx*dx + dy*dy) + dz*dz)
+                        if not (d <= R) or not (d < R_cut[h]) or not (d > 0): continue
+
+                        u = np.log(d) - shift[h]
+                        if not ((u >= nodes[0]) and (u <= nodes[n_nodes - 1])): continue #Outside the table: NaN -> 0
+                        i    = _find_interval(nodes, 0, n_nodes, u)
+                        t    = (u - nodes[i]) / (nodes[i + 1] - nodes[i])
+                        disp = curves[h, i]*(1 - t) + curves[h, i + 1]*t
+                        if not np.isfinite(disp): continue
+
+                        o = order[p]
+                        out[o, 0] += disp * (dx/d)
+                        out[o, 1] += disp * (dy/d)
+                        out[o, 2] += disp * (dz/d)
+
+    return out
+
+
+@njit
+def _ball(xs, ys, zs, starts, n, L, cx, cy, cz, R):
+    """
+    Particles (positions in the cell-sorted arrays) within distance `R` of (cx, cy, cz), with their periodic
+    separations and distances, in cell order.
+    """
+
+    nx, ny, nz = n[0], n[1], n[2]
+    x_lo, x_hi = _cell_range(cx, R, L, nx)
+    y_lo, y_hi = _cell_range(cy, R, L, ny)
+    z_lo, z_hi = _cell_range(cz, R, L, nz)
+
+    count = 0
+    for sweep in range(2): #First count, then fill
+        if sweep == 1:
+            idx = np.empty(count, dtype = np.int64)
+            sep = np.empty((count, 4))
+            count = 0
+        for jx in range(x_lo, x_hi + 1):
+            for jy in range(y_lo, y_hi + 1):
+                for jz in range(z_lo, z_hi + 1):
+                    c = ((jx % nx)*ny + (jy % ny))*nz + (jz % nz)
+                    for p in range(starts[c], starts[c + 1]):
+                        dx = _periodic(xs[p] - cx, L)
+                        dy = _periodic(ys[p] - cy, L)
+                        dz = _periodic(zs[p] - cz, L)
+                        d  = np.sqrt((dx*dx + dy*dy) + dz*dz)
+                        if not (d <= R): continue
+                        if sweep == 1:
+                            idx[count] = p
+                            sep[count, 0], sep[count, 1], sep[count, 2], sep[count, 3] = dx, dy, dz, d
+                        count += 1
+
+    return idx, sep
+
 
 class DefaultRunnerSnapshot(object):
     """
     A utility class for handling input/output operations related to HaloNDCatalogs and particle snapshots.
 
     The `DefaultRunnerSnapshot` class provides methods to manage and process data associated with halo ND catalogs
-    and particle snapshots, including distance calculations with periodic boundary conditions. It uses a KDTree 
-    for efficient nearest-neighbor searches within the particle snapshot.
+    and particle snapshots, including distance calculations with periodic boundary conditions.
 
-    The initialization of this class builds a `scipy.spatial.KDTree` object to use in querying particles around
-    a given halo. This step takes some considerable time.
+    Particles are found around each halo with a periodic grid of cells: the particles are sorted by cell once,
+    on the first call to `process()` (a few seconds for ~10^8 particles), and reused by later calls, eg. when
+    swapping in a different `model`.
 
     Parameters
     ----------
     HaloNDCatalog : object
-        An instance of a `HaloNDCatalog`, containing data about halos and their properties. It must have a 
+        An instance of a `HaloNDCatalog`, containing data about halos and their properties. It must have a
         `cosmology` attribute to specify the cosmological parameters.
-    
+
     ParticleSnapshot : object
         An instance representing a `ParticleSnapshot` containing the positions of particles
         in the simulation.
-    
+
     epsilon_max : float
         A parameter specifying the maximum size, in units of halo radius, of cutouts made around
         each halo during painting/baryonification.
-    
+
     model : object, optional
         An object that generates profiles or displacements. For example, see `Baryonification2D` or `Pressure`
-    
+
     mass_def : object, optional
-        An instance of a mass definition object from the CCL (Core Cosmology Library), specifying the 
+        An instance of a mass definition object from the CCL (Core Cosmology Library), specifying the
         mass definition to be used. Default is None, in which case the mass definition of `model` is used (or 200c, if `model` has none).
-    
+
     verbose : bool, optional
         A flag to enable verbose output for logging or debugging purposes. Default is True.
+
+    KDTree_kwargs : dict, optional
+        Arguments for the `scipy.spatial.KDTree` of the particles, which is only built if the `tree`
+        attribute is accessed. The runners themselves use the grid of cells described above (except for
+        subclasses that redefine `compute_distance` or `enforce_periodicity`, which use the tree).
+
+    n_jobs : int, optional
+        Number of threads used when the model is a tabulated displacement (eg. `Baryonification3D`).
+        Default is 1 (serial). Use -1 for all available cores (-2 for all but one, and so on). The output
+        does not depend on `n_jobs`: each thread handles its own particles, and applies the halos in
+        catalog order.
 
     Attributes
     ----------
     HaloNDCatalog : object
         The halo ND catalog instance.
-    
+
     ParticleSnapshot : object
         The particle snapshot instance.
-    
+
     cosmo : object
         The cosmology object extracted from `HaloNDCatalog`.
-    
+
     model : object
         The model used for baryonification or profile painting.
 
     epsilon_max : float
         The maximum radius, in halo radius units, of cutouts around halos.
-    
+
     mass_def : object
         The mass definition object.
-    
+
     verbose : bool
         Whether verbose output is enabled.
-    
+
     tree : KDTree
-        A KDTree built from the particle coordinates for efficient nearest-neighbor searches.
+        A KDTree built from the particle coordinates (built on first access; see `KDTree_kwargs`).
 
     Methods
     -------
     compute_distance(*args)
-        Helper function that computes the Euclidean distance between points, 
+        Helper function that computes the Euclidean distance between points,
         accounting for periodic boundary conditions.
 
     enforce_periodicity(dx)
         Helper function that adjusts distances to enforce periodic boundary conditions,
         ensuring distances are within the box size.
     """
-    
+
     def __init__(self, HaloNDCatalog, ParticleSnapshot, epsilon_max, model,
-                 mass_def = None, verbose = True, KDTree_kwargs = {}):
+                 mass_def = None, verbose = True, KDTree_kwargs = {}, n_jobs = 1):
 
         self.HaloNDCatalog    = HaloNDCatalog
         self.ParticleSnapshot = ParticleSnapshot
         self.epsilon_max      = epsilon_max
         self.cosmo = HaloNDCatalog.cosmology
         self.model = model
-        
+
         self.mass_def = _default_mass_def(model) if mass_def is None else mass_def
         self.verbose  = verbose
-        
-        if ParticleSnapshot.is2D:
-            coords = np.vstack([ParticleSnapshot.cat['x'], ParticleSnapshot.cat['y']]).T
-        else:
-            coords = np.vstack([ParticleSnapshot.cat['x'], ParticleSnapshot.cat['y'], ParticleSnapshot.cat['z']]).T
-                               
-        #Periodic KDTrees need data in [0, L). Snapshots stored on [0, L] can have x == L exactly.
-        coords    = np.mod(coords, ParticleSnapshot.L)
-        self.tree = KDTree(coords, boxsize = ParticleSnapshot.L, **KDTree_kwargs)
+        self.n_jobs   = n_jobs
 
-                
+        self.KDTree_kwargs = KDTree_kwargs
+        self._tree  = None
+        self._index = None
+
+
+    @property
+    def tree(self):
+        """A periodic `scipy.spatial.KDTree` of the particles, built on first access (see `KDTree_kwargs`)."""
+
+        if self._tree is None:
+            Snap   = self.ParticleSnapshot
+            coords = np.vstack([Snap.cat['x'], Snap.cat['y']] + ([] if Snap.is2D else [Snap.cat['z']])).T
+            #Periodic KDTrees need data in [0, L). Snapshots stored on [0, L] can have x == L exactly.
+            self._tree = KDTree(np.mod(coords, Snap.L), boxsize = Snap.L, **self.KDTree_kwargs)
+
+        return self._tree
+
+
+    def _particle_index(self):
+        """
+        The particles sorted into a periodic grid of cells (built once and cached): the number of cells per
+        axis, the sort order, the start of every cell, and the particle coordinates in that order (as stored
+        in the snapshot, ie. not wrapped into the box).
+        """
+
+        if self._index is None:
+            Snap = self.ParticleSnapshot
+            N    = Snap.cat.size
+            #~16 particles per cell on average, which keeps the per-cell overhead small
+            ndim = 2 if Snap.is2D else 3
+            n1   = int(np.clip(np.round((N / 16)**(1/ndim)), 1, 4096 if Snap.is2D else 512))
+            n    = np.array([n1, n1, 1 if Snap.is2D else n1], dtype = np.int64)
+
+            x = Snap.cat['x'].astype(np.float64, copy = False)
+            y = Snap.cat['y'].astype(np.float64, copy = False)
+            z = np.zeros(N) if Snap.is2D else Snap.cat['z'].astype(np.float64, copy = False)
+            with self._threads():
+                order, starts = _build_cell_index(x, y, z, float(Snap.L), n, self._n_threads())
+                xs, ys, zs    = _gather(x, y, z, order)
+                self._index   = {'n' : n, 'order' : order, 'starts' : starts, 'xs' : xs, 'ys' : ys, 'zs' : zs}
+
+        return self._index
+
+
+    @contextmanager
+    def _threads(self):
+        """Runs the compiled (numba) loops with `_n_threads()` threads, restoring numba's setting afterwards."""
+
+        previous = numba.get_num_threads()
+        numba.set_num_threads(self._n_threads())
+        try:
+            yield
+        finally:
+            numba.set_num_threads(previous)
+
+
+    def _n_threads(self):
+        """Number of threads to use, following the joblib convention for negative `n_jobs`."""
+
+        n = 1 if self.n_jobs in (None, 0) else int(self.n_jobs)
+        n = numba.config.NUMBA_NUM_THREADS + 1 + n if n < 0 else n
+        return int(np.clip(n, 1, numba.config.NUMBA_NUM_THREADS))
+
+
     def compute_distance(self, *args):
         """
         Computes the Euclidean distance between points, accounting for periodic boundary conditions.
@@ -117,10 +492,10 @@ class DefaultRunnerSnapshot(object):
         d : ndarray
             An array of distances computed for each pair of points, with periodicity accounted for.
         """
-        
+
         return np.sqrt(sum(self.enforce_periodicity(dx)**2 for dx in args))
-    
-    
+
+
     def enforce_periodicity(self, dx):
         """
         Adjusts distances to enforce periodic boundary conditions.
@@ -138,15 +513,15 @@ class DefaultRunnerSnapshot(object):
         dx : ndarray
             The adjusted distances, with values wrapped around the box size if necessary.
         """
-        
+
         L = self.ParticleSnapshot.L
-        
+
         dx = np.where(dx > L/2,  dx - L, dx)
         dx = np.where(dx < -L/2, dx + L, dx)
-            
+
         return dx
-    
-    
+
+
 
 class BaryonifySnapshot(DefaultRunnerSnapshot):
     """
@@ -179,47 +554,127 @@ class BaryonifySnapshot(DefaultRunnerSnapshot):
         Notes
         -----
         - This method supports both 2D and 3D particle snapshots.
-        - The KDTree is used for efficient querying of particles within the radius of influence of each halo.
+        - Particles within the query radius of each halo are found with a periodic grid of cells (see
+          `DefaultRunnerSnapshot`).
+        - For tabulated displacement models (`Baryonification2D`/`3D`), the displacement of each halo is read
+          from the table once, along the table's radial nodes, and the particles are displaced in a compiled
+          loop (threaded if `n_jobs > 1`). Other models are called halo by halo.
         - Periodic boundary conditions are enforced to ensure particles remain within the simulation box.
         - The method assumes that the input catalog provides particle coordinates as 'x', 'y', and optionally 'z'.
         """
 
         cosmo = _runner_cosmology(self.cosmo)
 
-        L    = self.ParticleSnapshot.L
+        L    = float(self.ParticleSnapshot.L)
         axes = ['x', 'y'] if self.ParticleSnapshot.is2D else ['x', 'y', 'z']
-        tot_offsets = np.zeros([len(self.ParticleSnapshot.cat), len(axes)])
-
         keys = _check_p_keys(self.model) #Names of extra (tabulated) model parameters
-        
-        for j in tqdm(range(self.HaloNDCatalog.cat.size), desc = 'Baryonifying matter', disable = not self.verbose):
+        cat  = self.HaloNDCatalog.cat
 
-            M_j   = self.HaloNDCatalog.cat['M'][j]
-            pos_j = [self.HaloNDCatalog.cat[ax][j] for ax in axes] #CARTESIAN COORDINATES (z is not redshift)
-            o_j   = {key : self.HaloNDCatalog.cat[key][j] for key in keys} #Other properties
+        M   = np.asarray(cat['M'], dtype = float)
+        a   = 1/(1 + self.HaloNDCatalog.redshift)
+        R   = _halo_radius(self.mass_def, cosmo, M, np.full(M.shape, a)) #in physical Mpc
+        R_q = np.clip(self.epsilon_max * R/a, 0, L/2) #The radius for querying points, in comoving coords. Can't query distances more than half box-size.
+        pos = np.zeros([M.size, 3])
+        for i, ax in enumerate(axes): pos[:, i] = cat[ax] #CARTESIAN COORDINATES (z is not redshift)
+        other = {key : np.asarray(cat[key]) for key in keys} #Other properties
 
-            a_j = 1/(1 + self.HaloNDCatalog.redshift)
-            R_j = self.mass_def.get_radius(cosmo, M_j, a_j) #in physical Mpc
-            R_q = self.epsilon_max * R_j/a_j #The radius for querying points, in comoving coords
-            R_q = np.clip(R_q, 0, L/2) #Can't query distances more than half box-size.
+        #In the original particle order. With threads, zeroed by all of them: the loop would otherwise map the
+        #pages at its first (scattered) writes, which took more than half of its time with 24 threads
+        offsets = _zeros([self.ParticleSnapshot.cat.size, 3], self._n_threads())
 
-            inds = self.tree.query_ball_point(pos_j, R_q)
-            dxs  = [self.ParticleSnapshot.cat[ax][inds] - p for ax, p in zip(axes, pos_j)]
-            d    = self.compute_distance(*dxs)
+        #A subclass that changes the distance/periodicity helpers gets them used, with the KDTree, halo by halo
+        custom = any(getattr(type(self), f) is not getattr(DefaultRunnerSnapshot, f) for f in ('compute_distance', 'enforce_periodicity'))
+
+        if M.size == 0:
+            pass #No halos, so no displacements
+        elif custom:
+            self._offsets_kdtree(offsets, pos, R_q, M, a, other, axes)
+        else:
+            index  = self._particle_index()
+            curves = None
+            if _batch_method(self.model, '_displacement_curves', 'displacement', '_readout') is not None:
+                curves = self.model._displacement_curves(M, np.full(M.shape, a), r = R_q, n_threads = self._n_threads(), **other)
+
+            if curves is not None: self._offsets_tabulated(index, offsets, pos, R_q, curves, L)
+            else:                  self._offsets_per_halo(index, offsets, pos, R_q, M, a, other, L)
+
+        #Apply the offsets, and wrap into [0, L), so x == L maps to 0 (as periodic KDTrees expect).
+        #Same as new_cat = cat.copy(); new_cat[ax] = np.mod(new_cat[ax] + offsets, L), but in parallel.
+        cat     = self.ParticleSnapshot.cat
+        new_cat = np.empty_like(cat)
+        with self._threads():
+            if cat.flags.c_contiguous and new_cat.flags.c_contiguous and (cat.dtype.itemsize % 8 == 0) and (not cat.dtype.hasobject):
+                _copy(cat.view(np.uint64), new_cat.view(np.uint64)) #The raw bytes of all fields, in parallel
+            else:
+                new_cat[...] = cat
+            _shift_and_wrap(new_cat['x'], new_cat['y'], np.empty(0) if self.ParticleSnapshot.is2D else new_cat['z'], offsets, L)
+
+        return new_cat
+
+
+    def _offsets_tabulated(self, index, offsets, pos, R_q, curves, L):
+        """Offsets from a tabulated displacement model, with the compiled (optionally threaded) loop."""
+
+        nodes, table, shift, R_cut = curves
+        n = index['n']
+
+        #The halos overlapping each plane of cells along x
+        planes = [[] for _ in range(n[0])]
+        for h in range(R_q.size):
+            lo, hi = _cell_range(pos[h, 0], R_q[h], L, n[0])
+            for j in range(lo, hi + 1): planes[j % n[0]].append(h)
+        plane_start = np.concatenate([[0], np.cumsum([len(p) for p in planes])]).astype(np.int64)
+        plane_halo  = np.array([h for p in planes for h in p], dtype = np.int64)
+        plane_order = np.random.default_rng(0).permutation(n[0]).astype(np.int64) #Spread busy planes over the threads
+
+        with self._threads(), tqdm(total = R_q.size, desc = 'Baryonifying matter', disable = not self.verbose) as pbar:
+            _snapshot_offsets(index['xs'], index['ys'], index['zs'], index['order'], index['starts'], n, L,
+                              pos, R_q, np.asarray(R_cut, dtype = float), np.asarray(shift, dtype = float),
+                              nodes, np.ascontiguousarray(table, dtype = float),
+                              plane_start, plane_halo, plane_order, offsets)
+            pbar.update(R_q.size)
+
+
+    def _offsets_per_halo(self, index, offsets, pos, R_q, M, a, other, L):
+        """Offsets from any other displacement model, called once per halo."""
+
+        for j in tqdm(range(M.size), desc = 'Baryonifying matter', disable = not self.verbose):
+
+            o_j = {key : v[j] for key, v in other.items()} #Other properties
+            idx, sep = _ball(index['xs'], index['ys'], index['zs'], index['starts'], index['n'], L,
+                             pos[j, 0], pos[j, 1], pos[j, 2], R_q[j])
+            d = sep[:, 3]
+
+            #A particle exactly at the halo center has no direction. Give it zero displacement.
+            with np.errstate(invalid = 'ignore', divide = 'ignore'):
+                hats = [np.where(d > 0, sep[:, i]/d, 0) for i in range(3)]
+
+            #Compute the displacement needed
+            offset = self.model.displacement(d, M[j], a, **o_j)
+            offset = np.where(np.isfinite(offset), offset, 0)
+            offsets[index['order'][idx]] += np.vstack([offset*h for h in hats]).T
+
+
+    def _offsets_kdtree(self, offsets, pos, R_q, M, a, other, axes):
+        """
+        Offsets found halo by halo with the KDTree and the `compute_distance`/`enforce_periodicity` methods,
+        for subclasses that redefine those.
+        """
+
+        cat = self.ParticleSnapshot.cat
+        for j in tqdm(range(M.size), desc = 'Baryonifying matter', disable = not self.verbose):
+
+            o_j   = {key : v[j] for key, v in other.items()} #Other properties
+            pos_j = pos[j, :len(axes)]
+            inds  = self.tree.query_ball_point(pos_j, R_q[j])
+            dxs   = [cat[ax][inds] - p for ax, p in zip(axes, pos_j)]
+            d     = self.compute_distance(*dxs)
 
             #A particle exactly at the halo center has no direction. Give it zero displacement.
             with np.errstate(invalid = 'ignore', divide = 'ignore'):
                 hats = [np.where(d > 0, self.enforce_periodicity(dx)/d, 0) for dx in dxs]
 
             #Compute the displacement needed
-            offset = self.model.displacement(d, M_j, a_j, **o_j)
+            offset = self.model.displacement(d, M[j], a, **o_j)
             offset = np.where(np.isfinite(offset), offset, 0)
-            tot_offsets[inds] += np.vstack([offset*h for h in hats]).T
-
-        new_cat = self.ParticleSnapshot.cat.copy()
-
-        #Apply the offsets, and wrap into [0, L), so x == L maps to 0 (as periodic KDTrees expect)
-        for i, ax in enumerate(axes):
-            new_cat[ax] = np.mod(new_cat[ax] + tot_offsets[:, i], L)
-
-        return new_cat
+            offsets[inds, :len(axes)] += np.vstack([offset*h for h in hats]).T
