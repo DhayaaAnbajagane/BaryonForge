@@ -159,6 +159,9 @@ def generate_operator_method(op, reflect = False):
 
             return CombinedProfile(op, self)
 
+    else:
+        raise ValueError(f"Unsupported profile operation: {op!r}.")
+
     return operator_method
 
 
@@ -259,7 +262,11 @@ def safe_Pchip_minimize(x, y):
         return interpolate.PchipInterpolator(x[ind], y[ind])(0)
     
     except ValueError:
-        warnings.warn(f"Cannot minimize. Interpolator crashed. Reverting to using np.min()", UserWarning)
+        warnings.warn(
+            "Cannot minimize. Interpolator crashed. Returning the sampled y value "
+            "whose x value is closest to zero.",
+            UserWarning,
+        )
         return y[cen]
     
 

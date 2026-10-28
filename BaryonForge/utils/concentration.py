@@ -112,7 +112,8 @@ class BaseGenericConcentration(ccl.halos.halo_model_base.Concentration):
         M : array_like of float
             Halo masses (in :math:`M_\odot`) expressed in the **target** mass definition
             ``self.mass_def``. Must satisfy
-            ``self.M_in_lo < M.min()`` and ``M.max() < self.M_in_hi``.
+            The mass must lie within the target-mass interval obtained by translating
+            the internal input grid from ``mdef_in`` to ``mass_def``.
         a : float
             Scale factor, :math:`a = 1/(1+z)`.
 
@@ -125,13 +126,20 @@ class BaseGenericConcentration(ccl.halos.halo_model_base.Concentration):
         Raises
         ------
         AssertionError
-            If any requested mass lies outside the open interval
-            ``(self.M_in_lo, self.M_in_hi)``. Widen ``M_in_lo``/``M_in_hi`` or
-            adjust your query if you need a broader range.
+            If any requested mass lies outside the translated target-mass grid.
+            Widen ``M_in_lo``/``M_in_hi`` or adjust your query if you need a
+            broader range.
         """
-        
-        assert np.min(M) > self.M_in_lo, f"M_in_lo ({self.M_in_lo}) > min[M_input] ({np.min(M)})"
-        assert np.max(M) < self.M_in_hi, f"M_in_hi ({self.M_in_hi}) < max[M_input] ({np.max(M)})"
+
+        if (not np.isfinite(self.M_in_lo) or not np.isfinite(self.M_in_hi)
+                or self.M_in_lo <= 0 or self.M_in_hi <= self.M_in_lo):
+            raise ValueError("M_in_lo and M_in_hi must define a positive, increasing input-mass range.")
+        if int(self.M_in_N) != self.M_in_N or self.M_in_N < 2:
+            raise ValueError("M_in_N must be at least 2 to build a concentration translation grid.")
+
+        M = np.asarray(M, dtype = float)
+        if M.size == 0 or not np.all(np.isfinite(M)) or np.any(M <= 0):
+            raise ValueError("Requested target masses must be finite and strictly positive.")
 
         Min   = np.geomspace(self.M_in_lo, self.M_in_hi, self.M_in_N)
         cin   = self.cmodel(mass_def = self.mdef_in)(cosmo, Min, a)
@@ -143,6 +151,21 @@ class BaseGenericConcentration(ccl.halos.halo_model_base.Concentration):
         Mout  = calc(cosmo, Min, a)
         Rout  = self.mass_def.get_radius(cosmo, Mout, a)/a
         cout  = Rout / r_s
+
+        Mout = np.asarray(Mout, dtype = float)
+        if (not np.all(np.isfinite(Mout)) or np.any(Mout <= 0)
+                or np.any(np.diff(Mout) <= 0)):
+            raise ValueError("The translated target-mass grid must be finite, positive, and strictly increasing.")
+        if not np.all(np.isfinite(cout)) or np.any(cout <= 0):
+            raise ValueError("The translated concentration grid must be finite and strictly positive.")
+        assert np.min(M) >= Mout[0], (
+            f"Requested target mass {np.min(M)} is below the translated grid minimum {Mout[0]}. "
+            "Decrease M_in_lo to extend the grid."
+        )
+        assert np.max(M) <= Mout[-1], (
+            f"Requested target mass {np.max(M)} is above the translated grid maximum {Mout[-1]}. "
+            "Increase M_in_hi to extend the grid."
+        )
         
         c_use = np.exp(np.interp(np.log(M), np.log(Mout), np.log(cout)))
         

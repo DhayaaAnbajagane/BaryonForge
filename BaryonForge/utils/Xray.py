@@ -33,6 +33,12 @@ class EmissivityTable:
         to True will return 0 emissivity for these regions, instead of
         returning out-of-bounds errors. These temperatures can occur in our 
         models for low-mass or large-separation scenarios.
+
+    Query behavior
+    --------------
+    ``__call__(T, Z, a)`` accepts a scalar scale factor, values broadcastable to
+    the temperature shape, or (for multidimensional temperature arrays) one
+    scale factor per leading-axis halo.
     """
 
     sentinel_value = 1e-100
@@ -56,6 +62,8 @@ class EmissivityTable:
         assert np.all(T > 0),  "All T values must be strictly positive."
         assert np.all(Z >= 0), "All Z values must be strictly non-negative."
         assert np.all(a > 0),  "All a values must be strictly positive."
+        if not np.all(np.isfinite(emissivity)) or np.any(emissivity < 0):
+            raise ValueError("Emissivity values must be finite and non-negative.")
 
         self.T_range = (T.min(), T.max())
         self.Z_range = (Z.min(), Z.max())
@@ -126,22 +134,36 @@ class EmissivityTable:
 
     def __call__(self, T, Z, a):
 
-        #Flatten inputs so any shape (eg. (N_mass, N_radius)) is supported, and reshape at the end
+        #Flatten query coordinates so any shape (eg. (N_mass, N_radius)) is
+        #supported, and reshape the result to T's original shape.
         shape = np.shape(T)
         T = np.asarray(T, dtype = float).ravel()
-        Z = np.broadcast_to(np.asarray(Z, dtype = float), shape).ravel()
-        a = np.atleast_1d(a).astype(float)
+        Z = np.asarray(Z, dtype = float)
+        a = np.asarray(a, dtype = float)
+        z_shape, a_shape = Z.shape, a.shape
+        if shape == () and Z.size == 1: Z = Z.reshape(())
+        if shape == () and a.size == 1: a = a.reshape(())
+        if a.ndim == 1 and len(shape) > 1 and a.size == shape[0]:
+            a = a.reshape((a.size,) + (1,) * (len(shape) - 1))
+        try:
+            Z = np.broadcast_to(Z, shape).ravel()
+            a = np.broadcast_to(a, shape).ravel()
+        except ValueError as exc:
+            raise ValueError(
+                f"Z and a query shapes must broadcast to the temperature shape {shape}; "
+                f"got Z={z_shape} and a={a_shape}."
+            ) from exc
 
         self._assert_in_bounds(T, Z, a)
 
         if self.pad_low_T:
             values = np.zeros_like(T)
             usage  = T >= self.T_range[0]
-            points = np.column_stack([np.log(T[usage]), Z[usage], a[0] * np.ones(usage.sum())])
+            points = np.column_stack([np.log(T[usage]), Z[usage], a[usage]])
             tmpout = self.interpolator(points)
             values[usage] = np.exp(tmpout) + self.sentinel_value
         else:
-            points = np.column_stack([np.log(T), Z, a[0] * np.ones_like(Z)])
+            points = np.column_stack([np.log(T), Z, a])
             values = self.interpolator(points)
             values = np.exp(values) + self.sentinel_value
 

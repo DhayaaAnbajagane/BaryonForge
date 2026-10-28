@@ -7,13 +7,15 @@ performed by the current implementation, including its finite integration
 ranges, clipping, interpolation, and soft cutoff conventions.
 """
 
+from copy import deepcopy
+from operator import add
 import numpy as np
 import pyccl as ccl
 import warnings
 
 from scipy import interpolate, integrate
 from .Base import BaseBFGProfiles, hyper_params
-from .misc import WrappedProfile
+from .misc import CombinedProfile, WrappedProfile
 
 __all__ = ['model_params', 'Schneider25Profiles',
            'DarkMatter', 'TwoHalo', 'Stars', 'SatelliteStars',
@@ -621,6 +623,9 @@ class InnerGas(Schneider25Profiles):
         \rho_{\rm iga}(r)=\frac{f_{\rm iga}M_{\rm tot}}{N_{\rm iga}}
         \left[(1-w)h^3+w\,r^{-3}e^{-r/R}k_{\rm cut}(r)\right].
 
+    At ``r = 0``, the taper has its limiting value ``w = 0`` and the returned
+    profile uses the finite inner value ``h**3`` before mass normalization.
+
     ``h`` is read from the CCL cosmology, and :math:`M_{\rm tot}` is obtained
     by integrating the corresponding :class:`DarkMatter` profile.
     """
@@ -660,8 +665,17 @@ class InnerGas(Schneider25Profiles):
         M_tot = np.atleast_1d(M_tot)[:, None]
         
         kfac = self._soft_cutoff(r_use[None, :]) #Extra exponential cutoff
-        prof  = np.power(r_use, -3) * np.exp(-r_use/R[:, None]) * kfac
-        wgt   = 0.5 * (1 + np.tanh(np.log10(r_use/self.r_min_iga)/0.02))
+        #Avoid evaluating the formally divergent outer branch at the exact
+        #origin, where its taper is exactly zero and the model uses h**3.
+        at_origin = r_use == 0
+        r_for_weight = np.where(at_origin, self.r_min_iga, r_use)
+        wgt   = 0.5 * (1 + np.tanh(np.log10(r_for_weight/self.r_min_iga)/0.02))
+        wgt   = np.where(at_origin, 0.0, wgt)
+        # The taper can round to exactly zero below r_min_iga. Use a finite
+        # outer radius wherever that branch is inactive so 0 * r**-3 cannot
+        # become NaN for extremely small positive radii.
+        r_outer = np.where(wgt == 0, self.r_min_iga, r_use)
+        prof  = np.power(r_outer, -3) * np.exp(-r_outer/R[:, None]) * kfac
         prof  = (1 - wgt)*h**3 + wgt*prof
         prof *= f_iga[:, None]*M_tot/Normalization
         
@@ -999,6 +1013,10 @@ class DarkMatterBaryon(Schneider25Profiles):
         Central-galaxy stellar profile.
     collisionlessmatter : CollisionlessMatter, optional
         Relaxed collisionless-matter profile.
+        If omitted, only the exact built-in `Schneider25.Gas` composition
+        `HotGas + InnerGas` is auto-split into copied components; subclasses or modified
+        compositions require an explicit CLM. Explicitly supplied `stars` and `darkmatter`
+        are also copied, while omitted components use the CLM's own defaults.
     darkmatter : DarkMatter, optional
         Reference one-halo dark-matter profile used for mass normalization.
     twohalo : TwoHalo, optional
@@ -1024,7 +1042,37 @@ class DarkMatterBaryon(Schneider25Profiles):
         if self.Stars is None: self.Stars = Stars(**kwargs)
         if self.TwoHalo is None: self.TwoHalo = TwoHalo(**kwargs)
         if self.DarkMatter is None: self.DarkMatter = DarkMatter(**kwargs)
-        if self.CollisionlessMatter is None: self.CollisionlessMatter = CollisionlessMatter(**kwargs)
+        if self.CollisionlessMatter is None:
+            # Copy only caller-supplied components; unspecified profiles retain
+            # the CLM's historical defaults.
+            clm_components = {}
+            if gas is not None:
+                gas_sum = getattr(gas, "myprof", None) if type(gas) is Gas else None
+                hotgas = getattr(gas_sum, "Profile1", None)
+                innergas = getattr(gas_sum, "Profile2", None)
+                standard_gas = (
+                    type(gas) is Gas
+                    and type(gas_sum) is CombinedProfile
+                    and gas_sum.op is add
+                    and gas_sum.reflect is False
+                    and type(hotgas) is HotGas
+                    and type(innergas) is InnerGas
+                    and not ({"real", "_real"} & vars(gas).keys())
+                    and not ({"real", "_real", "_apply"} & vars(gas_sum).keys())
+                )
+                if not standard_gas:
+                    raise ValueError(
+                        "Only the unmodified built-in Schneider25 Gas profile with "
+                        "HotGas + InnerGas can be auto-mapped to the default relaxed "
+                        "CollisionlessMatter. Pass an explicit collisionlessmatter profile "
+                        "for subclasses or modified compositions."
+                    )
+                clm_components['hotgas'] = hotgas
+                clm_components['innergas'] = innergas
+            if stars is not None: clm_components['stars'] = stars
+            if darkmatter is not None: clm_components['darkmatter'] = darkmatter
+            clm_components = deepcopy(clm_components)
+            self.CollisionlessMatter = CollisionlessMatter(**clm_components, **kwargs)
             
         super().__init__(**kwargs, r_min_int = r_min_int, r_max_int = r_max_int, r_steps = r_steps)
         

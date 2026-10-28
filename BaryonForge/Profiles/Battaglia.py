@@ -35,9 +35,9 @@ class Pressure(ccl.halos.profiles.HaloProfile):
         are in the mass definition of `Model_def`, so this should match it. A warning is raised
         if it does not. Default is `MassDef200c`.
     truncate : float, optional
-        Radius (in units of \( R / R_{\text{def}} \), where \( R_{\text{def}} \) is the halo 
-        radius defined via the chosen spherical overdensity) at which to truncate the profiles 
-        and set them to zero. Default is `False`, meaning no truncation is applied.
+        Dimensionless radius :math:`r/R_\Delta` beyond which the profile is set to zero.
+        The radius :math:`R_\Delta` is defined by the calibration in `Model_def`.
+        Default is `False`, meaning no truncation is applied.
 
     Notes
     -----
@@ -76,7 +76,7 @@ class Pressure(ccl.halos.profiles.HaloProfile):
     >>> r = np.logspace(-2, 1, 50)  # Radii in comoving Mpc
     >>> M = 1e14  # Halo mass in solar masses
     >>> a = 0.5  # Scale factor corresponding to redshift z
-    >>> pressure_profile = battaglia_model._real(my_cosmology, r, M, a)
+    >>> pressure_profile = battaglia_model.real(my_cosmology, r, M, a)
     """
 
     def __init__(self, Model_def, mass_def = ccl.halos.massdef.MassDef200c, truncate = False):

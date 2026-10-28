@@ -57,50 +57,70 @@ The latter will keep the source files in the location you git clone'd from, and 
 
 ## Quickstart
 
+Run this template from the repository root. Replace the map and catalog placeholders with your data.
+
 ```python
+import numpy as np
 import BaryonForge as bfg
 import pyccl as ccl
 
-#Add the healpix map and the lightcone halo catalog into the respective data objects
-Shell   = bfg.utils.LightconeShell(map = HealpixMap, cosmo = cosmo_dict)
-Catalog = bfg.utils.HaloLightConeCatalog(ra = ra, dec = dec, M = M200c, z = z, cosmo = cosmo_dict, cdelta = c200c)
+# Create the cosmology before building objects that need its parameter dictionary.
+cosmo = ccl.Cosmology(
+    Omega_c=0.26, Omega_b=0.04, h=0.7, sigma8=0.8, n_s=0.96,
+    matter_power_spectrum="linear",
+)
+cosmo_dict = bfg.utils.build_cosmodict(cosmo)
 
-#Define a cosmology object, to be used in all profile calculations
-cosmo   = ccl.Cosmology(Omega_c = 0.26, h = 0.7, Omega_b = 0.04, sigma8 = 0.8, n_s = 0.96)
+# Replace these valid Python placeholders with your map and catalog arrays.
+HealpixMap = ...
+ra = dec = M200c = z = c200c = ...
+Shell = bfg.utils.LightconeShell(map=HealpixMap, cosmo=cosmo_dict)
+Catalog = bfg.utils.HaloLightConeCatalog(
+    ra=ra, dec=dec, M=M200c, z=z, cosmo=cosmo_dict, cdelta=c200c,
+)
 
-#Define the DMO and DMB model which are the root of the baryonification routine
-#The model params can be specified during initialization of the class.
-#The Baryonification 2D class generates the offsets of density field.
-#We setup an interpolator to speed up the calculations.
-DMO     = bfg.Profiles.DarkMatterOnly(M_c = 1e14, proj_cutoff = 100, ...)
-DMB     = bfg.Profiles.DarkMatterBaryon(M_c = 1e14, proj_cutoff = 100, ...)
-model   = bfg.Profiles.Baryonification2D(DMO, DMB, cosmo)
-model.setup_interpolator(z_min = Catalog.cat['z'].min(), z_max = Catalog.cat['z'].max(), N_samples_z = 10,
-                         M_min = Catalog.cat['M'].min(), M_max = Catalog.cat['M'].max(), N_samples_Mass = 10,
-                         R_min = 1e-3, R_max = 3e2, N_samples_R = 500,)
+# Load the source-tree example's Schneider19 parameter dictionary.
+profile_params = np.load("examples/default_config.npy", allow_pickle=True)[()]
+profile_params["M_c"] = 1e14
+profile_params["proj_cutoff"] = 100
 
-#The halo pressure profile as well. This is converted to Compton-y, convolved with a 
-#Healpix window function, and then tabulated for speedup
-PRESS   = bfg.Profiles.Pressure(theta_ej = 8, theta_co = 0.1, mu_theta_ej = 0.1, ...)
-PRESS   = bfg.Profiles.ThermalSZ(PRESS)
-PRESS   = bfg.Profiles.misc.ComovingToPhysical(PRESS, factor = -3)
-Pixel   = bfg.utils.HealPixel(NSIDE = 1024)
-PRESS   = bfg.utils.ConvolvedProfile(PRESS, Pixel)
-PRESS   = bfg.utils.TabulatedProfile(PRESS, cosmo)
-PRESS.setup_interpolator(z_min = Catalog.cat['z'].min(), z_max = Catalog.cat['z'].max(), N_samples_z = 10,
-                         M_min = Catalog.cat['M'].min(), M_max = Catalog.cat['M'].max(), N_samples_Mass = 10,
-                         R_min = 1e-3, R_max = 3e2, N_samples_R = 500,)
+DMO = bfg.Profiles.DarkMatterOnly(**profile_params)
+DMB = bfg.Profiles.DarkMatterBaryon(**profile_params)
+model = bfg.Profiles.Baryonification2D(DMO, DMB, cosmo)
+model.setup_interpolator(
+    z_min=Catalog.cat["z"].min(), z_max=Catalog.cat["z"].max(),
+    N_samples_z=10, M_min=Catalog.cat["M"].min(),
+    M_max=Catalog.cat["M"].max(), N_samples_Mass=10,
+    R_min=1e-3, R_max=3e2, N_samples_R=500,
+)
 
-#Run the baryonification on this one shell
-Runner  = bfg.Runners.BaryonifyShell(Catalog, Shell, model = model, epsilon_max = 20)
-New_map = Runner.process()
+# Build a pressure profile, convert it to Compton-y, convolve, and tabulate it.
+gas = bfg.Profiles.Gas(**profile_params)
+pressure_dmb = bfg.Profiles.DarkMatterBaryon(
+    **profile_params, twohalo=bfg.Profiles.misc.Zeros(),
+)
+pressure = bfg.Profiles.Pressure(gas=gas, darkmatterbaryon=pressure_dmb)
+tsz = bfg.Profiles.ThermalSZ(thermalpressure=pressure)
+tsz = bfg.Profiles.misc.ComovingToPhysical(tsz, factor=-3)
+pixel = bfg.utils.HealPixel(NSIDE=1024)
+profile = bfg.utils.ConvolvedProfile(tsz, pixel)
+profile = bfg.utils.TabulatedProfile(profile, cosmo)
+profile.setup_interpolator(
+    z_min=Catalog.cat["z"].min(), z_max=Catalog.cat["z"].max(),
+    N_samples_z=10, M_min=Catalog.cat["M"].min(),
+    M_max=Catalog.cat["M"].max(), N_samples_Mass=10,
+    R_min=1e-3, R_max=3e2, N_samples_R=500,
+)
 
-#Run the profile painting on this one shell
-Runner  = bfg.Runners.PaintProfilesShell(Catalog, Shell, model = PRESS, epsilon_max = 20)
-New_map = Runner.process()
+baryonified_map = bfg.Runners.BaryonifyShell(
+    Catalog, Shell, model=model, epsilon_max=20,
+).process()
+painted_map = bfg.Runners.PaintProfilesShell(
+    Catalog, Shell, model=profile, epsilon_max=20,
+).process()
 ```
 
-See the ```/examples``` folder for more notebooks demonstrating how to use the code for different applications. Some examples also download simulations from the [Ulagam Simulation Suite](https://arxiv.org/abs/2310.02349).
+The profile parameters are loaded from `examples/default_config.npy`; the examples folder contains other notebooks for model-specific workflows.
 
 ## Attribution
 

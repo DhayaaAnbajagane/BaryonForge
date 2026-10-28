@@ -1,3 +1,4 @@
+from copy import deepcopy
 import numpy as np
 import pyccl as ccl
 import warnings
@@ -238,7 +239,7 @@ class DarkMatter(SchneiderProfiles):
     .. math::
 
         \\rho_{\\text{DM}}(r) = \\frac{\\rho_c}{\\frac{r}{r_s} \\left(1 + \\frac{r}{r_s}\\right)^2} 
-        \\cdot \\frac{1}{\\left(1 + \\frac{r}{r_t}\\right)^2}
+        \\cdot \\frac{1}{\\left[1 + \\left(\\frac{r}{r_t}\\right)^2\\right]^2}
 
     where:
 
@@ -330,7 +331,7 @@ class TwoHalo(SchneiderProfiles):
 
           b(M) = 1 + \\frac{q \\nu_M^2 - 1}{\\delta_c} + \\frac{2p}{\\delta_c \\left(1 + (q \\nu_M^2)^p\\right)}
 
-    - :math:`\\nu_M` is the peak height parameter, :math:`\\nu_M = \\delta_c / \\sigma(M)`.
+    - :math:`\\nu_M` is the peak height parameter, :math:`\\nu_M = \\delta_c / \\sigma(M,a)`.
     - :math:`\\delta_c` is the critical density for spherical collapse.
     - :math:`\\xi_{\\text{mm}}(r)` is the matter-matter correlation function.
     - :math:`\\rho_{\\text{m}}(a)` is the mean matter density at scale factor `a`.
@@ -508,7 +509,7 @@ class Gas(SchneiderProfiles):
     .. math::
 
         \\rho_{\\text{gas}}(r) = \\frac{f_{\\text{gas}} M_{\\text{tot}}}{N} \\cdot 
-        \\frac{1}{(1 + u)^{\\beta}} \\cdot \\frac{1}{(1 + v)^{(\\delta - \\beta)/\\gamma}}
+        \\frac{1}{(1 + u)^{\\beta}} \\cdot \\frac{1}{(1 + v^{\\gamma})^{(\\delta - \\beta)/\\gamma}}
 
     where:
 
@@ -524,8 +525,8 @@ class Gas(SchneiderProfiles):
     - :math:`N` is the normalization factor to ensure mass conservation.
     - :math:`u = \\frac{r}{R_{\\text{co}}}` and :math:`v = \\frac{r}{R_{\\text{ej}}}` are dimensionless radii.
     - :math:`\\beta` is the power-law slope for :math:`R_{\\text{co}} \lesssim r \lesssim R_{\\text{ej}}`
-    - :math:`\\delta` is the power-law slope at :math:`r \sim \lesssim R_{\\text{ej}}`
-    - :math:`\\gamma` is the power-law slope for :math:`r \gg R_{\\text{ej}}`
+    - :math:`\\delta` is the asymptotic outer slope for :math:`r \gg R_{\\text{ej}}`.
+    - :math:`\\gamma` controls the sharpness of the transition near :math:`R_{\\text{ej}}`.
     - :math:`R_{\\text{co}} = \\theta_{\\text{co}} R` is the core radius.
     - :math:`R_{\\text{ej}} = \\theta_{\\text{ej}} R` is the ejection radius.
     - :math:`r` is the radial distance.
@@ -632,6 +633,8 @@ class ShockedGas(Gas):
     - :math:`r` is the radial distance from the halo center.
     - The factor of 0.25 represents the maximum possible density drop due to the shock.
 
+    At ``r = 0``, the shock factor is defined by its limit of 1.
+
     See the `Gas` class for more details on the base gas profile and additional parameters.
     """
     
@@ -652,7 +655,10 @@ class ShockedGas(Gas):
         #Minimum is 0.25 since a factor of 4x drop is the maximum possible for a shock
         #Evaluate with the array inputs so rho_gas always has shape (M, r)
         rho_gas = super()._real(cosmo, r_use, M_use, a)
-        g_arg   = 1/self.width_shock*(np.log(r_use) - np.log(self.epsilon_shock*R)[:, None])
+        at_origin = r_use == 0
+        r_log = np.log(np.where(at_origin, 1.0, r_use))
+        g_arg   = 1/self.width_shock*(r_log - np.log(self.epsilon_shock*R)[:, None])
+        g_arg   = np.where(at_origin[None, :], -np.inf, g_arg)
         g_arg   = np.where(g_arg > 1e2, np.inf, g_arg) #To prevent overflows when doing exp
         factor  = (1 - 0.25)/(1 + np.exp(g_arg)) + 0.25
 
@@ -736,7 +742,7 @@ class CollisionlessMatter(SchneiderProfiles):
 
        .. math::
 
-           M_{\\text{CLM}}(r) = f_{\\text{clm}}(M_{\\text{DM}} + M_{\\text{gas}} + M_{\\text{stars}})
+           M_f(r) = f_{\\text{clm}} M_i(r) + M_{\\text{cga}}(\\zeta r) + M_{\\text{gas}}(\\zeta r)
 
        where :math:`f_{\\text{clm}}` is calculated using:
 
@@ -750,14 +756,16 @@ class CollisionlessMatter(SchneiderProfiles):
 
        .. math::
 
-           \\zeta_{\\text{new}} = a \\left( \\left(\\frac{M_{\\text{DM}}}{M_{\\text{CLM}}}\\right)^n - 1 \\right) + 1
+           \\zeta_{\\text{new}} = 1 + a_{\\rm relax} \\left[\\left(\\frac{M_i}{M_f}\\right)^n - 1\\right]
 
-       This equation ensures that the mass distribution relaxes towards equilibrium over successive iterations, where \( a \) and \( n \) are parameters controlling the relaxation process.
+       Here :math:`M_f=f_{\\rm clm}M_i+M_{\\rm cga}(\\zeta r)+M_{\\rm gas}(\\zeta r)` is the current total enclosed mass.
+       The code parameter `a` is the relaxation amplitude :math:`a_{\\rm relax}`, distinct from the scale factor.
 
     5. **Density Profile Calculation**: The final collisionless matter density profile is derived from the adjusted cumulative mass:
 
        .. math::
 
+           M_{\\rm CLM}(r)=f_{\\rm clm}M_i(r/\\zeta(r)), \qquad M_{\\rm CLM}(R)=f_{\\rm clm}M.
            \\rho_{\\text{CLM}}(r) = \\frac{1}{4\\pi r^2} \\frac{d}{dr} M_{\\text{CLM}}(r)
 
 
@@ -1016,13 +1024,21 @@ class DarkMatterBaryon(SchneiderProfiles):
         `Stars` object is created using `kwargs`.
     collisionlessmatter : CollisionlessMatter, optional
         An instance of the `CollisionlessMatter` class defining the profile that combines dark matter, 
-        gas, and stars. If not provided, a default `CollisionlessMatter` object is created using `kwargs`.
+        gas, and stars. If not provided, any explicitly supplied `gas`, `stars`, or `darkmatter`
+        inputs are copied into the CLM so its relaxation cutoff does not mutate caller-owned
+        profiles. Components omitted by the caller use the CLM's own defaults.
     darkmatter : DarkMatter, optional
         An instance of the `DarkMatter` class defining the NFW profile for dark matter. If not provided, 
         a default `DarkMatter` object is created using `kwargs`.
     twohalo : TwoHalo, optional
         An instance of the `TwoHalo` class defining the two-halo term profile, representing 
         the contribution of neighboring halos. If not provided, a default `TwoHalo` object is created using `kwargs`.
+    r_min_int : float, optional
+        Lower radius for the one-halo mass normalization, in comoving Mpc. Default is 1e-5.
+    r_max_int : float, optional
+        Upper radius for the one-halo mass normalization, in comoving Mpc. Default is 100.
+    r_steps : int, optional
+        Number of logarithmically spaced normalization samples. Default is 500.
     **kwargs
         Additional keyword arguments passed to initialize the `Gas`, `Stars`, `CollisionlessMatter`, 
         `DarkMatter`, and `TwoHalo` profiles, as well as other parameters from `SchneiderProfiles`.
@@ -1083,7 +1099,15 @@ class DarkMatterBaryon(SchneiderProfiles):
         if self.Stars is None: self.Stars = Stars(**kwargs)
         if self.TwoHalo is None: self.TwoHalo = TwoHalo(**kwargs)
         if self.DarkMatter is None: self.DarkMatter = DarkMatter(**kwargs)
-        if self.CollisionlessMatter is None: self.CollisionlessMatter = CollisionlessMatter(**kwargs)
+        if self.CollisionlessMatter is None:
+            # The relaxation constructor changes cutoff on its component profiles.
+            # Copy only explicit inputs; unspecified profiles retain the CLM defaults.
+            clm_components = {}
+            if gas is not None: clm_components['gas'] = gas
+            if stars is not None: clm_components['stars'] = stars
+            if darkmatter is not None: clm_components['darkmatter'] = darkmatter
+            clm_components = deepcopy(clm_components)
+            self.CollisionlessMatter = CollisionlessMatter(**clm_components, **kwargs)
             
         super().__init__(**kwargs, r_min_int = r_min_int, r_max_int = r_max_int, r_steps = r_steps)
         

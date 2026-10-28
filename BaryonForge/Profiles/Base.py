@@ -64,6 +64,20 @@ class BaseBFGProfiles(ccl.halos.profiles.HaloProfile):
         The upper padding factor for the projection integral in real-space. Default is 10.
     n_per_decade_proj : int, optional
         Number of integration points per decade in the real-space projection integral. Default is 10.
+    r_min_int : float, optional
+        Lower radius for profile normalizations and internal integrations, in comoving Mpc.
+        Default is ``1e-6``.
+    r_max_int : float, optional
+        Upper radius for profile normalizations and internal integrations, in comoving Mpc.
+        Default is ``1e3``.
+    r_steps : int, optional
+        Number of logarithmically spaced samples used for internal integrations. Default is 500.
+    cutoff : float, optional
+        Soft real-space cutoff scale, in comoving Mpc. Default is ``1e3``. This also supplies
+        the default projection cutoff unless ``proj_cutoff`` is explicitly set.
+    proj_cutoff : float, optional
+        Upper integration radius for real-space projection, in comoving Mpc. Default is the
+        value of ``cutoff``; it is a separate setting and can be overridden independently.
     xi_mm : callable, optional
         A function that returns the matter-matter correlation function at different radii.
         Default is None, in which case we use the CCL inbuilt model.
