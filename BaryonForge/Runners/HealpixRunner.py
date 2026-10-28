@@ -382,8 +382,9 @@ class DefaultRunner(object):
         model once per halo, as before.
         """
 
+        keys = _check_p_keys(model)
         return _evaluate_pairs(model, method, cosmo, r, hid, H['M'][halos], H['a'][halos],
-                               {k : v[halos] for k, v in H['other'].items()})
+                               {k : H['other'][k][halos] for k in keys})
     
     
     def build_Rmat(self, A, ref):
@@ -500,6 +501,11 @@ class BaryonifyShell(DefaultRunner):
         if _all_close_to_zero(orig_map): #np.allclose(orig_map, 0), stopping at the first non-zero pixel
             return orig_map
 
+        #There is nothing to displace when the catalog is empty. In particular, do not build a
+        #redshift interpolator from an empty array.
+        if self.HaloLightConeCatalog.cat.size == 0:
+            return orig_map
+
         #Build interpolator between redshift and ang-diam-dist. Assume we never use z > 30
         z_m = np.max(self.HaloLightConeCatalog.cat['z'])
         z_t = np.linspace(0, z_m + 0.1, 1000)
@@ -611,6 +617,9 @@ class PaintProfilesShell(DefaultRunner):
         NSIDE    = self.LightconeShell.NSIDE
         pixarea  = hp.nside2pixarea(NSIDE, degrees = False)
 
+        if self.HaloLightConeCatalog.cat.size == 0:
+            return new_map
+
         #Build interpolator between redshift and ang-diam-dist. Assume we never use z > 30
         z_m = np.max(self.HaloLightConeCatalog.cat['z'])
         z_t = np.linspace(0, z_m + 0.1, 1000)
@@ -709,12 +718,15 @@ class PaintProfilesAnisShell(DefaultRunner):
         NSIDE    = self.LightconeShell.NSIDE
         pixarea  = hp.nside2pixarea(NSIDE, degrees = False)
 
-        #Build interpolator between redshift and ang-diam-dist. Assume we never use z > 30
-        z_m = np.max(self.HaloLightConeCatalog.cat['z'])
+        assert self.LightconeShell.redshift is not None, "The LightconeShell must have a redshift to use PaintProfilesAnisShell"
+
+        #Include the shell redshift because the catalog can be empty or span a narrower redshift range.
+        #Assume we never use z > 30.
+        z_m = max(np.max(self.HaloLightConeCatalog.cat['z'], initial = 0.0), self.LightconeShell.redshift)
         z_t = np.linspace(0, z_m + 0.1, 1000)
         D_a = interpolate.CubicSpline(z_t, ccl.angular_diameter_distance(cosmo, 1/(1 + z_t)))
         
-        keys = _check_p_keys(self.model) #Names of extra (tabulated) model parameters
+        keys = list(dict.fromkeys(_check_p_keys(self.model) + _check_p_keys(self.Tracer_model)))
 
         #First we need to generate a model for the total mass distribution, according to the mass model
         Mtot_map = PaintProfilesShell(HaloLightConeCatalog = self.HaloLightConeCatalog, 
@@ -724,8 +736,6 @@ class PaintProfilesAnisShell(DefaultRunner):
                                       include_pixel_size = True,
                                       mass_def = self.mass_def, verbose = self.verbose, n_jobs = self.n_jobs).process()
         
-        assert self.LightconeShell.redshift is not None, "The LightconeShell must have a redshift to use PaintProfilesAnisShell"
-
         #Physical volume of the (conical) pixel, over the projection length centered on the shell.
         #The projection length is comoving, so convert it to physical with the scale factor, since
         #D_A and the painted masses (with include_pixel_size = True) are physical.

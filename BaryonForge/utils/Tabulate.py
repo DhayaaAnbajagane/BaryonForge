@@ -12,6 +12,22 @@ from .misc import destory_Pk
 __all__ = ['_set_parameter', '_get_parameter', 'TabulatedProfile', 'ParamTabulatedProfile']
 
 
+def _log_profile_table(values):
+    """Log-transform positive profile tables without making exact zeros infinite.
+
+    A zero at a table node is valid (for example, outside a truncation radius).
+    Encoding it as ``-inf`` makes multilinear interpolation produce NaNs when a
+    neighboring node has zero interpolation weight. This finite sentinel
+    exponentiates back to exactly zero at the tabulated node.
+    """
+
+    values = np.asarray(values, dtype=float)
+    with np.errstate(divide='ignore'):
+        logged = np.log(values)
+    log_zero = np.log(np.nextafter(0.0, 1.0)) - 1.0
+    return np.where(values == 0, log_zero, logged)
+
+
 @njit(nogil = True)
 def _find_interval(grid, start, n, x):
     """Index i with grid[i] <= x < grid[i+1] (the last interval for x at or above the top node, and the
@@ -801,8 +817,8 @@ class TabulatedProfile(ccl.halos.profiles.HaloProfile):
         self.raw_input_M_range = np.log(M_range)
         self.raw_input_r_range = np.log(r)
         
-        self.interp3D = interpolate.RegularGridInterpolator(input_grid_1, np.log(interp3D), bounds_error = False)
-        self.interp2D = interpolate.RegularGridInterpolator(input_grid_1, np.log(interp2D), bounds_error = False)
+        self.interp3D = interpolate.RegularGridInterpolator(input_grid_1, _log_profile_table(interp3D), bounds_error = False)
+        self.interp2D = interpolate.RegularGridInterpolator(input_grid_1, _log_profile_table(interp2D), bounds_error = False)
 
         #Once all tabulation is done, we don't need to keep P(k) calculations in cosmology object.
         #This is good because the Pk class is not pickleable, so by destorying it here we
@@ -1152,8 +1168,8 @@ class ParamTabulatedProfile(object):
         self.raw_input_r_range = np.log(r)
         for k in other_params.keys(): setattr(self, 'raw_input_%s_range' % k, other_params[k]) #Save other raw inputs too
         
-        self.interp3D = interpolate.RegularGridInterpolator(input_grid_1, np.log(interp3D), bounds_error = False)
-        self.interp2D = interpolate.RegularGridInterpolator(input_grid_1, np.log(interp2D), bounds_error = False)
+        self.interp3D = interpolate.RegularGridInterpolator(input_grid_1, _log_profile_table(interp3D), bounds_error = False)
+        self.interp2D = interpolate.RegularGridInterpolator(input_grid_1, _log_profile_table(interp2D), bounds_error = False)
 
         #Once all tabulation is done, we don't need to keep P(k) calculations in cosmology object.
         #This is good because the Pk class is not pickleable, so by destorying it here we
@@ -1365,7 +1381,9 @@ class TabulatedCorrelation3D(object):
         self.raw_input_z_range = np.log(1 + z_range)
         self.raw_input_r_range = np.log(r)
         
-        self.interp3D = interpolate.RegularGridInterpolator(input_grid_1, np.log(interp3D), bounds_error = False)
+        # Correlation values are signed; log-space interpolation discards the
+        # negative part of a valid correlation function.
+        self.interp3D = interpolate.RegularGridInterpolator(input_grid_1, interp3D, bounds_error = False)
         
         
     def __call__(self, r, a):
@@ -1376,9 +1394,6 @@ class TabulatedCorrelation3D(object):
         z_in  = np.log(1/a)*empty #This is log(1 + z)
         r_in  = np.log(r_use)
         
-        ln_xi = self.interp3D( (z_in, r_in) )
-        xi    = np.exp(ln_xi)
+        xi = self.interp3D((z_in, r_in))
         
         return xi
-        
-        

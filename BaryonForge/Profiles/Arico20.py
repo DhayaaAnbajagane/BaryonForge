@@ -1,3 +1,4 @@
+from copy import deepcopy
 import numpy as np
 import pyccl as ccl
 import warnings
@@ -29,7 +30,8 @@ model_params = ['cdelta', 'a', 'n', #DM profle params and relaxation params
 
 
 class AricoProfiles(Base.BaseBFGProfiles):
-    __doc__ = S19.SchneiderProfiles.__doc__.replace('Schneider', 'Arico')
+    __doc__ = (S19.SchneiderProfiles.__doc__.replace('Schneider', 'Arico')
+               + '\n\nAricoProfiles defaults `r_max_int` to 10 comoving Mpc; pass an explicit value to override.')
 
     #Define the new param names
     model_param_names = model_params
@@ -55,8 +57,11 @@ class AricoProfiles(Base.BaseBFGProfiles):
         ----------
         M : array_like
             Halo masses, in units of solar masses.
-        z : array_like
-            Redshift values corresponding to the input halo masses.
+        a : float
+            Scale factor, related to redshift by ``z = 1/a - 1``.
+        cosmo : object
+            Cosmology wrapper. Accepted for interface consistency; this
+            parameterization does not use it.
 
         Returns
         -------
@@ -100,8 +105,10 @@ class AricoProfiles(Base.BaseBFGProfiles):
         ----------
         M : array_like
             Halo masses, in units of solar masses.
-        z : array_like
-            Redshift values corresponding to the input halo masses.
+        a : float
+            Scale factor, related to redshift by ``z = 1/a - 1``.
+        cosmo : object
+            Cosmology wrapper providing the cosmic baryon fraction.
         satellite : bool, optional
             If True, modifies the stellar fraction parameters for satellite galaxies. 
             Default is False.
@@ -314,6 +321,15 @@ class Stars(AricoProfiles):
     The profile accounts for the stellar fraction, redshift evolution, and a normalized 
     radial distribution.
 
+    Parameters
+    ----------
+    r_min_int : float, optional
+        Lower radius for the stellar-mass normalization, in comoving Mpc. Default is ``1e-6``.
+    r_max_int : float, optional
+        Upper radius for the stellar-mass normalization, in comoving Mpc. Default is 5.
+    **kwargs
+        Shared Arico20 model parameters and base-profile options.
+
     Notes
     -----
     - The radial profile is modeled with a power-law dependence and an exponential cutoff, 
@@ -413,7 +429,8 @@ class BoundGasUntruncated(AricoProfiles):
 
     This model naturally transitions to an NFW profile at large scales, ensuring consistency
     with standard halo models. The implementation includes an adaptive radial integration
-    to account for sharp transitions at the halo boundary.
+    to account for sharp transitions at the halo boundary. Its cored inner branch is finite
+    at ``r = 0``.
     """
 
     def _real(self, cosmo, r, M, a):
@@ -461,7 +478,10 @@ class BoundGasUntruncated(AricoProfiles):
         del u_integral, v_integral, prof_integral
 
         prof  = 1/(1 + u)**beta / (1 + v**2)**2
-        nfw   = y1 / x / np.power(1 + x, 2)
+        # This outer branch is not selected at the origin, where the inner
+        # core is finite. Keep its unused denominator finite as well.
+        x_outer = np.where(x == 0, 1.0, x)
+        nfw   = y1 / x_outer / np.power(1 + x_outer, 2)
         prof  = np.where(v <= 1, prof, nfw) 
         prof *= f_bg*M_use[:, None] / Normalization #This profile is allowed to go beyond R200c!
         
@@ -478,7 +498,7 @@ class BoundGasUntruncated(AricoProfiles):
 class BoundGas(BoundGasUntruncated):
     """
     Class for modeling the bound gas density profile in halos. Simply the `BoundGasUntruncated`
-    class but with a truncation at R200c.
+    class but truncated at the radius set by `mass_def` (default `MassDef200c`).
 
     This class extends `AricoProfiles` to compute the density profile of bound gas within halos.
     This follows the updated model from https://arxiv.org/pdf/2009.14225 rather than the original
@@ -701,6 +721,7 @@ class ModifiedDarkMatter(AricoProfiles):
     - \( \\rho_c \) is the characteristic density derived from the gravitational and gas components.
     - \( r_s = R / c \) is the scale radius.
     - \( r_p \) is the radius obtained by solving the balance equation for dark matter and gas.
+    - \( p_{\text{Gro}} \) and \( p_{\text{BG}} \) are the gravity-only dark-matter and bound-gas densities, respectively, evaluated just inside the halo radius.
     """
 
     def __init__(self, gas = None, gravityonly = None, **kwargs):
@@ -757,7 +778,10 @@ class ModifiedDarkMatter(AricoProfiles):
 
 
 class CollisionlessMatter(AricoProfiles):
-    __doc__ = S19.CollisionlessMatter.__doc__.replace('Schneider', 'Arico')
+    __doc__ = (S19.CollisionlessMatter.__doc__.replace('Schneider', 'Arico')
+               .replace('darkmatter : DarkMatter, optional', 'darkmatter : ModifiedDarkMatter, optional')
+               .replace('default `DarkMatter` object', 'default `ModifiedDarkMatter` object')
+               .replace('Default is 1e5.', 'Default is 10.'))
     
     def __init__(self, gas = None, stars = None, darkmatter = None, max_iter = 10, reltol = 1e-2, r_min_int = 1e-8, r_max_int = 1e1, r_steps = 5000, **kwargs):
         
@@ -912,6 +936,12 @@ class CollisionlessMatter(AricoProfiles):
 
 
 class SatelliteStars(CollisionlessMatter):
+    """Satellite-star density obtained by rescaling relaxed collisionless matter.
+
+    The returned profile is the collisionless profile multiplied by
+    ``f_sga / (1 - Omega_b/Omega_m + f_sga)``. Its constructor and model
+    parameters are inherited from `CollisionlessMatter`.
+    """
 
     def _real(self, cosmo, r, M, a):
 
@@ -940,8 +970,29 @@ class DarkMatterOnly(DarkMatter):
     """
 
 class DarkMatterBaryon(Gas):
+    __doc__ = """
+    One-halo Arico20 total matter profile.
 
-    __doc__ = S19.DarkMatterBaryon.__doc__.replace('SchneiderProfiles', 'AricoProfiles')
+    This convenience class directly sums the Arico20 `Gas`, `Stars`, and
+    `CollisionlessMatter` components. It applies no additional global mass
+    normalization and includes no two-halo term.
+
+    Parameters
+    ----------
+    gas : Gas, optional
+        Composite gas profile. Defaults to `Arico20.Gas(**kwargs)`.
+    stars : Stars, optional
+        Stellar profile. Defaults to `Arico20.Stars(**kwargs)`.
+    collisionlessmatter : CollisionlessMatter, optional
+        Relaxed collisionless profile. If omitted, explicitly supplied `gas` and `stars` are
+        copied into the CLM; omitted components use its own defaults, including the default
+        `ModifiedDarkMatter`. If that modified-dark-matter profile should use a custom
+        bound-gas input, construct and pass an explicit CLM.
+    **kwargs
+        Shared Arico20 model parameters and base-profile settings.
+
+    Use `DarkMatterBaryonwithLSS` to add a two-halo component.
+    """
 
     def __init__(self, gas = None, stars = None, collisionlessmatter = None, **kwargs):
         
@@ -952,7 +1003,14 @@ class DarkMatterBaryon(Gas):
         
         if self.Gas is None:        self.Gas        = Gas(**kwargs)        
         if self.Stars is None:      self.Stars      = Stars(**kwargs)
-        if self.CollisionlessMatter is None: self.CollisionlessMatter = CollisionlessMatter(**kwargs)
+        if self.CollisionlessMatter is None:
+            # CLM resets component cutoffs. Copy only caller inputs; unspecified
+            # components retain the CLM's historical defaults.
+            clm_components = {}
+            if gas is not None: clm_components['gas'] = gas
+            if stars is not None: clm_components['stars'] = stars
+            clm_components = deepcopy(clm_components)
+            self.CollisionlessMatter = CollisionlessMatter(**clm_components, **kwargs)
 
         self.myprof = self.Gas + self.Stars + self.CollisionlessMatter
         
@@ -973,10 +1031,48 @@ class DarkMatterOnlywithLSS(AricoProfiles, S19.DarkMatterOnly):
 
 
 class DarkMatterBaryonwithLSS(DarkMatterBaryon):
+    __doc__ = """
+    Arico20 one-halo total matter profile plus a two-halo density term.
 
-    __doc__ = S19.DarkMatterBaryon.__doc__.replace('SchneiderProfiles', 'AricoProfiles')
+    The one-halo portion is the direct sum of the Arico20 gas, stellar, and
+    collisionless profiles. The `twohalo` profile is then added. This wrapper
+    does not apply the S19 global one-halo normalization.
+
+    Parameters
+    ----------
+    gas : Gas, optional
+        Composite gas profile; defaults to `Arico20.Gas(**kwargs)`.
+    stars : Stars, optional
+        Stellar profile; defaults to `Arico20.Stars(**kwargs)`.
+    collisionlessmatter : CollisionlessMatter, optional
+        Relaxed collisionless profile; defaults to `Arico20.CollisionlessMatter`. Explicitly
+        supplied `gas` and `stars` are copied into the default CLM; omitted components use
+        the CLM's own defaults, including the default `ModifiedDarkMatter`. If a custom gas
+        profile must also be used as the bound-gas input to `ModifiedDarkMatter`, construct
+        the CLM explicitly with `ModifiedDarkMatter(gas=custom_bound_gas, ...)` and pass it here.
+    twohalo : TwoHalo, optional
+        Two-halo profile; defaults to `Arico20.TwoHalo(**kwargs)`.
+    darkmatter : DarkMatter or ModifiedDarkMatter, optional
+        Used to construct the default `CollisionlessMatter`, and copied so its cutoff changes
+        do not mutate the supplied object. Passing both `darkmatter` and an explicit
+        `collisionlessmatter` is ambiguous and raises `ValueError`. If a custom
+        `ModifiedDarkMatter` must use a custom bound-gas profile, construct it with
+        `ModifiedDarkMatter(gas=custom_bound_gas, ...)` and pass it here. When using custom
+        outer gas or stars, pass those same profiles too. An explicit CLM is useful when you
+        need to configure the complete relaxed component; in that case omit `darkmatter` and
+        include the desired dark-matter profile in the explicit CLM.
+    **kwargs
+        Shared Arico20 model parameters and base-profile settings.
+    """
 
     def __init__(self, gas = None, stars = None, collisionlessmatter = None, darkmatter = None, twohalo = None, **kwargs):
+
+        if collisionlessmatter is not None and darkmatter is not None:
+            raise ValueError(
+                "Pass either darkmatter or collisionlessmatter, not both. The "
+                "darkmatter argument is used to construct the default Arico20 "
+                "CollisionlessMatter; an explicit collisionlessmatter is authoritative."
+            )
         
         self.Gas   = gas
         self.Stars = stars
@@ -986,7 +1082,15 @@ class DarkMatterBaryonwithLSS(DarkMatterBaryon):
         if self.Gas is None:        self.Gas        = Gas(**kwargs)        
         if self.Stars is None:      self.Stars      = Stars(**kwargs)
         if self.TwoHalo is None:    self.TwoHalo    = TwoHalo(**kwargs)
-        if self.CollisionlessMatter is None: self.CollisionlessMatter = CollisionlessMatter(**kwargs)
+        if self.CollisionlessMatter is None:
+            # Arico's CLM modifies component cutoffs. Copy only caller inputs;
+            # unspecified components retain the historical CLM defaults.
+            clm_components = {}
+            if gas is not None: clm_components['gas'] = gas
+            if stars is not None: clm_components['stars'] = stars
+            if darkmatter is not None: clm_components['darkmatter'] = darkmatter
+            clm_components = deepcopy(clm_components)
+            self.CollisionlessMatter = CollisionlessMatter(**clm_components, **kwargs)
 
         self.myprof = self.Gas + self.Stars + self.CollisionlessMatter + self.TwoHalo
     
@@ -1021,11 +1125,15 @@ class Pressure(AricoProfiles):
       important that the bound gas profile for this step is not truncated (even though 
       the fiducial profile IS truncated at R200c)
 
-    The pressure profile is given by:
+    The bound gas sets the polytropic temperature. The resulting pressure is
+    then assigned to the full composite gas density:
 
     .. math::
 
-        P(r) = P_0 \cdot \\rho_{\\text{BG}}^{\Gamma_{\\text{eff}}}
+        P_{\\text{BG}}(r) = P_0 \\rho_{\\text{BG}}(r)^{\\Gamma_{\\text{eff}}},
+        \\qquad
+        P_{\\text{gas}}(r) = \\rho_{\\text{gas}}(r)
+        \\frac{P_{\\text{BG}}(r)}{\\rho_{\\text{BG}}(r)}.
 
     where:
     - \( P_0 \) is the pressure normalization, defined as:
@@ -1041,7 +1149,9 @@ class Pressure(AricoProfiles):
       - \( \\rho_0 \) is the gas density at the halo center.
       - \( \Gamma_{\\text{eff}} \) is the effective polytropic index.
 
-    - \( \\rho_{\\text{BG}}(r) \) represents the bound gas density profile.
+    - \( \\rho_{\\text{BG}}(r) \) is the untruncated bound-gas density profile.
+    - \\( \\rho_{\\text{gas}}(r) \\) is the combined gas density profile.
+    - The normalization includes the unit and scale-factor conversion used by the implementation.
 
     This implementation ensures consistency with large-scale gas behavior 
     and provides a physically motivated description of halo gas pressure.
@@ -1133,7 +1243,7 @@ class NonThermalFrac(AricoProfiles):
     where:
     - \( x = r / R_{200m} \)
     - \( A_{\\text{nt}} \) is a normalization factor that scales with redshift: 
-      \( A_{\\text{nt}} = a (1 + z)^{\\alpha_{\\text{nt}}} \)
+      :math:`A_{\\rm nt}(z)=A_{\\rm nt,0}(1+z)^{\\alpha_{\\rm nt}}`, where `A_nt` is the normalization parameter.
     - \( \\nu_M = 1.686 / \\sigma(M_{200m}) \) is the peak height of the halo.
     - \( b, c, d, e, f \) are model constants derived in Green et al. (2020).
     """
@@ -1161,7 +1271,10 @@ class NonThermalFrac(AricoProfiles):
         #this gets rewriten later with the custom model from Arico for the amplitude
         A, b, c, d, e, f = 0.495, 0.719, 1.417,-0.166, 0.265, -2.116 #Values from Green20
         A    = self.A_nt * np.power(1 + z, self.alpha_nt) #We override the "a" param alone for more flexibility.
-        nth  = 1 - A * (1 + np.exp(-(x/b)**c)) * (nu_M/4.1)**(d/(1 + (x/e)**f))
+        x_over_e = np.where(x == 0, 1.0, x/e)
+        x_power = np.power(x_over_e, f)
+        x_power = np.where(x == 0, np.inf, x_power)
+        nth  = 1 - A * (1 + np.exp(-(x/b)**c)) * (nu_M/4.1)**(d/(1 + x_power))
         prof = np.clip(nth, 0, 1)
         
         #Handle dimensions so input dimensions are mirrored in the output
@@ -1197,29 +1310,32 @@ class Temperature(AricoProfiles):
         Instance of the `Pressure` class representing the gas pressure profile. 
         If not provided, a default `Pressure` object is created, accounting for 
         non-thermal pressure using `NonThermalFrac`.
-    gas : BoundGas, optional
-        Instance of the `BoundGas` class representing the gas density profile. 
-        If not provided, a default `BoundGas` object is created.
+    gas : Gas, optional
+        Instance of the composite `Gas` profile used for the number-density
+        term. If omitted, a default `Gas` object is created from the bound,
+        ejected, and reaccreted gas components.
     **kwargs
         Additional arguments passed to initialize the parent `AricoProfiles` class 
         and associated components.
 
     Notes
     -----
-    - The real-space temperature profile is calculated using the ideal gas law:
+    - The real-space temperature uses the temperature inferred from the
+      untruncated bound-gas pressure model, then applies that temperature to
+      the full composite gas density:
 
       .. math::
 
-          T(r) = \\frac{P(r)}{n(r) \\cdot k_B}
+          T(r) = \\frac{P_{\\rm BG}(r)}{n_{\\rm BG}(r) k_B}
 
       where:
-      - \( P(r) \) is the gas pressure profile.
-      - \( n(r) \) is the gas number density, derived from the mass density and mean molecular weight.
+      - P_BG(r) is the pressure inferred from the bound-gas profile.
+      - n_BG(r) is the bound-gas number density.
       - \( k_B \) is the Boltzmann constant.
 
-    - The projected temperature profile computes the average temperature along the line of sight, 
-      normalizing by the number density. Thus, the projected result is still in units of temperature
-      and not in units of temperature * distance.
+    - The projected temperature is the ratio of projected pressure to
+      projected composite gas number density, so it is a density-weighted
+      line-of-sight average in K.
     """
 
     def __init__(self, pressure = None, gas = None, **kwargs):
@@ -1299,6 +1415,9 @@ class BoundGasDeprecated(AricoProfiles):
     - \( y_1 \) is a normalization factor ensuring continuity at \( R / \\epsilon \).
     - The profile is normalized by integrating over a range of radii to ensure mass conservation.
 
+    The core ratio ``ln(1 + x) / x`` is evaluated at its continuous limit of 1
+    at the origin.
+
     Deprecation Warning
     --------------------
     This class represents an old version of the bound gas profile from Arico 2020. 
@@ -1348,8 +1467,13 @@ class BoundGasDeprecated(AricoProfiles):
 
         #Now define the actual profile
         x = r_use / r_s
-        u = np.power(np.log(1 + x)/x, Geff)
-        v = y1 * np.power(1 + x, -2)/x
+        ratio = np.divide(
+            np.log1p(x), x,
+            out=np.ones_like(x, dtype=float), where=x != 0,
+        )
+        u = np.power(ratio, Geff)
+        x_outer = np.where(x == 0, 1.0, x)
+        v = y1 * np.power(1 + x_outer, -2)/x_outer
         
         prof  = np.where(r_use[None, :] < (R/eps)[:, None], u, v)
         prof  = np.where(r_use[None, :] > R[:, None], 0, prof)

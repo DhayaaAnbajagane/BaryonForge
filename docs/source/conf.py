@@ -1,29 +1,26 @@
 # Configuration file for the Sphinx documentation builder.
 
-import os
+from pathlib import Path
+import shutil
 import sys
-sys.path.insert(0, os.path.abspath('../../'))
-sys.path.insert(0, os.path.abspath('../../../'))
+import subprocess
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+PACKAGE_ROOT = PROJECT_ROOT / 'BaryonForge'
+sys.path.insert(0, str(PROJECT_ROOT))
 
 def run_apidoc(_):
-    import os
-    import sys
-    import subprocess
+    """Generate API pages from this checkout without copying external sources."""
 
-    subprocess.check_call(['cp', '-r', '../../../latest', '../../../BaryonForge'])
-    
-    cmd_path = 'sphinx-apidoc'
-    if hasattr(sys, 'real_prefix'):  # Check to see if we are in a virtualenv
-        # If we are, assemble the path manually
-        cmd_path = os.path.abspath(os.path.join(sys.prefix, 'bin', 'sphinx-apidoc'))
-    
-    for module in ['Profiles', 'Runners', 'utils']:
-        subprocess.check_call([cmd_path, '--force', '--ext-autodoc', '--ext-intersphinx', 
-                            '-e', '-o', '../../docs/source', '../../../BaryonForge/BaryonForge/' + module, 
-                            '../../../BaryonForge/*setup*'])
-        
-    subprocess.check_call([cmd_path, '--force', '--ext-autodoc', '--ext-intersphinx', 
-                        '-e', '-o', '../../docs/source', '../../../BaryonForge/BaryonForge/', '../../../BaryonForge/*setup*'])
+    apidoc = shutil.which('sphinx-apidoc')
+    command = ([apidoc] if apidoc else
+               [sys.executable, '-m', 'sphinx.ext.apidoc'])
+    subprocess.check_call(command + [
+        '--force', '--ext-autodoc', '--ext-intersphinx', '-e',
+        '-o', str(Path(__file__).resolve().parent),
+        str(PACKAGE_ROOT), str(PACKAGE_ROOT / '*setup*'),
+    ])
 
 
 def setup(app):

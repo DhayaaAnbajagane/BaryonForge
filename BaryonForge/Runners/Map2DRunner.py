@@ -165,37 +165,19 @@ def _regrid_pixels_2D_loop(grid, pix_positions, pix_values):
         N = grid.shape[0]
         x_start, y_start = pix_pos
         x_start, y_start = x_start % N, y_start % N #To handle edge-case where offset >> Lbox_sim
-        x_end, y_end     = x_start + 1, y_start + 1
+        ix, iy = int(x_start), int(y_start)
+        fx, fy = x_start - ix, y_start - iy
+        x0, x1 = ix % N, (ix + 1) % N
+        y0, y1 = iy % N, (iy + 1) % N
+        wx0, wx1 = 1 - fx, fx
+        wy0, wy1 = 1 - fy, fy
 
-        bound = 2
-        
-        x_min, x_max = int(x_start) - bound, int(x_end) + bound
-        y_min, y_max = int(y_start) - bound, int(y_end) + bound
-        
-        for i in range(y_min, y_max):
-            for j in range(x_min, x_max):
-
-                if i < 0: i += N
-                if i + 1 > N: i = i % N
-
-                if j < 0: j += N
-                if j + 1 > N: j = j % N
-
-                #Find intersection length
-                dx = min(j + 1, x_end) - max(j, x_start)
-                dy = min(i + 1, y_end) - max(i, y_start)
-
-                #Now account for periodic boundary conditions
-                if dx < 0: dx = min(j + 1, x_end + N) - max(j, x_start + N)
-                if dx < 0: dx = min(j + 1, x_end - N) - max(j, x_start - N)
-
-                if dy < 0: dy = min(i + 1, y_end + N) - max(i, y_start + N)
-                if dy < 0: dy = min(i + 1, y_end - N) - max(i, y_start - N)
-
-                #If there is some intersection, then add
-                if (dx > 0) & (dy > 0):
-                    overlap_area = dx * dy
-                    grid[i, j] += overlap_area * pix_value
+        #A unit pixel overlaps at most two cells per axis. Modulo the indices after
+        #computing the fractions so small periodic grids do not count repeated cells.
+        if wx0 > 0 and wy0 > 0: grid[y0, x0] += wx0 * wy0 * pix_value
+        if wx1 > 0 and wy0 > 0: grid[y0, x1] += wx1 * wy0 * pix_value
+        if wx0 > 0 and wy1 > 0: grid[y1, x0] += wx0 * wy1 * pix_value
+        if wx1 > 0 and wy1 > 0: grid[y1, x1] += wx1 * wy1 * pix_value
 
 
 @njit
@@ -236,46 +218,22 @@ def _regrid_pixels_3D_loop(grid, pix_positions, pix_values):
         N = grid.shape[0]
         x_start, y_start, z_start = pix_pos
         x_start, y_start, z_start = x_start % N, y_start % N, z_start % N #To handle edge-case where offset >> Lbox_sim
-        x_end, y_end, z_end       = x_start + 1, y_start + 1, z_start + 1
+        ix, iy, iz = int(x_start), int(y_start), int(z_start)
+        fx, fy, fz = x_start - ix, y_start - iy, z_start - iz
+        x0, x1 = ix % N, (ix + 1) % N
+        y0, y1 = iy % N, (iy + 1) % N
+        z0, z1 = iz % N, (iz + 1) % N
+        wx0, wx1 = 1 - fx, fx
+        wy0, wy1 = 1 - fy, fy
+        wz0, wz1 = 1 - fz, fz
 
-        bound = 2
-        
-        x_min, x_max = int(x_start) - bound, int(x_end) + bound
-        y_min, y_max = int(y_start) - bound, int(y_end) + bound
-        z_min, z_max = int(z_start) - bound, int(z_end) + bound
-
-        for i in range(y_min, y_max):
-            for j in range(x_min, x_max):
-                for k in range(z_min, z_max):
-                    
-                    if i < 0: i += N
-                    if i + 1 > N: i = i % N
-
-                    if j < 0: j += N
-                    if j + 1 > N: j = j % N
-
-                    if k < 0: k += N
-                    if k + 1 > N: k = k % N
-                    
-                    #Find intersection length
-                    dx = min(j + 1, x_end) - max(j, x_start)
-                    dy = min(i + 1, y_end) - max(i, y_start)
-                    dz = min(k + 1, z_end) - max(k, z_start)
-
-
-                    if dx < 0: dx = min(j + 1, x_end + N) - max(j, x_start + N)
-                    if dx < 0: dx = min(j + 1, x_end - N) - max(j, x_start - N)
-
-                    if dy < 0: dy = min(i + 1, y_end + N) - max(i, y_start + N)
-                    if dy < 0: dy = min(i + 1, y_end - N) - max(i, y_start - N)
-                        
-                    if dz < 0: dz = min(k + 1, z_end + N) - max(k, z_start + N)
-                    if dz < 0: dz = min(k + 1, z_end - N) - max(k, z_start - N)
-
-
-                    if (dx > 0) & (dy > 0) & (dz > 0):
-                        overlap_vol = dx * dy * dz
-                        grid[i, j, k] += overlap_vol * pix_value
+        #A unit pixel overlaps at most two cells per axis. Accumulate only the
+        #unique periodic neighbors, even when the grid side is one or two cells.
+        for yi, wy in ((y0, wy0), (y1, wy1)):
+            for xi, wx in ((x0, wx0), (x1, wx1)):
+                for zi, wz in ((z0, wz0), (z1, wz1)):
+                    if wx > 0 and wy > 0 and wz > 0:
+                        grid[yi, xi, zi] += wx * wy * wz * pix_value
                     
 
 @njit(nogil = True)
@@ -287,11 +245,12 @@ def _wrap_index(i, Npix):
     return i
 
 
-@njit(nogil = True, error_model = 'numpy') #numpy semantics: 0/0 = nan at the halo center, as before
+@njit(nogil = True, error_model = 'numpy')
 def _circular_cutouts(cen, off, nsize, start, Npix, res, want_hats, inds, hid, r, hat):
     """
-    Cutouts of many halos around their central pixels `cen`, with cutout widths `nsize` (even), written
-    from position `start[h]` of the output arrays: the flat map index of each pixel, the index of its halo,
+    Cutouts of many halos around their central pixels `cen`, with side lengths `nsize` (normally even, with an
+    odd full-grid size when needed to cover an odd grid), written from position `start[h]` of the output arrays:
+    the flat map index of each pixel, the index of its halo,
     its distance from the halo, and (if `want_hats`) the unit vector from the halo. The same pixels, order
     and arithmetic as `DefaultRunnerGrid._chunk_cutouts`, for cutouts without ellipticity.
     """
@@ -310,7 +269,11 @@ def _circular_cutouts(cen, off, nsize, start, Npix, res, want_hats, inds, hid, r
                     p = s + a*n + b
                     inds[p], hid[p] = ia*Npix + ib, h
                     r[p] = np.sqrt(gx*gx + gy*gy)
-                    if want_hats: hat[p, 0], hat[p, 1] = gx/r[p], gy/r[p]
+                    if want_hats:
+                        if r[p] > 0:
+                            hat[p, 0], hat[p, 1] = gx/r[p], gy/r[p]
+                        else:
+                            hat[p, 0], hat[p, 1] = 0.0, 0.0
                 else:
                     for c in range(n):
                         ic = _wrap_index(cen[h, 2] - w + c, Npix)
@@ -318,7 +281,11 @@ def _circular_cutouts(cen, off, nsize, start, Npix, res, want_hats, inds, hid, r
                         p  = s + (a*n + b)*n + c
                         inds[p], hid[p] = (ia*Npix + ib)*Npix + ic, h
                         r[p] = np.sqrt(gx*gx + gy*gy + gz*gz)
-                        if want_hats: hat[p, 0], hat[p, 1], hat[p, 2] = gx/r[p], gy/r[p], gz/r[p]
+                        if want_hats:
+                            if r[p] > 0:
+                                hat[p, 0], hat[p, 1], hat[p, 2] = gx/r[p], gy/r[p], gz/r[p]
+                            else:
+                                hat[p, 0], hat[p, 1], hat[p, 2] = 0.0, 0.0, 0.0
 
 #The functions above compile on their first call (~1 s each for the regridding), not at import, so that
 #importing BaryonForge stays fast for users who do not run the grid runners.
@@ -600,11 +567,16 @@ class DefaultRunnerGrid(object):
 
 
     def _cutout_size(self, width):
-        """Even cutout width in pixels for a cutout of `width` (comoving Mpc), at most the full box width."""
+        """Cutout width in pixels for `width` (comoving Mpc), at most the full box width."""
 
         Nsize = width / self.GriddedMap.res
-        Nsize = int(Nsize // 2)*2 #Force it to be even
-        return np.clip(Nsize, 2, 2*(self.GriddedMap.bins.size//2))
+        Nsize = int(Nsize // 2)*2 #Round down to an even cutout before odd-grid saturation below.
+        Npix = self.GriddedMap.bins.size
+        #An odd grid needs an odd full-box cutout to include its final row/column. The cutout
+        #coordinates below support odd sizes; the public pick_indices helper remains unchanged.
+        if (Npix % 2) and (Nsize >= Npix - 1):
+            Nsize = Npix
+        return int(np.clip(Nsize, 2, Npix))
 
 
     def _halo_chunks(self, width):
@@ -656,6 +628,12 @@ class DefaultRunnerGrid(object):
             cutout_width = Nsize//2
             x    = (np.arange(Nsize) - cutout_width) * res
             inds = [self.pick_indices(c, cutout_width, Npix) for c in H['cen'][j]]
+            if Nsize % 2:
+                #`pick_indices(center, width, ...)` returns 2*width entries. For the odd
+                #full-box cutout, append the positive-side endpoint using the same override so
+                #custom boundary handling continues to apply.
+                inds = [np.concatenate([axis_inds, self.pick_indices(c + cutout_width, 1, Npix)[-1:]])
+                        for axis_inds, c in zip(inds, H['cen'][j])]
             d    = H['off'][j]
 
             if is2D:
@@ -666,7 +644,9 @@ class DefaultRunnerGrid(object):
                 flat   = (inds[0][:, None]*Npix + inds[1][None, :]).flatten()
                 grids  = np.meshgrid(x + d[0], x + d[1], indexing = 'ij')
                 r_grid = np.sqrt(grids[0]**2 + grids[1]**2)
-                if hats: out['hat'].append(np.stack([(g/r_grid).flatten() for g in grids], axis = 1))
+                if hats:
+                    out['hat'].append(np.stack([np.divide(g, r_grid, out = np.zeros_like(g), where = r_grid > 0).flatten()
+                                                for g in grids], axis = 1))
 
                 #If ellipticity exists, then account for it
                 if self.use_ellipticity:
@@ -681,7 +661,9 @@ class DefaultRunnerGrid(object):
                 flat   = ((inds[0][:, None, None]*Npix + inds[1][None, :, None])*Npix + inds[2][None, None, :]).flatten()
                 grids  = np.meshgrid(x + d[0], x + d[1], x + d[2], indexing = 'ij')
                 r_grid = np.sqrt(grids[0]**2 + grids[1]**2 + grids[2]**2)
-                if hats: out['hat'].append(np.stack([(g/r_grid).flatten() for g in grids], axis = 1))
+                if hats:
+                    out['hat'].append(np.stack([np.divide(g, r_grid, out = np.zeros_like(g), where = r_grid > 0).flatten()
+                                                for g in grids], axis = 1))
 
             out['inds'].append(flat)
             out['hid'].append(np.full(flat.size, i))
@@ -693,8 +675,9 @@ class DefaultRunnerGrid(object):
     def _evaluate(self, model, method, cosmo, r, hid, halos, H):
         """`model.<method>` for every (halo, pixel) pair of a chunk (see `_chunks._evaluate_pairs`)."""
 
+        keys = _check_p_keys(model)
         return _evaluate_pairs(model, method, cosmo, r, hid, H['M'][halos], H['a'][halos],
-                               {k : v[halos] for k, v in H['other'].items()})
+                               {k : H['other'][k][halos] for k in keys})
 
 
 
@@ -894,7 +877,7 @@ class PaintProfilesGrid(DefaultRunnerGrid):
         H      = self._halo_table(cosmo, keys)
         res    = self.GriddedMap.res
         R_j    = H['R'] / H['a'] #in comoving Mpc
-        width  = 2 * self.epsilon_max * R_j #Even, at most the full box width, see _cutout_size. Can't skip small halos because we still must sum all contributions to a pixel
+        width  = 2 * self.epsilon_max * R_j #At most the full box width; small halos still contribute to pixels.
         method = 'projected' if self.GriddedMap.is2D else 'real'
 
         def chunk_paint(halos):
@@ -953,7 +936,7 @@ class PaintProfilesAnisGrid(PaintProfilesGrid):
         
         bins = self.GriddedMap.bins
         res  = self.GriddedMap.res
-        keys = vars(self.model).get('p_keys', []) #Check if model has property keys
+        keys = list(dict.fromkeys(_check_p_keys(self.model) + _check_p_keys(self.Tracer_model)))
 
         #First we need to generate a model for the total mass distribution, according to the mass model
         Mtot_map = PaintProfilesGrid(include_pixel_size = False,
@@ -985,7 +968,7 @@ class PaintProfilesAnisGrid(PaintProfilesGrid):
         #We are ready to loop over halos now!
         H     = self._halo_table(cosmo, keys)
         R_j   = H['R'] / H['a'] #in comoving Mpc
-        width = 2 * self.epsilon_max * R_j #Even, at most the full box width, see _cutout_size. Can't skip small halos because we still must sum all contributions to a pixel
+        width = 2 * self.epsilon_max * R_j #At most the full box width; small halos still contribute to pixels.
 
         def chunk_paint(halos):
 
@@ -1029,4 +1012,4 @@ class PaintProfilesAnisGrid(PaintProfilesGrid):
             new_map *= self.GriddedMap.res**2
 
         
-        return new_map    
+        return new_map

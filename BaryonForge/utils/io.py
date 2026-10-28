@@ -172,6 +172,9 @@ class HaloLightConeCatalog(object):
 
     
     def __str__(self):
+
+        if self.cat.size == 0:
+            return f"HaloLightConeCatalog with 0 Halos.\nCosmology set to {self.cosmo}."
         
         string = f"""
 HaloLightConeCatalog with {self.cat.size} Halos at {self.cat['z'].min()} < z < {self.cat['z'].max()}.
@@ -319,6 +322,9 @@ class HaloNDCatalog(object):
     
     
     def __str__(self):
+
+        if self.cat.size == 0:
+            return f"HaloNDCatalog with 0 Halos at z = {self.redshift}.\nCosmology set to {self.cosmo}."
         
         string = f"""
 HaloNDCatalog with {self.cat.size} Halos at z = {self.redshift}.

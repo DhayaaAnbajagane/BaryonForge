@@ -27,6 +27,14 @@ __all__ = ['Pressure', 'NonThermalFrac', 'NonThermalFracGreen20',
 
 
 class BaseThermodynamicProfile(BaseBFGProfiles):
+    """Base class for thermodynamic halo profiles.
+
+    Thermodynamic classes share the BaryonForge model parameters and
+    numerical settings. When a class wraps a gas or temperature
+    profile, ``model_params`` is read from that component through
+    ``prof4params``. Units and redshift scaling follow the comoving
+    conventions in :class:`BaseBFGProfiles`.
+    """
 
     model_param_names = model_params
 
@@ -91,7 +99,7 @@ class Pressure(BaseThermodynamicProfile):
 
       .. math::
 
-          P(r) = \\int_r^{\\infty} -\\frac{GM(<r')\\rho_{\\text{gas}}(r')}{r'^2} r' d\\ln r'
+          P(r) = \\int_r^{\\infty} \\frac{G M(<r')\\rho_{\\text{gas}}(r')}{r'^2} \\, dr'
 
     - The integration is performed numerically, and the result is converted to CGS units 
       for practical applications.
@@ -180,11 +188,13 @@ class Pressure(BaseThermodynamicProfile):
 
         .. math::
 
-            P(r) = \\int_r^{\\infty} -\\frac{GM(<r')\\rho_{\\text{gas}}(r')}{r'^2} r' d\\ln r'
+          P(r) = \\int_r^{\\infty} \\frac{G M(<r')\\rho_{\\text{gas}}(r')}{r'^2} \\, dr'
 
         - The integration is performed from large radii towards smaller radii to satisfy the boundary 
         condition \( P(r \\to \\infty) = 0 \). 
         - The profile is converted to CGS units using appropriate conversion factors.
+        - For nonnegative radii below the first integration node `r_min_int`, the central pressure
+          is held at its finite value on that first node.
 
         Examples
         --------
@@ -194,7 +204,7 @@ class Pressure(BaseThermodynamicProfile):
         >>> r = np.logspace(-2, 1, 50)  # Radii in comoving Mpc
         >>> M = 1e14  # Halo mass in solar masses
         >>> a = 0.5  # Scale factor corresponding to redshift z
-        >>> pressure_profile = pressure_model._real(my_cosmology, r, M, a)
+        >>> pressure_profile = pressure_model.real(my_cosmology, r, M, a)
         """
             
         r_use = np.atleast_1d(r)
@@ -221,7 +231,11 @@ class Pressure(BaseThermodynamicProfile):
         prof  = -(integrate.cumulative_trapezoid(intgr, axis = -1, initial = 0)[:, ::-1] + intgr[:, [0]])
         
         prof  = interpolate.PchipInterpolator(np.log(r_integral), np.log(prof + Pressure_at_infinity), axis = 1, extrapolate = False)
-        prof  = np.exp(prof(np.log(r_use))) - Pressure_at_infinity
+        # The logarithmic integration grid starts at r_min_int. For finite-core
+        # pressure, use its first sampled value below that radius instead of
+        # evaluating log(0) and replacing the resulting NaN with zero.
+        r_eval = np.where(r_use >= 0, np.maximum(r_use, r_integral[0]), r_use)
+        prof  = np.exp(prof(np.log(r_eval))) - Pressure_at_infinity
         prof  = np.where(np.isfinite(prof), prof, 0) #Get rid of pesky NaN and inf values if they exist! They break CCL spline interpolator
         
         #Convert to CGS. Using only one factor of Mpc_to_m is correct here!
@@ -375,7 +389,10 @@ class NonThermalFracGreen20(BaseThermodynamicProfile):
         nu_M = nu_M[:, None]
         
         A, b, c, d, e, f = 0.495, 0.719, 1.417,-0.166, 0.265, -2.116
-        nth  = 1 - A * (1 + np.exp(-(x/b)**c)) * (nu_M/4.1)**(d/(1 + (x/e)**f))
+        x_over_e = np.where(x == 0, 1.0, x/e)
+        x_power = np.power(x_over_e, f)
+        x_power = np.where(x == 0, np.inf, x_power)
+        nth  = 1 - A * (1 + np.exp(-(x/b)**c)) * (nu_M/4.1)**(d/(1 + x_power))
         prof = np.clip(nth, 0, 1)
         
         #Handle dimensions so input dimensions are mirrored in the output
@@ -483,9 +500,9 @@ class GasNumberDensity(BaseThermodynamicProfile):
 
         self.prof4params = self.Gas
     
-    #Need to explicitly call real and projected routines here.
-    #We call "_real" since if we define "real" over "_real" then CCL will complain
-    def _real(self, cosmo, r, M, a):     return self.Gas._real(cosmo, r, M, a)     * self.factor
+    # Keep `_real` as CCL's hook, but call the supplied profile's public API so
+    # custom real-space behavior is not bypassed.
+    def _real(self, cosmo, r, M, a):     return self.Gas.real(cosmo, r, M, a)     * self.factor
     def projected(self, cosmo, r, M, a): return self.Gas.projected(cosmo, r, M, a) * self.factor
 
     
@@ -526,7 +543,7 @@ class Temperature(BaseThermodynamicProfile):
 
     .. math::
 
-        T(r) = \\frac{P}(r)}{n(r) \\cdot k_B}
+        T(r) = \\frac{P(r)}{n(r) \\cdot k_B}
 
     where:
         - \( P(r) \) is the Thermal pressure profile of a species.
@@ -665,10 +682,12 @@ class ThermalSZ(BaseThermodynamicProfile):
 
     .. math::
 
-        y(r) = \\frac{\\sigma_T}{m_e c^2} \\int P_{\\text{e}}(r') \\, dr'
+        y_{\\rm phys}(r_\\perp) = \\frac{\\sigma_T}{m_e c^2} \\int P_{\\rm e,phys}(\\sqrt{r_\\perp^2 + \\ell^2}) \, d\\ell_{\\rm phys}
 
-    where \( P_{\\text{e}}(r') \) is the electron pressure profile, and the integral is
-    over *physical* length.
+    This equation defines the physical Compton-y observable. The unwrapped
+    ``ThermalSZ.projected()`` readout remains ``a^2 y_phys`` under the
+    BaryonForge comoving convention and becomes ``y_phys`` after wrapping
+    the ThermalSZ object in ``ComovingToPhysical(factor=-3)`` below.
 
     - **Required usage.** This class stays on the comoving ladder described in
       `BaseBFGProfiles`: `real()` is a per-comoving-volume quantity and `projected()`

@@ -31,6 +31,12 @@ class BaryonificationClass(object):
         The maximum displacement factor for the mass profile, in units of halo radius. Default is 20.
     mass_def : object, optional
         Mass definition object from CCL. Default is None, in which case the mass definition of `DMO` is used.
+    r_min_int : float, optional
+        Lower radius for the cumulative-mass integration, in comoving Mpc. Default is 1e-6.
+    r_max_int : float, optional
+        Upper radius for the cumulative-mass integration, in comoving Mpc. Default is 1000.
+    N_int : int, optional
+        Number of logarithmically spaced integration samples. Default is 500.
 
     Notes
     -----
@@ -335,6 +341,8 @@ class BaryonificationClass(object):
         - Issues warnings if profiles are nearly constant over radius or if the interpolation 
         fails for specific halo masses. Warnings tend to be raised for the lowest masses,
         especially when using pixel window convolutions.
+        - The sampled radius interval must cover both initial and mapped radii. If a mapped
+        radius falls outside it, the displacement is set to zero rather than extrapolated.
         """
 
         if z_min <= 0: 
@@ -397,18 +405,26 @@ class BaryonificationClass(object):
         M_tab = np.exp(self.raw_input_M_range)
         r_tab = np.exp(self.raw_input_r_range)
 
-        if (np.min(z) < np.min(z_tab)) | (np.max(z) > np.max(z_tab)):
+        def outside(values, lower, upper):
+            # Comparing against exp(log(bound)) can move an exact endpoint by
+            # one or two ulps and emit a false out-of-range warning.
+            tol = 16 * np.finfo(float).eps * max(1.0, abs(lower), abs(upper))
+            return (np.min(values) < lower - tol) or (np.max(values) > upper + tol)
+
+        if outside(z, np.min(z_tab), np.max(z_tab)):
             warn_text = f"Requested redshift range [{np.min(z)}, {np.max(z)}] outside table's range [{np.min(z_tab)}, {np.max(z_tab)}]"
             warnings.warn(warn_text, UserWarning)
 
-        if (np.min(M) < np.min(M_tab)) | (np.max(M) > np.max(M_tab)):
+        if outside(M, np.min(M_tab), np.max(M_tab)):
             warn_text = (f"Requested log_Mass range [{np.log10(np.min(M))}, {np.log10(np.max(M))}] outside "
                          f"table's range [{np.log10(np.min(M_tab))}, {np.log10(np.max(M_tab))}]")
             warnings.warn(warn_text, UserWarning)
 
         if not self.Rdelta_sampling:
-            if (np.min(r) < np.min(r_tab)) | (np.max(r) > np.max(r_tab)):
-                warn_text = f"Requested Radius range [{np.min(r)}, {np.max(r)}] outside table's range [{np.min(r_tab)}, {np.max(r_tab)}]"
+            r_checked = np.asarray(r)
+            r_checked = r_checked[r_checked != 0]
+            if r_checked.size and outside(r_checked, np.min(r_tab), np.max(r_tab)):
+                warn_text = f"Requested Radius range [{np.min(r_checked)}, {np.max(r_checked)}] outside table's range [{np.min(r_tab)}, {np.max(r_tab)}]"
                 warnings.warn(warn_text, UserWarning)
 
 
@@ -451,11 +467,13 @@ class BaryonificationClass(object):
 
         z_in  = np.log(1/a)[halo] #This is log(1 + z)
         M_in  = np.log(M)[halo]
-        r_in  = np.log(r) - np.log(R)[halo] if self.Rdelta_sampling else np.log(r)
+        r_zero = r == 0
+        r_log  = np.log(np.where(r_zero, 1.0, r))
+        r_in  = r_log - np.log(R)[halo] if self.Rdelta_sampling else r_log
         k_in  = [np.broadcast_to(np.asarray(kwargs[k], dtype = float), M.shape)[halo] for k in self.p_keys]
         displ = _interpolate(self.interp_d, tuple([z_in, M_in, r_in] + k_in))
 
-        return np.where(r < self.epsilon_max*R[halo], displ, 0) #Set large-scale displacements to 0
+        return np.where(r_zero, 0, np.where(r < self.epsilon_max*R[halo], displ, 0)) #Set large-scale displacements to 0
 
 
     def _displacement_curves(self, M, a, r = None, n_threads = 1, **kwargs):
@@ -548,7 +566,8 @@ class BaryonificationClass(object):
         displ = np.zeros([M_use.size, r_use.size])
         empty = np.ones_like(r_use)
         z_in  = np.log(1/a)*empty #This is log(1 + z)
-        r_in  = np.log(r_use)
+        r_zero = r_use == 0
+        r_in  = np.log(np.where(r_zero, 1.0, r_use))
         k_in  = [kwargs[k] * empty for k in self.p_keys] #Same order as the table axes, not the kwargs order
 
         self._warn_outside_table(z_use, M_use, r_use)
@@ -563,7 +582,7 @@ class BaryonificationClass(object):
             displ[i] = _interpolate(table, tuple([z_in, M_in, r_tab_in] + k_in))
             
             inside   = (r < self.epsilon_max*R)
-            displ[i] = np.where(inside, displ[i], 0) #Set large-scale displacements to 0
+            displ[i] = np.where(r_zero, 0, np.where(inside, displ[i], 0)) #Set large-scale displacements to 0
             
         #Handle dimensions so input dimensions are mirrored in the output
         if np.ndim(r) == 0:
@@ -598,6 +617,8 @@ class BaryonificationClass(object):
             Displacement values corresponding to the input radii and masses.
             In comoving Mpc.
 
+        The regular radial mapping fixes the displacement at ``r = 0`` to zero.
+
         Raises
         ------
         NameError
@@ -630,7 +651,7 @@ class Baryonification3D(BaryonificationClass):
 
     .. math::
 
-        M_{\\text{enc}}(r) = 4\\pi \\int_0^r \\rho(r') r'^2 \\, d\\ln r'
+        M_{\\text{enc}}(r) = 4\\pi \\int_0^r \\rho(r') r'^2 \\, dr'
 
     the displacement function is then,
 
@@ -682,7 +703,7 @@ class Baryonification3D(BaryonificationClass):
 
         .. math::
 
-            M_{\\text{enc}}(r) = 4\\pi \\int_0^r \\rho(r') r'^2 \\, d\\ln r'
+            M_{\\text{enc}}(r) = 4\\pi \\int_0^r \\rho(r') r'^2 \\, dr'
 
         - `PchipInterpolator` is used to interpolate the mass profile, ensuring smoothness 
         and avoiding artifacts due to Fourier space ringing.
@@ -724,7 +745,7 @@ class Baryonification2D(BaryonificationClass):
 
     .. math::
 
-        M_{\\text{enc}}(r) = 2\\pi \\int_0^r \Sigma(r') r' \, d\\ln r'
+        M_{\\text{enc}}(r) = 2\\pi \\int_0^r \Sigma(r') r' \, dr'
 
     the displacement function is then
 
@@ -771,7 +792,7 @@ class Baryonification2D(BaryonificationClass):
 
         .. math::
 
-            M_{\\text{enc}}(r) = 2\\pi \\int_0^r \\Sigma(r') r' \\, d\\ln r'
+            M_{\\text{enc}}(r) = 2\\pi \\int_0^r \\Sigma(r') r' \\, dr'
 
         - `PchipInterpolator` is used to interpolate the mass profile, ensuring smoothness 
         and avoiding artifacts due to Fourier space ringing.

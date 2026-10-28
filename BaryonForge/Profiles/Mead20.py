@@ -30,7 +30,9 @@ model_params = ['cdelta', 'eps1', 'nu_eps1', 'eps2', #DM profle param and relaxa
 
 
 class MeadProfiles(Base.BaseBFGProfiles):
-    __doc__ = A20.AricoProfiles.__doc__.replace('Arico', 'Mead')
+    __doc__ = (A20.AricoProfiles.__doc__.replace('Arico', 'Mead')
+               .replace('MeadProfiles defaults `r_max_int` to 10 comoving Mpc; pass an explicit value to override.',
+                        'MeadProfiles inherits the BaseBFGProfiles default `r_max_int` of 1e3 comoving Mpc.'))
 
     #Define the new param names
     model_param_names = model_params
@@ -181,8 +183,8 @@ class DarkMatter(MeadProfiles):
 
         \\rho(r) = 
         \\begin{cases} 
-        \\frac{\\rho_c}{(r/r_s)(1 + r/r_s)^2}, & r \\leq R_{200c} \\\\ 
-        0, & r > R_{200c}
+        \\frac{\\rho_c}{(r/r_s)(1 + r/r_s)^2}, & r \\leq R_{\Delta} \\\\
+        0, & r > R_{\Delta}
         \\end{cases}
 
 
@@ -405,6 +407,9 @@ class BoundGas(MeadProfiles):
     - \( x = r / r_s \), where \( r_s = R / c \) is the scale radius.
     - \( N \) is the normalization factor ensuring the profile integrates to the bound gas mass within the virial radius.
     - \( \\Gamma \) is a redshift-dependent parameter that modifies the profile shape.
+
+    The ratio ``ln(1 + x) / x`` is evaluated at its continuous limit of 1 when
+    ``x = 0``, so the profile has a finite central value.
     """
 
     def _real(self, cosmo, r, M, a):
@@ -437,7 +442,11 @@ class BoundGas(MeadProfiles):
         for m_i in range(M_use.shape[0]):
             r_integral    = np.geomspace(self.r_min_int, R[m_i], self.r_steps)
             x_integral    = r_integral/r_s[m_i]
-            prof_integral = np.power(np.log(1 + x_integral) / x_integral, 1/(Geff - 1))
+            shape_integral = np.divide(
+                np.log1p(x_integral), x_integral,
+                out=np.ones_like(x_integral, dtype=float), where=x_integral != 0,
+            )
+            prof_integral = np.power(shape_integral, 1/(Geff - 1))
             Normalization[m_i] = np.trapz(4 * np.pi * r_integral**2 * prof_integral, r_integral)
         Normalization = Normalization[:, None]
         
@@ -445,7 +454,11 @@ class BoundGas(MeadProfiles):
 
         kfac = self._soft_cutoff(r_use[None, :]) #Extra exponential cutoff
         x_use = r_use / r_s
-        prof  = np.power(np.log(1 + x_use) / x_use, 1/(Geff - 1))
+        shape = np.divide(
+            np.log1p(x_use), x_use,
+            out=np.ones_like(x_use, dtype=float), where=x_use != 0,
+        )
+        prof  = np.power(shape, 1/(Geff - 1))
         prof  = np.where(r_use[None, :] <= R[:, None], prof, 0)
         prof *= f_bnd*M_use[:, None]/Normalization
 
@@ -542,12 +555,21 @@ class Gas(WrappedProfile, MeadProfiles):
 
 class GasAddDiffuse(MeadProfiles):
     """
-    Convenience class for combining bound and ejected gas components.
+    Mead20 gas profile with a diffuse/ejected-mass Fourier term.
 
-    This class serves as a unified interface for gas profiles in halos, combining the contributions 
-    from bound gas (`BoundGas`) and ejected gas (`EjectedGas`). It simplifies calculations where 
-    the total gas profile is required, leveraging the underlying logic and methods of the individual 
-    gas components.
+    Its Fourier profile is the bound-gas Fourier profile plus the remaining
+    ejected gas mass, `f_ej(M, a) * M`, as a constant in wavenumber. The real-space
+    readout is obtained from that Fourier profile through the inherited FFTLog
+    wrapper. This class does not add the Gaussian `EjectedGas` profile used by
+    `Mead20.Gas`. The constant Fourier term is a Dirac delta in real space, so
+    its pointwise value at ``r = 0`` is undefined; use the Fourier profile or
+    convolve with a finite pixel window for finite-resolution observables.
+
+    Parameters
+    ----------
+    **kwargs
+        Mead20 model parameters and base-profile settings used to construct the
+        bound-gas component and evaluate the ejected gas fraction.
     """
     
     def __init__(self, **kwargs):
@@ -655,72 +677,29 @@ class DarkMatterOnly(DarkMatter):
 class DarkMatterBaryon(MeadProfiles, S19.DarkMatterBaryon):
 
     """
-    Class representing a combined dark matter and baryonic matter profile.
+    One-halo total matter profile for the Mead20 model.
 
-    This class is derived from the `MeadProfiles` class and provides an implementation 
-    that combines the contributions from dark matter, gas, stars, and collisionless matter 
-    to compute the total density profile. It ensures mass conservation and accounts for both 
-    dark matter and baryonic components. It does not include a two-halo term. 
-    See `DarkMatterBaryonwithLSS` for a convenience class that includes the TwoHalo. 
+    The class combines collisionless matter, stars, and gas. It sets its
+    two-halo component to `Zeros`, so no two-halo term is included. The inherited
+    one-halo normalization rescales the combined components to the reference
+    `DarkMatter` mass over the configured integration range.
 
     Parameters
     ----------
     gas : Gas, optional
-        An instance of the `Gas` class defining the gas profile. If not provided, a default 
-        `Gas` object is created using `kwargs`.
+        Gas profile. Defaults to `Mead20.Gas(**kwargs)`.
     stars : Stars, optional
-        An instance of the `Stars` class defining the stellar profile. If not provided, a default 
-        `Stars` object is created using `kwargs`.
+        Stellar profile. Defaults to `Mead20.Stars(**kwargs)`.
     collisionlessmatter : CollisionlessMatter, optional
-        An instance of the `CollisionlessMatter` class defining the profile that combines dark matter, 
-        gas, and stars. If not provided, a default `CollisionlessMatter` object is created using `kwargs`.
+        Relaxed collisionless profile. Defaults to `Mead20.CollisionlessMatter(**kwargs)`.
     darkmatter : DarkMatter, optional
-        An instance of the `DarkMatter` class defining the NFW profile for dark matter. If not provided, 
-        a default `DarkMatter` object is created using `kwargs`.
+        One-halo reference profile used for mass normalization. Defaults to
+        `Mead20.DarkMatter(**kwargs)`.
     **kwargs
-        Additional keyword arguments passed to initialize the `Gas`, `Stars`, `CollisionlessMatter`, 
-        `DarkMatter`, and `TwoHalo` profiles, as well as other parameters from `SchneiderProfiles`.
+        Shared Mead20 model parameters and base-profile settings forwarded to
+        default component profiles.
 
-    Notes
-    -----
-    The `DarkMatterBaryon` class models the total matter density profile by combining 
-    contributions from collisionless matter, gas, stars, dark matter, and the two-halo term. 
-    This comprehensive approach accounts for the interaction and distribution of both dark 
-    matter and baryonic matter within halos and across neighboring halos.
-
-    **Calculation Steps:**
-
-    1. **Normalization of Dark Matter Baryon**: To ensure mass conservation, the one-halo term is 
-       normalized so that the dark matter-baryon matches the dark matter-only profile
-         at large radii. The normalization factor is calculated as:
-
-       .. math::
-
-           \\text{Factor} = \\frac{M_{\\text{DMO}}}{M_{\\text{DMB}}}
-
-       where:
-
-       - :math:`M_{\\text{DMO}}` is the total mass from the dark matter-only profile.
-       - :math:`M_{\\text{DMB}}` is the total mass from the combined dark matter and baryon profile.
-
-    2. **Total Density Profile**: The total density profile is computed by summing the contributions 
-       from the collisionless matter, stars, and gas, scaled by the normalization factor:
-
-       .. math::
-
-           \\rho_{\\text{total}}(r) = \\rho_{\\text{CLM}}(r) \\cdot \\text{Factor} + \\rho_{\\text{stars}}(r) \\cdot \\text{Factor} + \\rho_{\\text{gas}}(r) \\cdot \\text{Factor}
-
-       where:
-
-       - :math:`\\rho_{\\text{CLM}}(r)` is the density from the collisionless matter profile.
-       - :math:`\\rho_{\\text{stars}}(r)` is the stellar density profile.
-       - :math:`\\rho_{\\text{gas}}(r)` is the gas density profile.
-
-    This method ensures that both dark matter and baryonic matter are accounted for, 
-    providing a realistic representation of the total matter distribution.
-
-    See `SchneiderProfiles`, `Gas`, `Stars`, `CollisionlessMatter`, `DarkMatter`
-    classes for more details on the underlying profiles and parameters.
+    Use `DarkMatterBaryonwithLSS` when a two-halo term is required.
     """
 
     def __init__(self, gas = None, stars = None, collisionlessmatter = None, darkmatter = None, **kwargs):
@@ -740,6 +719,21 @@ class DarkMatterBaryon(MeadProfiles, S19.DarkMatterBaryon):
 
 
 class DarkMatterBaryonAddDiffuse(DarkMatterBaryon):
+    """Mead20 total profile using `GasAddDiffuse` by default.
+
+    The inherited components are combined in Fourier space without an extra
+    mass-normalization factor, matching the Mead20 component normalization.
+    Its default `GasAddDiffuse` component includes a real-space Dirac delta, so
+    the pointwise real-space value at ``r = 0`` is undefined.
+
+    Parameters
+    ----------
+    gas, stars, collisionlessmatter, darkmatter : profile, optional
+        Component profiles. When `gas` is omitted, a `GasAddDiffuse` profile is
+        constructed; other missing components use the Mead20 defaults.
+    **kwargs
+        Mead20 model parameters and base-profile settings.
+    """
 
     #Same as DarkMatterBaryon, but the default gas includes the diffuse (ejected) component
     def __init__(self, gas = None, stars = None, collisionlessmatter = None, darkmatter = None, **kwargs):
@@ -796,35 +790,31 @@ class DarkMatterBaryonwithLSS(MeadProfiles, S19.DarkMatterBaryon):
 
 
 class Temperature(MeadProfiles):
-    """
-    Class for modeling the temperature profile of halos.
+    r"""
+    Mead20 characteristic gas-temperature profile.
 
-    This class extends `MeadProfiles` to compute the temperature profile of gas in halos, 
-    based on the gravitational potential and the mean molecular weight of the gas. 
-
-    Notes
-    -----
-    - The real-space temperature profile is derived from the characteristic energy scale, 
-      assuming hydrostatic equilibrium.
-
-    The real-space temperature profile is given by:
+    The profile uses the NFW potential shape
 
     .. math::
 
-        T(r) = T_0 \\cdot \\frac{\\ln(1 + r/r_s)}{r/r_s}
+        T(r) = T_0 \frac{\ln(1+r/r_s)}{r/r_s},
+        \qquad
+        T_0 = \frac{2\alpha}{3 k_B}
+        \frac{G M \mu m_p}{a R}.
 
-    where:
-    - \( T_0 \) is the characteristic temperature scale, proportional to the gravitational 
-      potential of the halo:
-      
-      .. math::
+    Here `R` is the comoving halo radius, so `a R` is the physical radius;
+    `r_s = R/c` is comoving. The result is in Kelvin.
+    At the origin, the continuous limit is ``T(0) = T0``.
 
-          T_0 = \\frac{G M \\mu m_p}{R} \\cdot \\frac{1}{k_B}
-
-      \( G \) is the gravitational constant, \( M \) is the halo mass, \( \mu \) is the mean molecular weight, 
-      \( m_p \) is the proton mass, and \( k_B \) is the Boltzmann constant.
-    - \( r_s \) is the scale radius, defined as \( R / c \), where \( R \) is the virial radius and \( c \) is 
-      the concentration parameter.
+    Parameters
+    ----------
+    alpha : float
+        Dimensionless temperature normalization.
+    mean_molecular_weight : float
+        Mean particle mass in units of the proton mass.
+    **kwargs
+        Mead20 model parameters and base-profile settings, including optional
+        concentration and mass-definition choices.
     """
 
     
@@ -846,7 +836,12 @@ class Temperature(MeadProfiles):
         #Characteristic energy scale, convert to cgs and then convert to temperature (Kelvin)
         E0   = G * M_use * m_p * self.mean_molecular_weight / (a * R) * (Msun_to_Kg * 1e3) * (Mpc_to_m * 1e2)**2 
         T0   = self.alpha * E0 / (3/2 * kb_cgs)
-        prof = T0[:, None] * np.log(1 + r_use/r_s) / (r_use/r_s)
+        x_use = r_use/r_s
+        shape = np.divide(
+            np.log1p(x_use), x_use,
+            out=np.ones_like(x_use, dtype=float), where=x_use != 0,
+        )
+        prof = T0[:, None] * shape
 
         #Handle dimensions so input dimensions are mirrored in the output
         if np.ndim(r) == 0: prof = np.squeeze(prof, axis=-1)
@@ -972,45 +967,25 @@ class Pressure(MeadProfiles):
 
 class PressureAddDiffuse(MeadProfiles):
     """
-    Class for modeling the pressure profile of gas in halos.
+    Mead20 pressure profile with an added diffuse/ejected-mass Fourier term.
 
-    This class extends `MeadProfiles` to compute the pressure profile, incorporating contributions 
-    from both bound and ejected gas components. The pressure is calculated as the product of the 
-    gas density and temperature, with separate terms for the bound and ejected gas phases.
+    The constructor accepts an optional `Pressure` profile. If omitted, it
+    builds one with `ejectedgas=Zeros()` and adds the ejected-gas contribution
+    in Fourier space using the remaining gas fraction and the redshift-dependent
+    `T_w` temperature. Passing a pressure profile with a nonzero ejected-gas
+    component emits a warning because that contribution would be counted twice.
+    The real-space readout is obtained from the Fourier profile by FFTLog.
+    The added constant Fourier component is a Dirac delta in real space, so
+    its pointwise value at ``r = 0`` is undefined; use the Fourier profile or
+    convolve with a finite pixel window for finite-resolution observables.
 
     Parameters
     ----------
-    boundgas : BoundGas, optional
-        Instance of the `BoundGas` class representing the bound gas component.
-        If not provided, a default `BoundGas` object is created.
-    ejectedgas : EjectedGas, optional
-        Instance of the `EjectedGas` class representing the ejected gas component.
-        If not provided, a default `EjectedGas` object is created.
-    temperature : Temperature, optional
-        Instance of the `Temperature` class representing the gas temperature.
-        If not provided, a default `Temperature` object is created.
+    pressure : Pressure, optional
+        Pressure profile for the bound-gas component. If omitted, constructed
+        from `kwargs` with its `EjectedGas` set to `Zeros`.
     **kwargs
-        Additional arguments passed to initialize the parent `MeadProfiles` class and associated components.
-
-    Notes
-    -----
-    - The pressure profile is computed as the sum of two components:
-        1. The bound gas component, which depends on the real-space gas density and temperature.
-        2. The ejected gas component, which uses a redshift-dependent temperature normalization.
-    - The gas number density is derived from the mass density by dividing by the mean molecular weight and proton mass.
-
-    The pressure profile is given by:
-
-    .. math::
-
-        P(r) = P_{\\text{bound}}(r) + P_{\\text{ejected}}(r)
-
-    where:
-    - \( P_{\\text{bound}}(r) = n_{\\text{bound}}(r) \\cdot T_{\\text{bound}}(r) \\cdot k_B \)
-    - \( P_{\\text{ejected}}(r) = n_{\\text{ejected}}(r) \\cdot T_{\\text{ejected}}(r) \\cdot k_B \)
-    - \( n(r) \) is the number density of gas.
-    - \( T(r) \) is the temperature of the gas.
-    - \( k_B \) is the Boltzmann constant.
+        Mead20 model parameters and base-profile settings.
     """
 
     def __init__(self, pressure = None, **kwargs):

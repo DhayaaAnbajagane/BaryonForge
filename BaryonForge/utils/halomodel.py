@@ -55,19 +55,23 @@ class FlexibleHMCalculator(HMCalculator):
     @unlock_instance(mutate=False)
     def _get_mass_function(self, cosmo, a, rho0):
         # Compute the mass function at this cosmo and a.
-        if a != self._a_mf or cosmo != self._cosmo_mf:
+        if (a != self._a_mf or cosmo != self._cosmo_mf
+                or rho0 != getattr(self, '_rho0_mf', None)):
             self._mf = self.mass_function(cosmo, self._mass, a)
             self._mtot  = self.halo_m_to_mtot(cosmo, self._mass, a)
             self._mtot0 = self._mtot[0]
             integ = self._integrator(self._mf*self._mtot, self._lmass)
             self._mf0 = (rho0 - integ) / self._mtot0
             self._cosmo_mf, self._a_mf = cosmo, a  # cache
+            self._rho0_mf = rho0
 
     @unlock_instance(mutate=False)
     def _get_halo_bias(self, cosmo, a, rho0):
         # Compute the halo bias at this cosmo and a.
-        if a != self._a_bf or cosmo != self._cosmo_bf:
+        if (a != self._a_bf or cosmo != self._cosmo_bf
+                or rho0 != getattr(self, '_rho0_bf', None)):
             self._bf = self.halo_bias(cosmo, self._mass, a)
             integ = self._integrator(self._mf*self._bf*self._mtot, self._lmass)
             self._mbf0 = (rho0 - integ) / self._mtot0
             self._cosmo_bf, self._a_bf = cosmo, a  # cache
+            self._rho0_bf = rho0

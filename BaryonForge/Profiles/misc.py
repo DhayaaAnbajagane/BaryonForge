@@ -213,15 +213,15 @@ class Truncation(BaseBFGProfiles):
     """
     Class for truncating profiles conveniently.
 
-    The `Truncation` profile imposes a cutoff on any profile beyond a specified 
-    fraction of the halo's virial radius. The profile is used by modify existing 
+    The `Truncation` profile imposes a cutoff on any profile beyond a specified
+    fraction of the halo radius selected by `mass_def`. The profile is used to modify existing
     halo profiles, ensuring that contributions are zeroed out beyond the truncation radius.
 
     Parameters
     ----------
-    epsilon : float
-        The truncation parameter, representing the fraction of the virial radius 
-        \( R_{200c} \) at which the profile is truncated. For example, an `epsilon` of 1 
+    epsilon_trunc : float
+        The truncation parameter, representing the fraction of the radius defined by
+        `mass_def` at which the profile is truncated. For example, an `epsilon_trunc` of 1
         implies truncation at the virial radius, while a value < 1 truncates at a smaller radius.
     mass_def : ccl.halos.massdef.MassDef, optional
         The mass definition for the halo. By default, this is set to `MassDef200c`, which 
@@ -237,13 +237,13 @@ class Truncation(BaseBFGProfiles):
 
         \\rho_{\\text{trunc}}(r) = 
         \\begin{cases} 
-        1, & r < \\epsilon \\cdot R_{200c} \\\\ 
-        0, & r \\geq \\epsilon \\cdot R_{200c}
+        1, & r < \\epsilon_{\\rm trunc} \\cdot R_{\\Delta} \\\\
+        0, & r \\geq \\epsilon_{\\rm trunc} \\cdot R_{\\Delta}
         \\end{cases}
 
     where:
-    - \( \\epsilon \) is the truncation fraction.
-    - \( R_{200c} \) is the virial radius for the given mass definition.
+    - :math:`\\epsilon_{\\rm trunc}` is the truncation fraction.
+    - :math:`R_{\\Delta}` is the halo radius for the supplied `mass_def`.
 
     Examples
     --------

@@ -34,7 +34,7 @@ Repository = "https://github.com/DhayaaAnbajagane/BaryonForge"
 
 [tool.setuptools.packages.find]
 where = ["."]
-# If your package directory is named "BaryonForge", this will pick it up.
+include = ["BaryonForge*"]
 
 [tool.setuptools_scm]
 write_to = "BaryonForge/_version.py"
